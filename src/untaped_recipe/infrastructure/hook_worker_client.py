@@ -10,7 +10,7 @@ from queue import Empty, Queue
 from threading import Lock, Thread
 from typing import Protocol, TextIO
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validator
 
 from untaped_recipe import hook_worker
 from untaped_recipe import worker_protocol as protocol
@@ -20,12 +20,12 @@ from untaped_recipe.infrastructure.hook_resolver import UvHookRef
 class HookWorkerResponse(BaseModel):
     """Engine-side validation for one worker protocol response."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    id: str
-    ok: bool
+    id: StrictStr
+    ok: StrictBool
     result: object | None = None
-    error: str | None = None
+    error: StrictStr | None = None
 
     @model_validator(mode="after")
     def _shape_matches_status(self) -> HookWorkerResponse:
@@ -33,7 +33,13 @@ class HookWorkerResponse(BaseModel):
             raise ValueError("successful hook response cannot include error")
         if not self.ok and not self.error:
             raise ValueError("failed hook response must include error")
+        if not self.ok and self.result is not None:
+            raise ValueError("failed hook response cannot include result")
         return self
+
+
+class FatalHookWorkerError(ValueError):
+    """Raised when a worker process cannot safely be reused."""
 
 
 class HookWorkerClient(Protocol):
@@ -95,8 +101,12 @@ class _UvHookWorkerGroup:
         worker = self._lease()
         try:
             return worker.request(payload)
+        except FatalHookWorkerError:
+            self._retire(worker)
+            raise
         finally:
-            self._idle.put(worker)
+            if worker in self._workers:
+                self._idle.put(worker)
 
     def close(self) -> None:
         """Close every worker in the group."""
@@ -110,6 +120,12 @@ class _UvHookWorkerGroup:
                     break
         for worker in workers:
             worker.close()
+
+    def _retire(self, worker: UvHookWorker) -> None:
+        with self._lock:
+            if worker in self._workers:
+                self._workers.remove(worker)
+        worker.close()
 
     def _lease(self) -> UvHookWorker:
         try:
@@ -154,24 +170,26 @@ class UvHookWorker:
             stdin = self._process.stdin
             stdout = self._process.stdout
             if stdin is None or stdout is None:
-                raise ValueError("hook worker was not started with pipes")
+                raise FatalHookWorkerError("hook worker was not started with pipes")
             try:
                 stdin.write(line)
                 stdin.flush()
             except BrokenPipeError as exc:
                 message = self._failure_message("hook worker exited before request")
-                raise ValueError(message) from exc
+                raise FatalHookWorkerError(message) from exc
             response_line = stdout.readline()
             if not response_line:
-                raise ValueError(self._failure_message("hook worker exited before response"))
+                raise FatalHookWorkerError(
+                    self._failure_message("hook worker exited before response")
+                )
             try:
                 response = HookWorkerResponse.model_validate_json(response_line)
             except ValueError as exc:
-                raise ValueError(
+                raise FatalHookWorkerError(
                     self._failure_message(f"malformed hook worker response: {response_line!r}")
                 ) from exc
             if response.id != request_id:
-                raise ValueError(
+                raise FatalHookWorkerError(
                     self._failure_message(
                         "hook worker response id mismatch: "
                         f"expected {request_id}, got {response.id}"

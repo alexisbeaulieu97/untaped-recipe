@@ -9,6 +9,7 @@ from typing import Annotated
 
 import yaml
 from cyclopts import Parameter
+from pydantic import ValidationError
 from untaped.api import (
     ColumnsOption,
     FormatOption,
@@ -17,7 +18,6 @@ from untaped.api import (
     echo,
     parse_kv_pairs,
     render_rows,
-    report_errors,
     ui_context,
 )
 from untaped.batch import BatchOutcome, batch_apply
@@ -28,7 +28,7 @@ from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import flush_changes
 from untaped_recipe.application.targets import resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
-from untaped_recipe.cli.common import library_root
+from untaped_recipe.cli.common import library_root, report_config_errors
 from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.recipe_commands import app as recipe_app
 from untaped_recipe.domain.plan import TargetPlan
@@ -105,7 +105,7 @@ def apply_command(
     columns: ColumnsOption = None,
 ) -> None:
     """Apply a recipe to target directories."""
-    with report_errors():
+    with report_config_errors():
         if stdin and not yes and not dry_run:
             raise ConfigError("apply requires --yes when stdin is not interactive")
         context = _apply_context(
@@ -143,7 +143,7 @@ def _apply_context(
     root = library_root()
     recipe_resolution = RecipeLibrary(root).resolve_detail(recipe)
     recipe_path = recipe_resolution.path
-    loaded = Recipe.model_validate(yaml.safe_load(recipe_path.read_text()) or {})
+    loaded = _load_recipe(recipe_path)
     targets = _targets(dirs, stdin=stdin)
     if not targets:
         raise ConfigError("at least one target directory is required (or use --stdin)")
@@ -171,6 +171,17 @@ def _apply_context(
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
     return ApplyContext(root=root, recipe=loaded, inputs=inputs, plans=plans)
+
+
+def _load_recipe(recipe_path: Path) -> Recipe:
+    try:
+        raw = yaml.safe_load(recipe_path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid recipe YAML: {exc}") from exc
+    try:
+        return Recipe.model_validate(raw)
+    except ValidationError as exc:
+        raise ConfigError(f"invalid recipe: {exc}") from exc
 
 
 def _render_diffs(plans: list[TargetPlan]) -> None:

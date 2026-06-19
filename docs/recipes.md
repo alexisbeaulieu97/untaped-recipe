@@ -42,6 +42,10 @@ Resolution order is package, single library file, then filesystem path.
 Single-file recipes are best when they use only templates, copy/remove steps,
 built-ins, or hooks already installed in the global hook library. Use a recipe
 project when the recipe needs local hook code or hook-specific dependencies.
+When applying a filesystem recipe project, pass the directory path
+(`apply ./recipes/add-config`) so recipe-local hooks are available; passing the
+recipe file itself (`apply ./recipes/add-config/recipe.yml`) treats it as a
+single-file recipe and does not load sibling hook metadata.
 Recipe projects declare local hooks in `pyproject.toml`:
 
 ```toml

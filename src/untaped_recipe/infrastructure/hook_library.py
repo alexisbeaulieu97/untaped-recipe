@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,10 +47,22 @@ class HookLibrary:
         if project_root.exists():
             raise ValueError(f"hook already exists: {project_name}")
 
+        self.hooks_dir.mkdir(parents=True, exist_ok=True)
+        temp_root = self.hooks_dir / f".{project_name}.tmp-{uuid.uuid4().hex}"
+        try:
+            self._scaffold(public_name, project_name, temp_root)
+            _lock_project(temp_root)
+            temp_root.rename(project_root)
+        except Exception:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            raise
+        return project_root
+
+    def _scaffold(self, public_name: str, project_name: str, project_root: Path) -> None:
+        """Write a hook project scaffold under ``project_root``."""
         module_leaf = public_name.rsplit(".", maxsplit=1)[-1]
         package = _package_name(project_name)
         module = f"{package}.hooks.{module_leaf}"
-        self.hooks_dir.mkdir(parents=True, exist_ok=True)
         (project_root / "src" / package / "hooks").mkdir(parents=True)
         (project_root / "src" / package / "__init__.py").write_text("")
         (project_root / "src" / package / "hooks" / "__init__.py").write_text("")
@@ -65,8 +78,6 @@ class HookLibrary:
             "[tool.untaped_recipe.hooks]\n"
             f'"{public_name}" = {{ module = "{module}" }}\n'
         )
-        _lock_project(project_root)
-        return project_root
 
     def add(self, source: Path, *, name: str | None = None) -> Path:
         """Copy a uv hook project into the library."""

@@ -141,7 +141,6 @@ def test_apply_stdin_requires_yes_and_resolves_workspace_repo_pipe(tmp_path: Pat
 def test_apply_stdin_without_yes_refuses_before_hooks_run(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "hooks").mkdir()
     marker = tmp_path / "hook-ran"
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
@@ -152,11 +151,16 @@ def test_apply_stdin_without_yes_refuses_before_hooks_run(tmp_path: Path) -> Non
         "    args:\n"
         f"      marker: {marker}\n"
     )
-    (recipe_dir / "hooks" / "touch.py").write_text(
-        "from pathlib import Path\n"
-        "def validate(*, inputs, target, args, helpers):\n"
-        "    Path(args['marker']).write_text('ran')\n"
-        "    return helpers.pass_()\n"
+    _write_hook_project(
+        recipe_dir,
+        public_name="touch",
+        module_name="touch",
+        code=(
+            "from pathlib import Path\n"
+            "def validate(*, inputs, target, args, helpers):\n"
+            "    Path(args['marker']).write_text('ran')\n"
+            "    return helpers.pass_()\n"
+        ),
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -170,6 +174,42 @@ def test_apply_stdin_without_yes_refuses_before_hooks_run(tmp_path: Path) -> Non
     assert refused.exit_code != 0
     assert "requires --yes" in refused.output
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("recipe_content", "expected"),
+    [
+        ("version: [\n", "invalid recipe YAML"),
+        ("version: 1\nsteps: []\n", "name"),
+    ],
+)
+def test_apply_recipe_load_errors_are_reported_cleanly(
+    tmp_path: Path,
+    recipe_content: str,
+    expected: str,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(recipe_content)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--yes"])
+
+    assert result.exit_code != 0
+    assert "error: " in result.output
+    assert expected in result.output
+    assert "Traceback" not in result.output
+
+
+def test_apply_missing_recipe_is_reported_cleanly(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", "missing", str(target), "--yes"])
+
+    assert result.exit_code != 0
+    assert "error: recipe not found: missing" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_apply_creates_one_backup_bundle_for_bulk_invocation(tmp_path: Path) -> None:

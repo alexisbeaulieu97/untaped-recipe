@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import untaped_recipe.application.run_bulk as run_bulk_module
+import untaped_recipe.infrastructure.hook_library as hook_library_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
 from untaped_recipe.builtins.hooks import yaml_edit
@@ -150,6 +151,24 @@ def test_hook_library_bare_names_do_not_resolve_cwd_projects(
 
     assert library.resolve("shared") == added
     assert library.resolve("./shared") == cwd_project
+
+
+def test_hook_library_init_cleans_up_partial_project_on_lock_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library = HookLibrary(tmp_path / "library")
+
+    def fail_lock(project_root: Path) -> None:
+        raise ValueError("failed to create hook project uv.lock")
+
+    monkeypatch.setattr(hook_library_module, "_lock_project", fail_lock)
+
+    with pytest.raises(ValueError, match=r"failed to create hook project uv\.lock"):
+        library.init("check")
+
+    assert not (tmp_path / "library" / "hooks" / "check").exists()
+    assert library.list() == []
 
 
 def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None = None) -> None:

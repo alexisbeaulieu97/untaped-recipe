@@ -164,6 +164,12 @@ def test_worker_response_validation_rejects_malformed_protocol_rows() -> None:
     with pytest.raises(ValidationError):
         HookWorkerResponse.model_validate({"id": "1", "ok": False})
 
+    with pytest.raises(ValidationError):
+        HookWorkerResponse.model_validate({"id": "1", "ok": False, "error": "bad", "result": ""})
+
+    with pytest.raises(ValidationError):
+        HookWorkerResponse.model_validate({"id": 1, "ok": True, "result": "value"})
+
 
 def test_uv_hook_worker_reports_missing_uv(
     tmp_path: Path,
@@ -314,6 +320,75 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
     assert results == [1, 1, 1]
     assert len(workers) == 1
     assert all(worker.closed for worker in workers)
+
+
+def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workers: list[object] = []
+
+    class FakeWorker:
+        def __init__(self, project_root: Path) -> None:
+            self.project_root = project_root
+            self.closed = False
+            self.worker_id = len(workers) + 1
+            workers.append(self)
+
+        def request(self, payload: dict[str, object]) -> int:
+            if self.worker_id == 1:
+                raise worker_client.FatalHookWorkerError("malformed hook worker response")
+            return self.worker_id
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
+    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+
+    with UvHookWorkerPool(max_workers_per_project=1) as pool:
+        with pytest.raises(ValueError, match="malformed hook worker response"):
+            pool.request(ref, {"kind": "transform"})
+        assert pool.request(ref, {"kind": "transform"}) == 2
+
+    assert len(workers) == 2
+    assert workers[0].closed
+    assert workers[1].closed
+
+
+def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workers: list[object] = []
+
+    class FakeWorker:
+        def __init__(self, project_root: Path) -> None:
+            self.project_root = project_root
+            self.closed = False
+            self.worker_id = len(workers) + 1
+            self.calls = 0
+            workers.append(self)
+
+        def request(self, payload: dict[str, object]) -> int:
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("validate hook failed")
+            return self.worker_id
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
+    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+
+    with UvHookWorkerPool(max_workers_per_project=1) as pool:
+        with pytest.raises(ValueError, match="validate hook failed"):
+            pool.request(ref, {"kind": "validate"})
+        assert pool.request(ref, {"kind": "validate"}) == 1
+
+    assert len(workers) == 1
+    assert workers[0].closed
 
 
 def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None:

@@ -32,14 +32,31 @@ class InlineWorkers:
         return response["result"]
 
 
-def _planner(tmp_path: Path) -> ApplyRecipe:
-    return ApplyRecipe(
+def _planner(tmp_path: Path):
+    planner = ApplyRecipe(
         HookExecutor(
             HookResolver(global_hooks=tmp_path / "global"),
             workers=InlineWorkers(),
             helpers=HookHelpers(),
         )
     )
+
+    def plan(
+        *,
+        recipe: Recipe,
+        recipe_dir: Path,
+        target: Path,
+        inputs: dict[str, object],
+    ):
+        return planner(
+            recipe=recipe,
+            recipe_dir=recipe_dir,
+            local_hook_project=recipe_dir,
+            target=target,
+            inputs=inputs,
+        )
+
+    return plan
 
 
 def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:

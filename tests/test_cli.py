@@ -360,6 +360,90 @@ def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> 
     assert not (second / "ansible.cfg").exists()
 
 
+def test_explicit_single_file_recipe_does_not_use_sibling_hook_project(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "name: single-file\n"
+        "steps:\n"
+        "  - type: transform\n"
+        "    file: local.yml\n"
+        "    hook: sibling\n"
+    )
+    _write_hook_project(
+        tmp_path,
+        public_name="sibling",
+        module_name="sibling",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return content + 'changed\\n'\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.yml").write_text("---\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code != 0
+    assert "hook not found: sibling" in result.output
+    assert (target / "local.yml").read_text() == "---\n"
+
+
+def test_external_hook_args_with_yaml_dates_cross_worker_as_strings(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "name: date-args\n"
+        "steps:\n"
+        "  - type: transform\n"
+        "    file: local.yml\n"
+        "    hook: stamp\n"
+        "    args:\n"
+        "      day: 2026-06-19\n"
+    )
+    _write_hook_project(
+        recipe_dir,
+        public_name="stamp",
+        module_name="stamp",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return content + 'day=' + args['day'] + '\\n'\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.yml").write_text("---\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(target), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "day=2026-06-19" in (target / "local.yml").read_text()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["hook", "show", "missing"],
+        ["recipe", "show", "missing"],
+        ["backup", "show", "latest"],
+    ],
+)
+def test_library_command_value_errors_are_reported_cleanly(args: list[str]) -> None:
+    result = CliInvoker().invoke(app, args)
+
+    assert result.exit_code != 0
+    assert "error: " in result.output
+    assert "Traceback" not in result.output
+
+
 def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text("version: 1\nname: demo\nsteps: []\n")

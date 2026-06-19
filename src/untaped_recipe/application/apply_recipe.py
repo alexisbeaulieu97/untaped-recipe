@@ -38,6 +38,7 @@ class ApplyRecipe:
         recipe_dir: Path,
         target: Path,
         inputs: dict[str, object],
+        local_hook_project: Path | None = None,
     ) -> TargetPlan:
         """Plan every step for one target."""
         if not target.is_dir():
@@ -52,12 +53,19 @@ class ApplyRecipe:
             elif isinstance(step, RemoveStep):
                 self._plan_remove(step, target, buffer)
             elif isinstance(step, TransformStep):
-                self._plan_transform(step, recipe_dir, target, inputs, buffer, warnings)
+                self._plan_transform(
+                    step,
+                    local_hook_project,
+                    target,
+                    inputs,
+                    buffer,
+                    warnings,
+                )
             elif isinstance(step, ValidateStep):
                 self._plan_validate(
                     step.hook,
                     step.args,
-                    recipe_dir,
+                    local_hook_project,
                     target,
                     inputs,
                     warnings,
@@ -76,14 +84,14 @@ class ApplyRecipe:
         self,
         hook: str,
         args: dict[str, object],
-        recipe_dir: Path,
+        local_hook_project: Path | None,
         target: Path,
         inputs: dict[str, object],
         warnings: list[str],
     ) -> None:
         verdict = self._hooks.validate(
             hook,
-            recipe_dir=recipe_dir,
+            local_hook_project=local_hook_project,
             target=target,
             inputs=inputs,
             args=args,
@@ -124,7 +132,7 @@ class ApplyRecipe:
     def _plan_transform(
         self,
         step: TransformStep,
-        recipe_dir: Path,
+        local_hook_project: Path | None,
         target: Path,
         inputs: dict[str, object],
         buffer: dict[Path, str | None],
@@ -146,7 +154,7 @@ class ApplyRecipe:
         buffer[step.file] = self._hooks.transform(
             step.hook,
             current,
-            recipe_dir=recipe_dir,
+            local_hook_project=local_hook_project,
             inputs=inputs,
             target=target,
             file=path,

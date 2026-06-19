@@ -23,7 +23,8 @@ plain directories.
   `remove` is destructive and requires confirmation or `--yes`.
 - `untaped-recipe hook init|list|show|add|remove|edit` manages uv hook
   project directories; `remove` is destructive and requires confirmation or
-  `--yes`.
+  `--yes`. `hook add` derives the library directory from the declared hook
+  namespace; `--name`, if passed, must match that namespace.
 
 ## Recipe Model
 
@@ -58,9 +59,12 @@ plain directories.
   `untaped-recipe hook init <name>` or
   `untaped-recipe hook init <namespace.hook>` to scaffold one.
 - Built-ins are direct engine imports and do not start uv workers. External
-  hooks run through pooled uv workers; hook stdout must not be used for data
-  because stdout is reserved for the worker protocol and `print()` is
-  redirected to stderr.
+  hooks run through pooled uv workers, up to the clamped `--parallel` value per
+  hook project; hook stdout must not be used for data because stdout is reserved
+  for the worker protocol and `print()` is redirected to stderr.
+- Hook projects use the scaffolded `src/` layout. Declared hook modules must
+  resolve to files under `src/`; use explicit paths like `./my-hook-project`
+  when managing a project in the current directory.
 
 ## Output And Agent Guidance
 

@@ -75,7 +75,6 @@ def test_hook_resolver_falls_back_to_builtins(tmp_path: Path) -> None:
     ref = HookResolver(global_hooks=tmp_path / "global").resolve("yaml_edit", recipe_dir)
 
     assert isinstance(ref, BuiltinHookRef)
-    assert ref.public_name == "yaml_edit"
 
 
 def test_hook_resolver_rejects_hook_paths_that_escape_recipe(tmp_path: Path) -> None:

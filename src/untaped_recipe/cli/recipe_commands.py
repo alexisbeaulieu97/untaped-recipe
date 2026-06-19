@@ -12,12 +12,11 @@ from untaped.api import (
     create_app,
     echo,
     render_rows,
-    report_errors,
     ui_context,
 )
 from untaped.batch import batch_apply
 
-from untaped_recipe.cli.common import edit_path, library_root
+from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 
 app = create_app(name="recipe", help="Manage reusable recipes.")
@@ -26,7 +25,7 @@ app = create_app(name="recipe", help="Manage reusable recipes.")
 @app.command(name="list")
 def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) -> None:
     """List recipes."""
-    with report_errors():
+    with report_config_errors():
         rows: list[dict[str, object]] = [
             {"name": entry.name, "kind": entry.kind, "path": str(entry.path)}
             for entry in RecipeLibrary(library_root()).list()
@@ -39,7 +38,7 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
 @app.command(name="show")
 def show_command(name: Annotated[str, Parameter(help="Recipe name or path.")], /) -> None:
     """Print a recipe file."""
-    with report_errors():
+    with report_config_errors():
         echo(RecipeLibrary(library_root()).resolve(name).read_text(), nl=False)
 
 
@@ -51,7 +50,7 @@ def add_command(
     name: Annotated[str | None, Parameter(name="--name", help="Library name.")] = None,
 ) -> None:
     """Copy a recipe into the library."""
-    with report_errors():
+    with report_config_errors():
         path = RecipeLibrary(library_root()).add(source, name=name)
         echo(str(path))
 
@@ -67,7 +66,7 @@ def remove_command(
     ] = False,
 ) -> None:
     """Remove a recipe from the library."""
-    with report_errors():
+    with report_config_errors():
         library = RecipeLibrary(library_root())
 
         def _remove(item: str) -> Path:
@@ -91,5 +90,5 @@ def remove_command(
 @app.command(name="edit")
 def edit_command(name: Annotated[str, Parameter(help="Recipe name or path.")], /) -> None:
     """Open a recipe in $VISUAL or $EDITOR."""
-    with report_errors():
+    with report_config_errors():
         edit_path(RecipeLibrary(library_root()).resolve(name))

@@ -141,14 +141,15 @@ def _apply_context(
     parallel: int,
 ) -> ApplyContext:
     root = library_root()
-    recipe_path = RecipeLibrary(root).resolve(recipe)
+    recipe_resolution = RecipeLibrary(root).resolve_detail(recipe)
+    recipe_path = recipe_resolution.path
     loaded = Recipe.model_validate(yaml.safe_load(recipe_path.read_text()) or {})
     targets = _targets(dirs, stdin=stdin)
     if not targets:
         raise ConfigError("at least one target directory is required (or use --stdin)")
     inputs = _input_values(raw_vars, vars_file)
     workers = clamp_parallel(max(parallel, 1), cap=32, policy="recipe planning cap")
-    with UvHookWorkerPool() as hook_workers:
+    with UvHookWorkerPool(max_workers_per_project=workers) as hook_workers:
         runner = RunBulkApply(
             ApplyRecipe(
                 HookExecutor(
@@ -162,6 +163,7 @@ def _apply_context(
             plans = runner.plan(
                 recipe=loaded,
                 recipe_dir=recipe_path.parent,
+                local_hook_project=recipe_resolution.local_hook_project,
                 targets=targets,
                 inputs=inputs,
                 parallel=workers,

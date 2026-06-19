@@ -57,7 +57,7 @@ def test_hook_library_crud_and_errors(tmp_path: Path) -> None:
     library = HookLibrary(tmp_path / "library")
 
     assert library.list() == []
-    hook = library.add(source, name="shared")
+    hook = library.add(source)
 
     assert hook == tmp_path / "library" / "hooks" / "shared"
     assert library.resolve("shared") == hook
@@ -68,6 +68,8 @@ def test_hook_library_crud_and_errors(tmp_path: Path) -> None:
     assert library.resolve_editable("shared").name == "shared.py"
     with pytest.raises(ValueError, match="already exists"):
         library.add(source, name="shared")
+    with pytest.raises(ValueError, match="must match declared hook namespace"):
+        library.add(source, name="wrong")
     with pytest.raises(ValueError, match="source not found"):
         library.add(tmp_path / "missing")
     (tmp_path / "not-a-dir.py").write_text("VALUE = 1\n")
@@ -81,12 +83,82 @@ def test_hook_library_crud_and_errors(tmp_path: Path) -> None:
         library.remove("shared")
 
 
-def _write_hook_project(root: Path, *, hook_name: str) -> None:
+def test_hook_library_add_rejects_empty_or_mixed_namespace_projects(tmp_path: Path) -> None:
+    library = HookLibrary(tmp_path / "library")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "empty-hooks"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.hooks]\n"
+    )
+    (empty / "uv.lock").write_text("version = 1\n")
+    mixed = tmp_path / "mixed"
+    _write_hook_project(mixed, hook_name="ansible.add_play_collections")
+    with (mixed / "pyproject.toml").open("a") as pyproject:
+        pyproject.write('"awx.update_job_template" = { module = "shared_hooks.hooks.awx" }\n')
+
+    with pytest.raises(ValueError, match="at least one hook"):
+        library.add(empty)
+    with pytest.raises(ValueError, match="same namespace"):
+        library.add(mixed)
+
+
+def test_hook_library_namespaced_add_show_remove_round_trip(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_hook_project(
+        source,
+        hook_name="ansible.add_play_collections",
+        module_name="add_play_collections",
+    )
+    library = HookLibrary(tmp_path / "library")
+
+    added = library.add(source)
+
+    assert added == tmp_path / "library" / "hooks" / "ansible"
+    assert library.resolve("ansible.add_play_collections") == added
+    assert library.resolve_editable("ansible.add_play_collections").name == (
+        "add_play_collections.py"
+    )
+    assert library.remove("ansible.add_play_collections") == added
+
+
+def test_hook_library_rejects_declared_modules_missing_from_src(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_hook_project(source, hook_name="shared")
+    (source / "src" / "shared_hooks" / "hooks" / "shared.py").unlink()
+    library = HookLibrary(tmp_path / "library")
+
+    with pytest.raises(ValueError, match="hook module file not found"):
+        library.add(source)
+
+
+def test_hook_library_bare_names_do_not_resolve_cwd_projects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_hook_project(source, hook_name="shared")
+    library = HookLibrary(tmp_path / "library")
+    added = library.add(source)
+    cwd_project = tmp_path / "shared"
+    _write_hook_project(cwd_project, hook_name="other")
+    monkeypatch.chdir(tmp_path)
+
+    assert library.resolve("shared") == added
+    assert library.resolve("./shared") == cwd_project
+
+
+def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None = None) -> None:
     package = "shared_hooks"
     (root / "src" / package / "hooks").mkdir(parents=True, exist_ok=True)
     (root / "src" / package / "__init__.py").write_text("")
     (root / "src" / package / "hooks" / "__init__.py").write_text("")
-    (root / "src" / package / "hooks" / f"{hook_name}.py").write_text(
+    module_leaf = module_name or hook_name.rsplit(".", maxsplit=1)[-1]
+    (root / "src" / package / "hooks" / f"{module_leaf}.py").write_text(
         "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
     )
     (root / "pyproject.toml").write_text(
@@ -96,7 +168,7 @@ def _write_hook_project(root: Path, *, hook_name: str) -> None:
         'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n"
-        f'"{hook_name}" = {{ module = "{package}.hooks.{hook_name}" }}\n'
+        f'"{hook_name}" = {{ module = "{package}.hooks.{module_leaf}" }}\n'
     )
     (root / "uv.lock").write_text("version = 1\n")
 
@@ -244,6 +316,7 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
     plans = runner.plan(
         recipe=recipe,
         recipe_dir=recipe_dir,
+        local_hook_project=None,
         targets=[good, missing],
         inputs={},
         parallel=2,

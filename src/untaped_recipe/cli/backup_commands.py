@@ -12,10 +12,9 @@ from untaped.api import (
     echo,
     emit,
     render_rows,
-    report_errors,
 )
 
-from untaped_recipe.cli.common import library_root
+from untaped_recipe.cli.common import library_root, report_config_errors
 from untaped_recipe.infrastructure.backup import BackupStore
 
 app = create_app(name="backup", help="Manage recipe backups.")
@@ -24,7 +23,7 @@ app = create_app(name="backup", help="Manage recipe backups.")
 @app.command(name="list")
 def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) -> None:
     """List backup bundles."""
-    with report_errors():
+    with report_config_errors():
         rows: list[dict[str, object]] = [
             {"id": bundle.id, "path": str(bundle.path)}
             for bundle in BackupStore(library_root() / "backups").list()
@@ -43,7 +42,7 @@ def show_command(
     columns: ColumnsOption = None,
 ) -> None:
     """Show backup metadata."""
-    with report_errors():
+    with report_config_errors():
         metadata = BackupStore(library_root() / "backups").metadata(backup_id)
         emit(metadata, fmt=fmt, columns=columns, kind="recipe.backup")
 
@@ -59,6 +58,6 @@ def restore_command(
     ] = False,
 ) -> None:
     """Restore a backup bundle."""
-    with report_errors():
+    with report_config_errors():
         BackupStore(library_root() / "backups").restore(backup_id, force=force)
         echo(f"restored {backup_id}", err=True)

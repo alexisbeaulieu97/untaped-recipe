@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from untaped_recipe import worker_protocol as protocol
 from untaped_recipe.application.ports import HookHelpersPort
 from untaped_recipe.domain.plan import Verdict
 from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver
@@ -29,14 +30,14 @@ class HookExecutor:
         hook: str,
         content: str,
         *,
-        recipe_dir: Path,
+        local_hook_project: Path | None,
         target: Path,
         file: Path,
         inputs: dict[str, object],
         args: dict[str, object],
     ) -> str:
         """Run a transform hook and return replacement content."""
-        ref = self._resolver.resolve(hook, recipe_dir)
+        ref = self._resolver.resolve(hook, local_hook_project)
         if isinstance(ref, BuiltinHookRef):
             transform = getattr(ref.module, "transform", None)
             if transform is None:
@@ -53,12 +54,12 @@ class HookExecutor:
             result = self._workers.request(
                 ref,
                 {
-                    "kind": "transform",
-                    "content": content,
-                    "inputs": inputs,
-                    "target": str(target),
-                    "file": str(file),
-                    "args": args,
+                    protocol.KIND: protocol.TRANSFORM,
+                    protocol.CONTENT: content,
+                    protocol.INPUTS: inputs,
+                    protocol.TARGET: str(target),
+                    protocol.FILE: str(file),
+                    protocol.ARGS: args,
                 },
             )
         if not isinstance(result, str):
@@ -69,13 +70,13 @@ class HookExecutor:
         self,
         hook: str,
         *,
-        recipe_dir: Path,
+        local_hook_project: Path | None,
         target: Path,
         inputs: dict[str, object],
         args: dict[str, object],
     ) -> Verdict:
         """Run a validate hook and coerce its verdict."""
-        ref = self._resolver.resolve(hook, recipe_dir)
+        ref = self._resolver.resolve(hook, local_hook_project)
         if isinstance(ref, BuiltinHookRef):
             validate = getattr(ref.module, "validate", None)
             if validate is None:
@@ -85,10 +86,10 @@ class HookExecutor:
             result = self._workers.request(
                 ref,
                 {
-                    "kind": "validate",
-                    "inputs": inputs,
-                    "target": str(target),
-                    "args": args,
+                    protocol.KIND: protocol.VALIDATE,
+                    protocol.INPUTS: inputs,
+                    protocol.TARGET: str(target),
+                    protocol.ARGS: args,
                 },
             )
         return _coerce_verdict(result)

@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from untaped_recipe.domain.hook_project import HookProjectMetadata
+from untaped_recipe.domain.hook_project import (
+    hook_module_file,
+    normalize_hook_name,
+    project_name_for_hook,
+    project_name_from_metadata,
+    read_hook_metadata,
+    validate_hook_modules,
+)
 from untaped_recipe.domain.paths import safe_library_name
 
 
@@ -34,8 +40,8 @@ class HookLibrary:
 
     def init(self, name: str) -> Path:
         """Scaffold a uv hook project in the global hook library."""
-        public_name = _public_hook_name(name)
-        project_name = _project_name_for(public_name)
+        public_name = normalize_hook_name(name)
+        project_name = project_name_for_hook(public_name)
         project_root = self.hooks_dir / project_name
         if project_root.exists():
             raise ValueError(f"hook already exists: {project_name}")
@@ -68,11 +74,17 @@ class HookLibrary:
             raise ValueError(f"hook source not found: {source}")
         if not source.is_dir():
             raise ValueError("hook source must be a uv hook project directory")
-        _metadata_for(source)
+        metadata = read_hook_metadata(source)
+        declared_name = project_name_from_metadata(metadata)
+        validate_hook_modules(source, metadata)
         if not (source / "uv.lock").is_file():
             raise ValueError(f"hook project is missing uv.lock: {source}")
         self.hooks_dir.mkdir(parents=True, exist_ok=True)
-        hook_name = safe_library_name(name or source.name)
+        hook_name = safe_library_name(name or declared_name)
+        if hook_name != declared_name:
+            raise ValueError(
+                f"hook library name must match declared hook namespace: {declared_name}"
+            )
         dest = self.hooks_dir / hook_name
         if dest.exists():
             raise ValueError(f"hook already exists: {hook_name}")
@@ -82,9 +94,13 @@ class HookLibrary:
     def resolve(self, name: str) -> Path:
         """Resolve a reusable hook project name or explicit project path."""
         explicit = Path(name).expanduser()
-        if explicit.is_dir() and (explicit / "pyproject.toml").is_file():
-            return explicit
-        hook_name = safe_library_name(_project_name_for(name), field="hook")
+        if (
+            _is_explicit_path(name)
+            and explicit.is_dir()
+            and (explicit / "pyproject.toml").is_file()
+        ):
+            return explicit.resolve()
+        hook_name = _library_project_name(name)
         path = self.hooks_dir / hook_name
         if path.is_dir() and (path / "pyproject.toml").is_file():
             return path
@@ -93,20 +109,20 @@ class HookLibrary:
     def resolve_editable(self, name: str) -> Path:
         """Resolve the best editable source file for a hook project or hook name."""
         project = self.resolve(name)
-        metadata = _metadata_for(project)
+        metadata = read_hook_metadata(project)
         definition = metadata.hooks.get(name)
         if definition is None:
             project_name = project.name
             definition = metadata.hooks.get(project_name)
         if definition is not None:
-            module_path = _module_file(project, definition.module)
+            module_path = hook_module_file(project, definition.module)
             if module_path.is_file():
                 return module_path
         return project / "pyproject.toml"
 
     def remove(self, name: str) -> Path:
         """Remove a reusable hook project."""
-        hook_name = safe_library_name(_project_name_for(name), field="hook")
+        hook_name = _library_project_name(name)
         path = self.hooks_dir / hook_name
         if not path.is_dir():
             raise ValueError(f"hook not found: {name}")
@@ -121,7 +137,7 @@ class HookLibrary:
         for path in sorted(self.hooks_dir.iterdir(), key=lambda p: p.name):
             if not path.is_dir() or not (path / "pyproject.toml").is_file():
                 continue
-            metadata = _metadata_for(path)
+            metadata = read_hook_metadata(path)
             entries.append(
                 HookEntry(
                     name=path.name,
@@ -132,32 +148,20 @@ class HookLibrary:
         return entries
 
 
-def _metadata_for(project_root: Path) -> HookProjectMetadata:
-    pyproject = project_root / "pyproject.toml"
-    if not pyproject.is_file():
-        raise ValueError(f"hook project must contain pyproject.toml: {project_root}")
+def _is_explicit_path(name: str) -> bool:
+    return name.startswith(("/", "./", "../", "~")) or "/" in name
+
+
+def _library_project_name(name: str) -> str:
     try:
-        data = tomllib.loads(pyproject.read_text())
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"invalid hook project pyproject: {pyproject}") from exc
-    return HookProjectMetadata.from_pyproject(data)
-
-
-def _public_hook_name(name: str) -> str:
-    metadata = HookProjectMetadata(hooks={name: {"module": "valid.module"}})
-    return next(iter(metadata.hooks))
-
-
-def _project_name_for(name: str) -> str:
-    return name.split(".", maxsplit=1)[0]
+        project_name = project_name_for_hook(name)
+    except ValueError as exc:
+        raise ValueError("hook must be a safe library name") from exc
+    return safe_library_name(project_name, field="hook")
 
 
 def _package_name(project_name: str) -> str:
     return "untaped_recipe_hooks_" + project_name.replace("-", "_").replace(".", "_")
-
-
-def _module_file(project_root: Path, module: str) -> Path:
-    return project_root / "src" / Path(*module.split(".")).with_suffix(".py")
 
 
 def _lock_project(project_root: Path) -> None:

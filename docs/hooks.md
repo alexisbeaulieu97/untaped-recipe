@@ -94,14 +94,16 @@ planning for the affected target.
 ## Execution Model
 
 External hook projects are launched with locked uv execution. During one
-`apply`, the engine keeps one worker process per hook project and serializes
-requests to that worker. Parallel target planning can reuse the same worker
-safely.
+`apply`, the engine keeps a small worker pool per hook project. The pool can
+start up to the clamped `--parallel` value for that project, and each individual
+worker serializes its own requests safely.
 
 The worker protocol is newline-delimited JSON over stdin/stdout. Worker stdout
 is protocol-only. Hook `print()` output is redirected to stderr, and stderr is
-used as diagnostics when a worker request fails. Engine-side Pydantic models
-validate worker responses before any file changes are accepted into a plan.
+used as bounded diagnostics when a worker request fails. Successful request
+diagnostics are discarded so chatty hooks do not grow memory during bulk runs.
+Engine-side Pydantic models validate worker responses before any file changes
+are accepted into a plan.
 
 Hook project code is trusted local code, but normal file mutation should still
 go through returned transform content so preview, backups, and transactional
@@ -190,6 +192,15 @@ untaped-recipe hook remove set_owner --yes
 `hook add` copies project directories, not bare `.py` files. `hook show` and
 `hook edit` open the module file when the supplied name matches a declared
 hook; otherwise they show or edit `pyproject.toml`.
+
+When adding a project, the library directory is derived from the declared hook
+names. A project declaring `set_owner` installs under `hooks/set_owner/`; a
+project declaring `ansible.add_play_collections` installs under
+`hooks/ansible/`. If `--name` is passed, it must match that derived name.
+Declared hook modules must resolve to files under the project's `src/`
+directory, matching the scaffolded layout. Use `./my-hook-project` or an
+absolute path when adding/showing/editing a project from the current directory;
+bare names resolve through the hook library.
 
 ## Built-In YAML Hook
 

@@ -123,13 +123,14 @@ External hook projects are uv-managed directories with `pyproject.toml`,
 External hooks run out-of-process through NDJSON stdin/stdout workers. Worker
 stdout is protocol-only; hook `print()` output is redirected to stderr. The
 worker uses stdlib wire parsing, and the engine validates worker responses
-before using them. One worker is pooled per hook project per apply invocation
-and requests are serialized per worker.
+before using them. A bounded worker pool is created per hook project per apply
+invocation, up to the clamped `--parallel` value; each worker serializes its own
+requests.
 
 Built-ins use the direct registry and run in-process. Keep built-ins reserved
 for engine-owned code such as `yaml_edit`.
 
-Transform hooks expose:
+External transform hooks expose:
 
 ```python
 def transform(
@@ -139,11 +140,11 @@ def transform(
     target: Path,
     file: Path,
     args: dict,
-    helpers: HookHelpers,
+    helpers: object,
 ) -> str: ...
 ```
 
-Validate hooks expose:
+External validate hooks expose:
 
 ```python
 def validate(
@@ -151,13 +152,15 @@ def validate(
     inputs: dict,
     target: Path,
     args: dict,
-    helpers: HookHelpers,
-) -> Verdict: ...
+    helpers: object,
+) -> dict | None | str: ...
 ```
 
-Validate hooks may return a `Verdict`, a compatible dict, `None` for pass, or
-a string for fail. Prefer explicit `helpers.pass_()`, `helpers.warn()`, and
-`helpers.fail()` in shipped examples.
+Validate hooks may return a compatible verdict dict, `None` for pass, a string
+for fail, or a `Verdict`-like object with `model_dump()` if the hook project
+chooses to depend on `untaped-recipe`. Prefer explicit `helpers.pass_()`,
+`helpers.warn()`, and `helpers.fail()` in shipped examples. Built-in hooks may
+use the engine's concrete `HookHelpers` and `Verdict` types directly.
 
 ## Development Workflow
 

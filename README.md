@@ -85,9 +85,13 @@ untaped-recipe hook init|list|show|add|remove|edit
 untaped-recipe backup list|show|restore
 ```
 
-`hook add` copies uv hook project directories, not bare `.py` files. `recipe
-remove` and `hook remove` require confirmation or `--yes`. `backup show` and
-`backup restore` accept full ids, unambiguous prefixes, or `latest`.
+`hook add` copies uv hook project directories, not bare `.py` files, and the
+library directory is derived from the hook metadata namespace. Declared hook
+modules must live under the project's `src/` layout. Use explicit paths such as
+`./my-hook-project` when referring to a project in the current directory; bare
+hook names resolve through the library. `recipe remove` and `hook remove`
+require confirmation or `--yes`. `backup show` and `backup restore` accept full
+ids, unambiguous prefixes, or `latest`.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

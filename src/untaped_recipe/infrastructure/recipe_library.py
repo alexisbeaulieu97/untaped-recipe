@@ -21,6 +21,21 @@ class RecipeEntry:
     kind: str
 
 
+@dataclass(frozen=True)
+class RecipeResolution:
+    """Resolved recipe path plus layout information."""
+
+    path: Path
+    kind: str
+
+    @property
+    def local_hook_project(self) -> Path | None:
+        """Return the recipe project root when the recipe can contain local hooks."""
+        if self.kind == "package":
+            return self.path.parent
+        return None
+
+
 class RecipeLibrary:
     """Manage local recipe packages."""
 
@@ -34,6 +49,10 @@ class RecipeLibrary:
 
     def resolve(self, recipe: str) -> Path:
         """Resolve a recipe name or path."""
+        return self.resolve_detail(recipe).path
+
+    def resolve_detail(self, recipe: str) -> RecipeResolution:
+        """Resolve a recipe name or path with layout metadata."""
         try:
             recipe_name = safe_library_name(recipe, field="recipe")
         except ValueError:
@@ -41,15 +60,15 @@ class RecipeLibrary:
         if recipe_name:
             package = self.recipes_dir / recipe_name / "recipe.yml"
             if package.is_file():
-                return package
+                return RecipeResolution(path=package, kind="package")
             single = self.recipes_dir / f"{recipe_name}.yml"
             if single.is_file():
-                return single
+                return RecipeResolution(path=single, kind="file")
         path = Path(recipe).expanduser()
         if path.is_file():
-            return path
+            return RecipeResolution(path=path, kind="file")
         if path.is_dir() and (path / "recipe.yml").is_file():
-            return path / "recipe.yml"
+            return RecipeResolution(path=path / "recipe.yml", kind="package")
         raise ValueError(f"recipe not found: {recipe}")
 
     def add(self, source: Path, *, name: str | None = None) -> Path:

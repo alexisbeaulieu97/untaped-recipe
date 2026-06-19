@@ -13,6 +13,7 @@ from typing import Protocol, TextIO
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from untaped_recipe import hook_worker
+from untaped_recipe import worker_protocol as protocol
 from untaped_recipe.infrastructure.hook_resolver import UvHookRef
 
 
@@ -43,10 +44,11 @@ class HookWorkerClient(Protocol):
 
 
 class UvHookWorkerPool:
-    """One uv worker process per hook project."""
+    """Pool uv worker processes by hook project."""
 
-    def __init__(self) -> None:
-        self._workers: dict[Path, UvHookWorker] = {}
+    def __init__(self, *, max_workers_per_project: int = 1) -> None:
+        self._max_workers_per_project = max(max_workers_per_project, 1)
+        self._groups: dict[Path, _UvHookWorkerGroup] = {}
         self._lock = Lock()
 
     def __enter__(self) -> UvHookWorkerPool:
@@ -57,25 +59,69 @@ class UvHookWorkerPool:
 
     def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
         """Send one serialized request to the hook project's worker."""
-        worker = self._worker_for(ref.project_root)
-        return worker.request({**payload, "module": ref.module})
+        group = self._group_for(ref.project_root)
+        return group.request({**payload, protocol.MODULE: ref.module})
 
     def close(self) -> None:
         """Stop all worker processes."""
         with self._lock:
-            workers = tuple(self._workers.values())
+            groups = tuple(self._groups.values())
+            self._groups.clear()
+        for group in groups:
+            group.close()
+
+    def _group_for(self, project_root: Path) -> _UvHookWorkerGroup:
+        resolved = project_root.resolve()
+        with self._lock:
+            group = self._groups.get(resolved)
+            if group is None:
+                group = _UvHookWorkerGroup(resolved, self._max_workers_per_project)
+                self._groups[resolved] = group
+            return group
+
+
+class _UvHookWorkerGroup:
+    """Lazy bounded worker group for one hook project."""
+
+    def __init__(self, project_root: Path, max_workers: int) -> None:
+        self._project_root = project_root
+        self._max_workers = max(max_workers, 1)
+        self._workers: list[UvHookWorker] = []
+        self._idle: Queue[UvHookWorker] = Queue()
+        self._lock = Lock()
+
+    def request(self, payload: dict[str, object]) -> object:
+        """Lease one serialized worker for a request."""
+        worker = self._lease()
+        try:
+            return worker.request(payload)
+        finally:
+            self._idle.put(worker)
+
+    def close(self) -> None:
+        """Close every worker in the group."""
+        with self._lock:
+            workers = tuple(self._workers)
             self._workers.clear()
+            while True:
+                try:
+                    self._idle.get_nowait()
+                except Empty:
+                    break
         for worker in workers:
             worker.close()
 
-    def _worker_for(self, project_root: Path) -> UvHookWorker:
-        resolved = project_root.resolve()
+    def _lease(self) -> UvHookWorker:
+        try:
+            return self._idle.get_nowait()
+        except Empty:
+            pass
         with self._lock:
-            worker = self._workers.get(resolved)
-            if worker is None:
-                worker = UvHookWorker(resolved)
-                self._workers[resolved] = worker
-            return worker
+            if len(self._workers) < self._max_workers:
+                worker = UvHookWorker(self._project_root)
+                self._workers.append(worker)
+                return worker
+        return self._idle.get()
 
 
 class UvHookWorker:
@@ -100,9 +146,9 @@ class UvHookWorker:
         with self._lock:
             self._next_id += 1
             request_id = str(self._next_id)
-            request = {"id": request_id, **payload}
+            request = {protocol.ID: request_id, **payload}
             try:
-                line = json.dumps(request) + "\n"
+                line = json.dumps(request, default=str) + "\n"
             except TypeError as exc:
                 raise ValueError(f"hook request is not JSON serializable: {exc}") from exc
             stdin = self._process.stdin
@@ -133,6 +179,7 @@ class UvHookWorker:
                 )
             if not response.ok:
                 raise ValueError(self._failure_message(response.error or "hook worker failed"))
+            self._discard_diagnostics()
             return response.result
 
     def close(self) -> None:
@@ -186,11 +233,19 @@ class UvHookWorker:
             return f"{message}\n{diagnostics}"
         return message
 
+    def _discard_diagnostics(self) -> None:
+        self._drain_diagnostics()
+
     def _drain_diagnostics(self) -> str:
         lines: list[str] = []
+        size = 0
         while True:
             try:
-                lines.append(self._stderr.get_nowait())
+                line = self._stderr.get_nowait()
+                lines.append(line)
+                size += len(line)
+                while size > 4000 and lines:
+                    size -= len(lines.pop(0))
             except Empty:
                 break
         return "".join(lines).strip()

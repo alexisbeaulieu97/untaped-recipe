@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.infrastructure.backup import BackupStore
 from untaped_recipe.infrastructure.hook_library import HookLibrary
@@ -148,3 +149,78 @@ def test_backup_store_records_and_restores_touched_files(tmp_path: Path) -> None
         store.restore(bundle.id)
     store.restore("latest", force=True)
     assert existing.read_text() == "before\n"
+
+
+def test_backup_restore_rejects_symlink_escape(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    outside = tmp_path / "outside"
+    target.mkdir()
+    outside.mkdir()
+    (target / "link").symlink_to(outside, target_is_directory=True)
+    escaped = outside / "config.txt"
+    escaped.write_text("after\n")
+    store = BackupStore(tmp_path / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("link/config.txt"),
+                before="before\n",
+                after="after\n",
+            )
+        ],
+    )
+
+    with pytest.raises(Exception, match="symlink"):
+        store.restore(bundle.id)
+
+    assert escaped.read_text() == "after\n"
+
+
+def test_backup_restore_rolls_back_prior_files_on_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    first = target / "one.txt"
+    second = target / "two.txt"
+    first.write_text("one-before\n")
+    second.write_text("two-before\n")
+    store = BackupStore(tmp_path / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("one.txt"),
+                before="one-before\n",
+                after="one-after\n",
+            ),
+            FileChange(
+                target=target,
+                relative_path=Path("two.txt"),
+                before="two-before\n",
+                after="two-after\n",
+            ),
+        ],
+    )
+    first.write_text("one-after\n")
+    second.write_text("two-after\n")
+    original_replace = file_writer_module.os.replace
+
+    def fail_second_replace(source: Path, dest: Path) -> None:
+        if Path(dest).name == "two.txt":
+            raise OSError("disk full")
+        original_replace(source, dest)
+
+    monkeypatch.setattr(file_writer_module.os, "replace", fail_second_replace)
+
+    with pytest.raises(Exception, match="disk full"):
+        store.restore(bundle.id)
+
+    assert first.read_text() == "one-after\n"
+    assert second.read_text() == "two-after\n"

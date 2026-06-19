@@ -97,6 +97,10 @@ External hook projects are launched with locked uv execution. During one
 `apply`, the engine keeps a small worker pool per hook project. The pool can
 start up to the clamped `--parallel` value for that project, and each individual
 worker serializes its own requests safely.
+Each hook request has a timeout controlled by `recipe.hook_timeout_seconds`
+or `apply --hook-timeout`; the default is 60 seconds and `0` disables the
+timeout. Timed-out workers are killed, retired from the pool, and reported as
+planning failures for the affected targets.
 
 The worker protocol is newline-delimited JSON over stdin/stdout. Worker stdout
 is protocol-only. Hook `print()` output is redirected to stderr, and stderr is

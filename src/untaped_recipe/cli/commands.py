@@ -28,7 +28,7 @@ from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import flush_changes
 from untaped_recipe.application.targets import resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
-from untaped_recipe.cli.common import library_root, report_config_errors
+from untaped_recipe.cli.common import library_root, report_config_errors, settings
 from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.recipe_commands import app as recipe_app
 from untaped_recipe.domain.plan import TargetPlan
@@ -89,6 +89,14 @@ def apply_command(
         bool,
         Parameter(name="--dry-run", negative="", help="Preview without writing."),
     ] = False,
+    check: Annotated[
+        bool,
+        Parameter(
+            name="--check",
+            negative="",
+            help="Preview and exit non-zero when changes would be made.",
+        ),
+    ] = False,
     yes: Annotated[
         bool,
         Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
@@ -101,12 +109,16 @@ def apply_command(
         int,
         Parameter(name=["--parallel", "-j"], help="Target planning workers."),
     ] = 1,
+    hook_timeout: Annotated[
+        float | None,
+        Parameter(name="--hook-timeout", help="Per-hook timeout in seconds; 0 disables."),
+    ] = None,
     fmt: FormatOption = "table",
     columns: ColumnsOption = None,
 ) -> None:
     """Apply a recipe to target directories."""
     with report_config_errors():
-        if stdin and not yes and not dry_run:
+        if stdin and not yes and not dry_run and not check:
             raise ConfigError("apply requires --yes when stdin is not interactive")
         context = _apply_context(
             recipe,
@@ -115,19 +127,22 @@ def apply_command(
             raw_vars=var or [],
             vars_file=vars_file,
             parallel=parallel,
+            hook_timeout_seconds=_hook_timeout_seconds(hook_timeout),
         )
         _render_diffs(context.plans)
         outcome = _execute_plans(
             context,
-            backup=backup,
-            yes=yes,
-            dry_run=dry_run,
+            backup=backup and not check,
+            yes=yes or check,
+            dry_run=dry_run or check,
         )
-        rows = _outcome_rows(context.plans, outcome, dry_run=dry_run)
+        rows = _outcome_rows(context.plans, outcome, preview_status=_preview_status(dry_run, check))
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.outcome")
         if rendered:
             echo(rendered)
-        if any(plan.status == "error" for plan in context.plans) or outcome.outcome.any_failed:
+        has_errors = any(plan.status == "error" for plan in context.plans)
+        has_drift = check and any(plan.status != "error" and plan.changes for plan in context.plans)
+        if has_errors or outcome.outcome.any_failed or has_drift:
             raise SystemExit(1)
 
 
@@ -139,6 +154,7 @@ def _apply_context(
     raw_vars: list[str],
     vars_file: Path | None,
     parallel: int,
+    hook_timeout_seconds: float,
 ) -> ApplyContext:
     root = library_root()
     recipe_resolution = RecipeLibrary(root).resolve_detail(recipe)
@@ -149,7 +165,10 @@ def _apply_context(
         raise ConfigError("at least one target directory is required (or use --stdin)")
     inputs = _input_values(raw_vars, vars_file)
     workers = clamp_parallel(max(parallel, 1), cap=32, policy="recipe planning cap")
-    with UvHookWorkerPool(max_workers_per_project=workers) as hook_workers:
+    with UvHookWorkerPool(
+        max_workers_per_project=workers,
+        hook_timeout_seconds=hook_timeout_seconds,
+    ) as hook_workers:
         runner = RunBulkApply(
             ApplyRecipe(
                 HookExecutor(
@@ -247,11 +266,13 @@ def _outcome_rows(
     plans: list[TargetPlan],
     execution: ApplyExecution,
     *,
-    dry_run: bool,
+    preview_status: str | None,
 ) -> list[dict[str, object]]:
     rows = [_row(plan) for plan in plans]
-    if dry_run:
-        return [{**row, "status": "dry-run"} if row["status"] == "planned" else row for row in rows]
+    if preview_status is not None:
+        return [
+            {**row, "status": preview_status} if row["status"] == "planned" else row for row in rows
+        ]
     if not execution.outcome.results and not execution.failed:
         return rows
     rendered: list[dict[str, object]] = []
@@ -293,6 +314,21 @@ def _input_values(raw_vars: list[str], vars_file: Path | None) -> dict[str, obje
         values.update(loaded)
     values.update(parse_kv_pairs(raw_vars, flag="--var"))
     return values
+
+
+def _hook_timeout_seconds(override: float | None) -> float:
+    timeout = settings().hook_timeout_seconds if override is None else override
+    if timeout < 0:
+        raise ConfigError("--hook-timeout must be greater than or equal to 0")
+    return timeout
+
+
+def _preview_status(dry_run: bool, check: bool) -> str | None:
+    if check:
+        return "check"
+    if dry_run:
+        return "dry-run"
+    return None
 
 
 def _row(plan: TargetPlan) -> dict[str, object]:

@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
+import yaml
 from cyclopts import Parameter
+from pydantic import ValidationError
 from untaped.api import (
     ColumnsOption,
     FormatOption,
@@ -17,6 +19,9 @@ from untaped.api import (
 from untaped.batch import batch_apply
 
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
+from untaped_recipe.domain.paths import confined_path
+from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
+from untaped_recipe.infrastructure.hook_resolver import HookResolver
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 
 app = create_app(name="recipe", help="Manage reusable recipes.")
@@ -53,6 +58,26 @@ def add_command(
     with report_config_errors():
         path = RecipeLibrary(library_root()).add(source, name=name)
         echo(str(path))
+
+
+@app.command(name="check")
+def check_command(
+    name: Annotated[str, Parameter(help="Recipe name or path.")],
+    /,
+    *,
+    fmt: FormatOption = "table",
+    columns: ColumnsOption = None,
+) -> None:
+    """Validate a recipe package without target directories or hook execution."""
+    with report_config_errors():
+        root = library_root()
+        resolution = RecipeLibrary(root).resolve_detail(name)
+        row = _check_recipe(root, resolution.path, resolution.local_hook_project)
+        rendered = render_rows([row], fmt=fmt, columns=columns, kind="recipe.check")
+        if rendered:
+            echo(rendered)
+        if row["status"] == "error":
+            raise SystemExit(1)
 
 
 @app.command(name="remove")
@@ -92,3 +117,59 @@ def edit_command(name: Annotated[str, Parameter(help="Recipe name or path.")], /
     """Open a recipe in $VISUAL or $EDITOR."""
     with report_config_errors():
         edit_path(RecipeLibrary(library_root()).resolve(name))
+
+
+def _check_recipe(
+    root: Path,
+    recipe_path: Path,
+    local_hook_project: Path | None,
+) -> dict[str, object]:
+    recipe_name = recipe_path.stem
+    try:
+        recipe = _load_recipe(recipe_path)
+        recipe_name = recipe.name
+        _check_assets(recipe, recipe_path.parent)
+        _check_hooks(recipe, root, local_hook_project)
+    except (ValueError, OSError, yaml.YAMLError, ValidationError) as exc:
+        return {
+            "recipe": recipe_name,
+            "status": "error",
+            "path": str(recipe_path),
+            "error": str(exc),
+        }
+    return {
+        "recipe": recipe_name,
+        "status": "ok",
+        "path": str(recipe_path),
+        "error": "",
+    }
+
+
+def _load_recipe(path: Path) -> Recipe:
+    try:
+        raw = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid recipe YAML: {exc}") from exc
+    try:
+        return Recipe.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"invalid recipe: {exc}") from exc
+
+
+def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:
+    for step in recipe.steps:
+        if isinstance(step, TemplateStep):
+            source = confined_path(recipe_dir, step.template, field="template")
+            if not source.is_file():
+                raise ValueError(f"template not found: {step.template}")
+        elif isinstance(step, CopyStep):
+            source = confined_path(recipe_dir, step.source, field="source")
+            if not source.is_file():
+                raise ValueError(f"copy source not found: {step.source}")
+
+
+def _check_hooks(recipe: Recipe, root: Path, local_hook_project: Path | None) -> None:
+    resolver = HookResolver(global_hooks=root / "hooks")
+    for step in recipe.steps:
+        if isinstance(step, TransformStep | ValidateStep):
+            resolver.resolve(step.hook, local_hook_project)

@@ -21,6 +21,8 @@ untaped-recipe config set library_root ~/.untaped/untaped-recipes
 ```
 
 The setting is stored in the shared untaped config under the `recipe` section.
+External hook requests time out after `hook_timeout_seconds` seconds, default
+`60`; set it to `0` to disable the timeout for long-running trusted hooks.
 
 ## Ways To Define Recipes And Hooks
 
@@ -59,12 +61,15 @@ untaped-recipe apply add-config ./service-a ./service-b --var service=api
 untaped-recipe apply ./recipes/add-config/recipe.yml ./service-a --yes
 untaped-recipe apply add-config --stdin --yes --format json
 untaped-recipe apply add-config ./service-a --dry-run
+untaped-recipe apply add-config ./service-a --check
 ```
 
 `apply` plans every target first, prints unified diffs to stderr, then asks for
 confirmation unless `--yes` is passed. Backups are created by default before
 writing and can be restored later. Target writes are transactional: if a target
 cannot be written safely, that target is rolled back and reported as failed.
+Use `--check` for CI or compliance checks: it writes nothing, creates no
+backups, and exits non-zero when any target would change.
 
 Recipes can list known candidate files explicitly for `transform` and `remove`
 steps. `transform.files` and `remove.files` are expanded into ordinary
@@ -80,7 +85,7 @@ records it uses `Path(record.path) / record.repo`.
 ## Library Commands
 
 ```text
-untaped-recipe recipe list|show|add|remove|edit
+untaped-recipe recipe list|show|add|check|remove|edit
 untaped-recipe hook init|list|show|add|remove|edit
 untaped-recipe backup list|show|restore
 ```
@@ -91,7 +96,8 @@ modules must live under the project's `src/` layout. Use explicit paths such as
 `./my-hook-project` when referring to a project in the current directory; bare
 hook names resolve through the library. `recipe remove` and `hook remove`
 require confirmation or `--yes`. `backup show` and `backup restore` accept full
-ids, unambiguous prefixes, or `latest`.
+ids, unambiguous prefixes, or `latest`; restore uses the same transactional
+write path and symlink confinement as apply.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

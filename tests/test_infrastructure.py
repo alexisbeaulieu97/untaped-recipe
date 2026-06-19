@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import untaped_recipe.application.run_bulk as run_bulk_module
+import untaped_recipe.infrastructure.file_writer as file_writer_module
 import untaped_recipe.infrastructure.hook_library as hook_library_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
@@ -361,6 +361,51 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
     assert not removable.exists()
 
 
+def test_flush_changes_reports_rollback_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "one.txt"
+    second = tmp_path / "two.txt"
+    first.write_text("one-before\n")
+    second.write_text("two-before\n")
+    original_replace = file_writer_module.os.replace
+
+    def fail_second_write_and_first_rollback(source: Path, dest: Path) -> None:
+        source_path = Path(source)
+        dest_path = Path(dest)
+        if ".rollback." in source_path.name:
+            raise OSError("rollback denied")
+        if dest_path.name == "two.txt":
+            raise OSError("write failed")
+        original_replace(source, dest)
+
+    monkeypatch.setattr(file_writer_module.os, "replace", fail_second_write_and_first_rollback)
+
+    with pytest.raises(ApplyWriteError) as excinfo:
+        flush_changes(
+            (
+                FileChange(
+                    target=tmp_path,
+                    relative_path=Path("one.txt"),
+                    before="one-before\n",
+                    after="one-after\n",
+                ),
+                FileChange(
+                    target=tmp_path,
+                    relative_path=Path("two.txt"),
+                    before="two-before\n",
+                    after="two-after\n",
+                ),
+            )
+        )
+
+    message = str(excinfo.value)
+    assert "write failed" in message
+    assert "rollback incomplete" in message
+    assert "rollback denied" in message
+
+
 def test_flush_changes_rejects_stale_files_without_overwriting(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
@@ -404,7 +449,7 @@ def test_flush_changes_rolls_back_target_when_write_fails(
             after="new second\n",
         ),
     )
-    original_replace = run_bulk_module.os.replace
+    original_replace = file_writer_module.os.replace
     calls = 0
 
     def flaky_replace(src: Path, dst: Path) -> None:
@@ -414,7 +459,7 @@ def test_flush_changes_rolls_back_target_when_write_fails(
             raise OSError("disk full")
         original_replace(src, dst)
 
-    monkeypatch.setattr(run_bulk_module.os, "replace", flaky_replace)
+    monkeypatch.setattr(file_writer_module.os, "replace", flaky_replace)
 
     with pytest.raises(ApplyWriteError, match="disk full"):
         flush_changes(changes)
@@ -434,7 +479,7 @@ def test_flush_changes_stages_replacements_next_to_destination(
         before=None,
         after="new\n",
     )
-    original_replace = run_bulk_module.os.replace
+    original_replace = file_writer_module.os.replace
     observed: list[tuple[Path, Path]] = []
 
     def replace_requires_same_parent(src: Path, dst: Path) -> None:
@@ -445,7 +490,7 @@ def test_flush_changes_stages_replacements_next_to_destination(
             raise OSError(errno.EXDEV, "Invalid cross-device link")
         original_replace(source, destination)
 
-    monkeypatch.setattr(run_bulk_module.os, "replace", replace_requires_same_parent)
+    monkeypatch.setattr(file_writer_module.os, "replace", replace_requires_same_parent)
 
     flush_changes((change,))
 
@@ -488,7 +533,7 @@ def test_flush_changes_removes_created_directories_after_write_failure(
     def fail_replace(src: Path, dst: Path) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(run_bulk_module.os, "replace", fail_replace)
+    monkeypatch.setattr(file_writer_module.os, "replace", fail_replace)
 
     with pytest.raises(ApplyWriteError, match="disk full"):
         flush_changes((change,))

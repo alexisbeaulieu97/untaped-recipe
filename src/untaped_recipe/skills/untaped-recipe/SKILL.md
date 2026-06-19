@@ -21,16 +21,25 @@ plain directories.
   `restore` accept full ids, unambiguous prefixes, or `latest`.
 - `untaped-recipe recipe list|show|add|remove|edit` manages local recipes;
   `remove` is destructive and requires confirmation or `--yes`.
-- `untaped-recipe hook list|show|add|remove|edit` manages reusable hooks;
-  `remove` is destructive and requires confirmation or `--yes`.
+- `untaped-recipe hook init|list|show|add|remove|edit` manages uv hook
+  project directories; `remove` is destructive and requires confirmation or
+  `--yes`. `hook add` derives the library directory from the declared hook
+  namespace; `--name`, if passed, must match that namespace.
 
 ## Recipe Model
 
 - Library root defaults to `~/.untaped/untaped-recipes`.
 - Recipe resolution checks `recipes/<name>/recipe.yml`, then
   `recipes/<name>.yml`, then explicit filesystem paths.
-- Hook resolution checks recipe-local `hooks/`, then global library `hooks/`,
-  then packaged built-ins.
+- Recipes can be single files, recipe projects with `recipe.yml`, or explicit
+  filesystem paths. Use recipe projects when hooks should ship with the recipe.
+- Recipe-local hooks are declared in the recipe project's `pyproject.toml`.
+  Global hooks live under `<library_root>/hooks/<name>/`; namespaced packs live
+  under `<library_root>/hooks/<namespace>/` and are referenced as
+  `namespace.hook`.
+- Recipes only name hooks; they do not declare runtimes.
+- Hook resolution checks recipe-local pyproject metadata, then global hook
+  projects or namespaced packs, then packaged built-ins.
 - V1 step types are `validate`, `transform`, `template`, `copy`, and
   `remove`.
 - `transform` accepts either `file` or explicit `files`; `files` expands to
@@ -45,6 +54,17 @@ plain directories.
   `where` list-item selectors.
 - The engine does not provide a general YAML selector DSL; `yaml_edit` is a
   shipped hook and custom behavior belongs in trusted Python hooks.
+- External hooks are uv-managed projects with `pyproject.toml`, `uv.lock`, and
+  `[tool.untaped_recipe.hooks]` metadata. Use
+  `untaped-recipe hook init <name>` or
+  `untaped-recipe hook init <namespace.hook>` to scaffold one.
+- Built-ins are direct engine imports and do not start uv workers. External
+  hooks run through pooled uv workers, up to the clamped `--parallel` value per
+  hook project; hook stdout must not be used for data because stdout is reserved
+  for the worker protocol and `print()` is redirected to stderr.
+- Hook projects use the scaffolded `src/` layout. Declared hook modules must
+  resolve to files under `src/`; use explicit paths like `./my-hook-project`
+  when managing a project in the current directory.
 
 ## Output And Agent Guidance
 

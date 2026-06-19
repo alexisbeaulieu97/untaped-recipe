@@ -1,19 +1,113 @@
 # Hooks
 
-Hooks are trusted local Python files used by `validate` and `transform` recipe
-steps. The engine loads hooks from recipe-local hooks, global library hooks,
-then packaged built-ins.
+Hooks are trusted local Python callables used by `validate` and `transform`
+recipe steps. External hooks live in uv-managed hook projects and run
+out-of-process. Built-ins are engine-owned modules and run in-process through a
+direct registry.
+
+Recipes only reference hook names:
+
+```yaml
+steps:
+  - type: transform
+    file: pyproject.toml
+    hook: set_owner
+```
+
+Recipes do not declare runtimes. The resolver decides whether the hook is a
+recipe-local uv project hook, a global uv project hook, a namespaced pack hook,
+or a built-in.
+
+## Hook Project Layout
+
+Create a global hook project with:
+
+```bash
+untaped-recipe hook init set_owner
+untaped-recipe hook init ansible.add_play_collections
+```
+
+The scaffolded project looks like:
+
+```text
+hooks/set_owner/
+├── pyproject.toml
+├── uv.lock
+└── src/
+    └── untaped_recipe_hooks_set_owner/
+        └── hooks/
+            └── set_owner.py
+```
+
+Hook metadata lives in `pyproject.toml`:
+
+```toml
+[tool.untaped_recipe.hooks]
+"set_owner" = { module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
+```
+
+Namespaced packs live under the namespace directory and use dotted public hook
+names:
+
+```text
+hooks/ansible/
+├── pyproject.toml
+├── uv.lock
+└── src/ansible_hooks/hooks/add_play_collections.py
+```
+
+```toml
+[tool.untaped_recipe.hooks]
+"ansible.add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
+```
+
+Then recipes reference `hook: ansible.add_play_collections`.
+
+Recipe-local hooks use the same project shape in a recipe project directory:
+
+```text
+recipes/add-config/
+├── recipe.yml
+├── pyproject.toml
+├── uv.lock
+└── src/add_config_hooks/hooks/set_owner.py
+```
+
+Single-file recipes cannot contain recipe-local hooks; they can still use
+global hook projects and built-ins.
 
 ## Resolution Order
 
 For `hook: set_owner`, resolution checks:
 
-1. `<recipe package>/hooks/set_owner.py`
-2. `<library_root>/hooks/set_owner.py`
+1. the recipe project's `pyproject.toml`
+2. `<library_root>/hooks/set_owner/pyproject.toml`
 3. packaged built-ins such as `yaml_edit`
 
-Recipe-local hooks are best for package-specific behavior. Global hooks are
-for reusable local conventions. Built-ins cover common safe transforms.
+For `hook: ansible.add_play_collections`, global resolution checks
+`<library_root>/hooks/ansible/pyproject.toml`.
+
+The hook key must exist in the project's `[tool.untaped_recipe.hooks]` table,
+and uv hook projects must have a `uv.lock`. Missing or stale lockfiles fail
+planning for the affected target.
+
+## Execution Model
+
+External hook projects are launched with locked uv execution. During one
+`apply`, the engine keeps a small worker pool per hook project. The pool can
+start up to the clamped `--parallel` value for that project, and each individual
+worker serializes its own requests safely.
+
+The worker protocol is newline-delimited JSON over stdin/stdout. Worker stdout
+is protocol-only. Hook `print()` output is redirected to stderr, and stderr is
+used as bounded diagnostics when a worker request fails. Successful request
+diagnostics are discarded so chatty hooks do not grow memory during bulk runs.
+Engine-side Pydantic models validate worker responses before any file changes
+are accepted into a plan.
+
+Hook project code is trusted local code, but normal file mutation should still
+go through returned transform content so preview, backups, and transactional
+writes stay coherent.
 
 ## Transform Hooks
 
@@ -23,8 +117,6 @@ content. They should not write files directly.
 ```python
 from pathlib import Path
 
-from untaped_recipe.infrastructure.hook_helpers import HookHelpers
-
 
 def transform(
     content: str,
@@ -33,13 +125,15 @@ def transform(
     target: Path,
     file: Path,
     args: dict,
-    helpers: HookHelpers,
+    helpers: object,
 ) -> str:
     owner = args["owner"]
     return content.replace("OWNER", str(owner))
 ```
 
-The engine owns file writes after preview, confirmation, and backup creation.
+`target` and `file` are rebuilt as `Path` objects in the worker. `helpers` is a
+small worker helper object; hook projects do not need to depend on host
+Pydantic or import engine models.
 
 ## Validate Hooks
 
@@ -48,17 +142,14 @@ Validate hooks inspect a target and return a verdict.
 ```python
 from pathlib import Path
 
-from untaped_recipe.domain.plan import Verdict
-from untaped_recipe.infrastructure.hook_helpers import HookHelpers
-
 
 def validate(
     *,
     inputs: dict,
     target: Path,
     args: dict,
-    helpers: HookHelpers,
-) -> Verdict:
+    helpers: object,
+) -> dict[str, str]:
     if not (target / "pyproject.toml").is_file():
         return helpers.fail("missing pyproject.toml")
     return helpers.pass_()
@@ -66,26 +157,56 @@ def validate(
 
 Accepted return values:
 
-- `Verdict(status="pass" | "warn" | "fail", message="...")`
-- compatible dict
+- compatible verdict dict, such as `{"status": "warn", "message": "..."}`
 - `None` for pass
 - string for fail
+- a `Verdict`-like object with `model_dump()` if the hook project chooses to
+  depend on `untaped-recipe`
 
 Warnings are recorded on the target plan. Failures abort that target before
 any writes.
 
 ## Helpers
 
-`HookHelpers` provides:
+Worker helpers provide:
 
 - `pass_`, `warn`, and `fail` verdict helpers.
 - `render_template(template, inputs)` for simple `{{ name }}` placeholders.
-- `load_yaml(content)` and `dump_yaml(data)` backed by `ruamel.yaml`.
+- `load_yaml(content)` and `dump_yaml(data)`, which require `ruamel.yaml` in the
+  hook project's dependencies.
+
+Add hook-specific dependencies to the hook project's `pyproject.toml`, then run
+`uv lock`. The engine always runs hook projects with `--locked`.
+
+## Hook Library Commands
+
+```bash
+untaped-recipe hook list
+untaped-recipe hook init set_owner
+untaped-recipe hook add ./my-hook-project --name set_owner
+untaped-recipe hook show set_owner
+untaped-recipe hook edit set_owner
+untaped-recipe hook remove set_owner --yes
+```
+
+`hook add` copies project directories, not bare `.py` files. `hook show` and
+`hook edit` open the module file when the supplied name matches a declared
+hook; otherwise they show or edit `pyproject.toml`.
+
+When adding a project, the library directory is derived from the declared hook
+names. A project declaring `set_owner` installs under `hooks/set_owner/`; a
+project declaring `ansible.add_play_collections` installs under
+`hooks/ansible/`. If `--name` is passed, it must match that derived name.
+Declared hook modules must resolve to files under the project's `src/`
+directory, matching the scaffolded layout. Use `./my-hook-project` or an
+absolute path when adding/showing/editing a project from the current directory;
+bare names resolve through the hook library.
 
 ## Built-In YAML Hook
 
 `yaml_edit` applies mapping and list-item edits while preserving comments,
-quotes, and order where `ruamel.yaml` can round-trip them.
+quotes, and order where `ruamel.yaml` can round-trip them. It is a built-in and
+does not start a uv worker.
 
 ```yaml
 steps:
@@ -115,4 +236,4 @@ template steps.
 
 The core engine intentionally does not include a general YAML selector DSL in
 v1. `yaml_edit` is a shipped transform hook for common YAML edits; write custom
-Python hooks for behavior outside that contract.
+uv hook projects for behavior outside that contract.

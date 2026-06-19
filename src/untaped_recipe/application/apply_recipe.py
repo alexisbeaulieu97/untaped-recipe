@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from untaped_recipe.application.ports import HookHelpersPort, HookLoaderPort
+from untaped_recipe.application.ports import HookExecutorPort
 from untaped_recipe.domain.paths import confined_path
-from untaped_recipe.domain.plan import FileChange, TargetPlan, Verdict
+from untaped_recipe.domain.plan import FileChange, TargetPlan
 from untaped_recipe.domain.recipe import (
     CopyStep,
     Recipe,
@@ -24,13 +24,11 @@ class ApplyRecipe:
 
     def __init__(
         self,
-        hook_loader: HookLoaderPort,
+        hook_executor: HookExecutorPort,
         *,
-        helpers: HookHelpersPort,
         template_renderer: Callable[[str, dict[str, object]], str] = render_template,
     ) -> None:
-        self._hooks = hook_loader
-        self._helpers = helpers
+        self._hooks = hook_executor
         self._render_template = template_renderer
 
     def __call__(
@@ -40,6 +38,7 @@ class ApplyRecipe:
         recipe_dir: Path,
         target: Path,
         inputs: dict[str, object],
+        local_hook_project: Path | None = None,
     ) -> TargetPlan:
         """Plan every step for one target."""
         if not target.is_dir():
@@ -54,12 +53,19 @@ class ApplyRecipe:
             elif isinstance(step, RemoveStep):
                 self._plan_remove(step, target, buffer)
             elif isinstance(step, TransformStep):
-                self._plan_transform(step, recipe_dir, target, inputs, buffer, warnings)
+                self._plan_transform(
+                    step,
+                    local_hook_project,
+                    target,
+                    inputs,
+                    buffer,
+                    warnings,
+                )
             elif isinstance(step, ValidateStep):
                 self._plan_validate(
                     step.hook,
                     step.args,
-                    recipe_dir,
+                    local_hook_project,
                     target,
                     inputs,
                     warnings,
@@ -78,17 +84,17 @@ class ApplyRecipe:
         self,
         hook: str,
         args: dict[str, object],
-        recipe_dir: Path,
+        local_hook_project: Path | None,
         target: Path,
         inputs: dict[str, object],
         warnings: list[str],
     ) -> None:
-        module = self._hooks.load(hook, recipe_dir)
-        validate = getattr(module, "validate", None)
-        if validate is None:
-            raise ValueError(f"validate hook {hook!r} has no validate callable")
-        verdict = _coerce_verdict(
-            validate(inputs=inputs, target=target, args=args, helpers=self._helpers)
+        verdict = self._hooks.validate(
+            hook,
+            local_hook_project=local_hook_project,
+            target=target,
+            inputs=inputs,
+            args=args,
         )
         if verdict.status == "warn":
             warnings.append(verdict.message)
@@ -126,7 +132,7 @@ class ApplyRecipe:
     def _plan_transform(
         self,
         step: TransformStep,
-        recipe_dir: Path,
+        local_hook_project: Path | None,
         target: Path,
         inputs: dict[str, object],
         buffer: dict[Path, str | None],
@@ -145,17 +151,14 @@ class ApplyRecipe:
             if not path.is_file():
                 raise ValueError(f"transform path is not a file: {step.file}")
             current = path.read_text()
-        module = self._hooks.load(step.hook, recipe_dir)
-        transform = getattr(module, "transform", None)
-        if transform is None:
-            raise ValueError(f"transform hook {step.hook!r} has no transform callable")
-        buffer[step.file] = transform(
+        buffer[step.file] = self._hooks.transform(
+            step.hook,
             current,
+            local_hook_project=local_hook_project,
             inputs=inputs,
             target=target,
             file=path,
             args=step.args,
-            helpers=self._helpers,
         )
 
     def _changes(self, target: Path, buffer: dict[Path, str | None]) -> list[FileChange]:
@@ -169,15 +172,3 @@ class ApplyRecipe:
                 FileChange(target=target, relative_path=relative, before=before, after=after)
             )
         return changes
-
-
-def _coerce_verdict(value: object) -> Verdict:
-    if isinstance(value, Verdict):
-        return value
-    if isinstance(value, dict):
-        return Verdict.model_validate(value)
-    if value is None:
-        return Verdict(status="pass")
-    if isinstance(value, str):
-        return Verdict(status="fail", message=value)
-    raise ValueError(f"invalid validate verdict: {value!r}")

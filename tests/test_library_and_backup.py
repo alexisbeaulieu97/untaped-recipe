@@ -9,7 +9,7 @@ import pytest
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.infrastructure.backup import BackupStore
 from untaped_recipe.infrastructure.hook_library import HookLibrary
-from untaped_recipe.infrastructure.hook_loader import HookLoader
+from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 
 
@@ -38,8 +38,8 @@ def test_recipe_library_resolves_name_before_path_and_copies_packages(tmp_path: 
 def test_recipe_and_hook_libraries_reject_unsafe_names(tmp_path: Path) -> None:
     recipe_source = tmp_path / "recipe.yml"
     recipe_source.write_text("version: 1\nname: demo\nsteps: []\n")
-    hook_source = tmp_path / "hook.py"
-    hook_source.write_text("VALUE = 1\n")
+    hook_source = tmp_path / "hook-project"
+    _write_hook_project(hook_source, hook_name="hook")
     root = tmp_path / "library"
 
     recipe_library = RecipeLibrary(root)
@@ -55,41 +55,57 @@ def test_recipe_and_hook_libraries_reject_unsafe_names(tmp_path: Path) -> None:
         hook_library.remove("/tmp/outside")
 
 
-def test_hook_loader_uses_recipe_local_then_global_then_builtin(tmp_path: Path) -> None:
+def test_hook_resolver_uses_recipe_local_then_global_then_builtin(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
-    recipe_hooks = recipe_dir / "hooks"
     global_hooks = tmp_path / "global"
-    builtins = tmp_path / "builtins"
-    recipe_hooks.mkdir(parents=True)
-    global_hooks.mkdir()
-    builtins.mkdir()
-    (recipe_hooks / "pick.py").write_text("VALUE = 'local'\n")
-    (global_hooks / "pick.py").write_text("VALUE = 'global'\n")
-    (builtins / "pick.py").write_text("VALUE = 'builtin'\n")
+    _write_hook_project(recipe_dir, hook_name="pick", package="local_hooks")
+    _write_hook_project(global_hooks / "pick", hook_name="pick", package="global_hooks")
 
-    module = HookLoader(global_hooks=global_hooks, builtins=(builtins,)).load("pick", recipe_dir)
+    ref = HookResolver(global_hooks=global_hooks).resolve("pick", recipe_dir)
 
-    assert module.VALUE == "local"
+    assert isinstance(ref, UvHookRef)
+    assert ref.project_root == recipe_dir
+    assert ref.module == "local_hooks.hooks.pick"
 
 
-def test_hook_loader_caches_modules_by_resolved_path(tmp_path: Path) -> None:
+def test_hook_resolver_falls_back_to_builtins(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
-    recipe_hooks = recipe_dir / "hooks"
-    recipe_hooks.mkdir(parents=True)
-    (recipe_hooks / "pick.py").write_text("VALUE = object()\n")
-    loader = HookLoader(global_hooks=tmp_path / "global", builtins=())
+    recipe_dir.mkdir()
 
-    first = loader.load("pick", recipe_dir)
-    second = loader.load("pick", recipe_dir)
+    ref = HookResolver(global_hooks=tmp_path / "global").resolve("yaml_edit", recipe_dir)
 
-    assert first is second
+    assert isinstance(ref, BuiltinHookRef)
 
 
-def test_hook_loader_rejects_hook_paths_that_escape_recipe(tmp_path: Path) -> None:
+def test_hook_resolver_rejects_hook_paths_that_escape_recipe(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
     with pytest.raises(ValueError, match="safe hook name"):
-        HookLoader(global_hooks=tmp_path / "global", builtins=()).load("../outside.py", recipe_dir)
+        HookResolver(global_hooks=tmp_path / "global").resolve("../outside.py", recipe_dir)
+
+
+def _write_hook_project(
+    root: Path,
+    *,
+    hook_name: str,
+    package: str = "project_hooks",
+) -> None:
+    (root / "src" / package / "hooks").mkdir(parents=True, exist_ok=True)
+    (root / "src" / package / "__init__.py").write_text("")
+    (root / "src" / package / "hooks" / "__init__.py").write_text("")
+    (root / "src" / package / "hooks" / f"{hook_name}.py").write_text(
+        "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+    )
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "project-hooks"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.hooks]\n"
+        f'"{hook_name}" = {{ module = "{package}.hooks.{hook_name}" }}\n'
+    )
+    (root / "uv.lock").write_text("version = 1\n")
 
 
 def test_backup_store_records_and_restores_touched_files(tmp_path: Path) -> None:

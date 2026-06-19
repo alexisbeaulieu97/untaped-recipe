@@ -12,12 +12,11 @@ from untaped.api import (
     create_app,
     echo,
     render_rows,
-    report_errors,
     ui_context,
 )
 from untaped.batch import batch_apply
 
-from untaped_recipe.cli.common import edit_path, library_root
+from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
 from untaped_recipe.infrastructure.hook_library import HookLibrary
 
 app = create_app(name="hook", help="Manage reusable hooks.")
@@ -26,9 +25,9 @@ app = create_app(name="hook", help="Manage reusable hooks.")
 @app.command(name="list")
 def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) -> None:
     """List hooks."""
-    with report_errors():
+    with report_config_errors():
         rows: list[dict[str, object]] = [
-            {"name": entry.name, "path": str(entry.path)}
+            {"name": entry.name, "hooks": ", ".join(entry.hooks), "path": str(entry.path)}
             for entry in HookLibrary(library_root()).list()
         ]
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.hook")
@@ -36,22 +35,33 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
             echo(rendered)
 
 
+@app.command(name="init")
+def init_command(
+    name: Annotated[str, Parameter(help="Hook name or namespaced hook name.")],
+    /,
+) -> None:
+    """Scaffold a uv hook project."""
+    with report_config_errors():
+        path = HookLibrary(library_root()).init(name)
+        echo(str(path))
+
+
 @app.command(name="show")
 def show_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) -> None:
-    """Print a hook file."""
-    with report_errors():
-        echo(HookLibrary(library_root()).resolve(name).read_text(), nl=False)
+    """Print a hook project file."""
+    with report_config_errors():
+        echo(HookLibrary(library_root()).resolve_editable(name).read_text(), nl=False)
 
 
 @app.command(name="add")
 def add_command(
-    source: Annotated[Path, Parameter(help="Hook file.")],
+    source: Annotated[Path, Parameter(help="Hook project directory.")],
     /,
     *,
     name: Annotated[str | None, Parameter(name="--name", help="Library name.")] = None,
 ) -> None:
-    """Copy a hook into the library."""
-    with report_errors():
+    """Copy a hook project into the library."""
+    with report_config_errors():
         path = HookLibrary(library_root()).add(source, name=name)
         echo(str(path))
 
@@ -66,8 +76,8 @@ def remove_command(
         Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
     ] = False,
 ) -> None:
-    """Remove a hook from the library."""
-    with report_errors():
+    """Remove a hook project from the library."""
+    with report_config_errors():
         library = HookLibrary(library_root())
 
         def _remove(item: str) -> Path:
@@ -90,6 +100,6 @@ def remove_command(
 
 @app.command(name="edit")
 def edit_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) -> None:
-    """Open a hook in $VISUAL or $EDITOR."""
-    with report_errors():
-        edit_path(HookLibrary(library_root()).resolve(name))
+    """Open a hook project file in $VISUAL or $EDITOR."""
+    with report_config_errors():
+        edit_path(HookLibrary(library_root()).resolve_editable(name))

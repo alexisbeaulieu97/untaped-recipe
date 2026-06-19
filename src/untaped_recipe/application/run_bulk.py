@@ -31,6 +31,7 @@ class RunBulkApply:
         *,
         recipe: Recipe,
         recipe_dir: Path,
+        local_hook_project: Path | None,
         targets: list[Path],
         inputs: dict[str, object],
         parallel: int = 1,
@@ -39,12 +40,26 @@ class RunBulkApply:
         resolved_inputs = InputSpec.resolve_all(recipe.inputs, overrides=inputs)
         if parallel <= 1 or len(targets) <= 1:
             return [
-                self._plan_one(recipe, recipe_dir, target, resolved_inputs) for target in targets
+                self._plan_one(
+                    recipe,
+                    recipe_dir,
+                    local_hook_project,
+                    target,
+                    resolved_inputs,
+                )
+                for target in targets
             ]
         outcomes: list[TargetPlan] = []
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             futures = {
-                pool.submit(self._plan_one, recipe, recipe_dir, target, resolved_inputs): index
+                pool.submit(
+                    self._plan_one,
+                    recipe,
+                    recipe_dir,
+                    local_hook_project,
+                    target,
+                    resolved_inputs,
+                ): index
                 for index, target in enumerate(targets)
             }
             for future in as_completed(futures):
@@ -57,11 +72,18 @@ class RunBulkApply:
         self,
         recipe: Recipe,
         recipe_dir: Path,
+        local_hook_project: Path | None,
         target: Path,
         inputs: dict[str, object],
     ) -> TargetPlan:
         try:
-            return self._planner(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs=inputs)
+            return self._planner(
+                recipe=recipe,
+                recipe_dir=recipe_dir,
+                local_hook_project=local_hook_project,
+                target=target,
+                inputs=inputs,
+            )
         except Exception as exc:
             return TargetPlan(target=target, status="error", error=str(exc))
 

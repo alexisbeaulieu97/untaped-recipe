@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
-from untaped.api import get_config_section
+from untaped.api import get_config_section, report_errors
 from untaped.errors import ConfigError
 
 from untaped_recipe.settings import RecipeSettings
@@ -34,3 +36,13 @@ def edit_path(path: Path) -> None:
         raise ConfigError(f"editor not found: {editor[0]}") from exc
     except subprocess.CalledProcessError as exc:
         raise ConfigError(f"editor exited with status {exc.returncode}") from exc
+
+
+@contextmanager
+def report_config_errors() -> Iterator[None]:
+    """Report expected config/library errors without Python tracebacks."""
+    with report_errors():
+        try:
+            yield
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc

@@ -22,6 +22,36 @@ untaped-recipe config set library_root ~/.untaped/untaped-recipes
 
 The setting is stored in the shared untaped config under the `recipe` section.
 
+## Ways To Define Recipes And Hooks
+
+Recipes can be stored as either:
+
+- a single recipe file: `recipes/<name>.yml`
+- a recipe project: `recipes/<name>/recipe.yml` with optional templates, files,
+  package code, `pyproject.toml`, and `uv.lock`
+- an explicit filesystem recipe file or directory containing `recipe.yml`
+
+Hooks are referenced from recipes by name. Recipes do not declare hook runtimes.
+External hooks live in uv-managed hook projects with a
+`[tool.untaped_recipe.hooks]` table:
+
+```toml
+[tool.untaped_recipe.hooks]
+"ansible.add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
+```
+
+Supported hook forms are:
+
+- recipe-local hooks declared in a recipe project's `pyproject.toml`
+- global hook projects under `<library_root>/hooks/<name>/`
+- namespaced hook packs under `<library_root>/hooks/<namespace>/`, referenced as
+  `namespace.hook`
+- built-ins such as `yaml_edit`, which are engine-owned and run in-process
+
+Use `untaped-recipe hook init <hook-name>` to scaffold a global uv hook project.
+For a namespaced pack, initialize the first hook with a dotted name such as
+`untaped-recipe hook init ansible.add_play_collections`.
+
 ## Apply
 
 ```bash
@@ -51,12 +81,17 @@ records it uses `Path(record.path) / record.repo`.
 
 ```text
 untaped-recipe recipe list|show|add|remove|edit
-untaped-recipe hook list|show|add|remove|edit
+untaped-recipe hook init|list|show|add|remove|edit
 untaped-recipe backup list|show|restore
 ```
 
-`recipe remove` and `hook remove` require confirmation or `--yes`. `backup show`
-and `backup restore` accept full ids, unambiguous prefixes, or `latest`.
+`hook add` copies uv hook project directories, not bare `.py` files, and the
+library directory is derived from the hook metadata namespace. Declared hook
+modules must live under the project's `src/` layout. Use explicit paths such as
+`./my-hook-project` when referring to a project in the current directory; bare
+hook names resolve through the library. `recipe remove` and `hook remove`
+require confirmation or `--yes`. `backup show` and `backup restore` accept full
+ids, unambiguous prefixes, or `latest`.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

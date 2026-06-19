@@ -1,0 +1,381 @@
+"""Additional infrastructure and orchestration contract tests."""
+
+from __future__ import annotations
+
+import errno
+from pathlib import Path
+
+import pytest
+
+import untaped_recipe.application.run_bulk as run_bulk_module
+from untaped_recipe.application.apply_recipe import ApplyRecipe
+from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
+from untaped_recipe.builtins.hooks import yaml_edit
+from untaped_recipe.domain.plan import FileChange
+from untaped_recipe.domain.recipe import Recipe
+from untaped_recipe.infrastructure.hook_helpers import HookHelpers
+from untaped_recipe.infrastructure.hook_library import HookLibrary
+from untaped_recipe.infrastructure.hook_loader import HookLoader
+from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
+from untaped_recipe.infrastructure.ruamel_io import dump_yaml, load_yaml
+
+
+def test_recipe_library_file_package_crud_and_errors(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    file_source = tmp_path / "single.yml"
+    file_source.write_text("version: 1\nname: single\nsteps: []\n")
+    package_source = tmp_path / "package"
+    package_source.mkdir()
+    (package_source / "recipe.yml").write_text("version: 1\nname: package\nsteps: []\n")
+    library = RecipeLibrary(root)
+
+    assert library.list() == []
+    single = library.add(file_source, name="single")
+    package = library.add(package_source, name="package")
+
+    assert library.resolve("single") == single
+    assert library.resolve("package") == package
+    assert [entry.kind for entry in library.list()] == ["package", "file"]
+    with pytest.raises(ValueError, match="already exists"):
+        library.add(file_source, name="single")
+    with pytest.raises(ValueError, match="source not found"):
+        library.add(tmp_path / "missing.yml")
+
+    assert library.remove("single") == single
+    assert library.remove("package") == root / "recipes" / "package"
+    with pytest.raises(ValueError, match="recipe not found"):
+        library.resolve("single")
+    with pytest.raises(ValueError, match="recipe not found"):
+        library.remove("package")
+
+
+def test_hook_library_crud_and_errors(tmp_path: Path) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("VALUE = 'source'\n")
+    library = HookLibrary(tmp_path / "library")
+
+    assert library.list() == []
+    hook = library.add(source, name="shared")
+
+    assert hook == tmp_path / "library" / "hooks" / "shared.py"
+    assert library.resolve("shared") == hook
+    assert library.resolve(str(source)) == source
+    assert [entry.name for entry in library.list()] == ["shared"]
+    with pytest.raises(ValueError, match="already exists"):
+        library.add(source, name="shared")
+    with pytest.raises(ValueError, match="source not found"):
+        library.add(tmp_path / "missing.py")
+
+    assert library.remove("shared") == hook
+    with pytest.raises(ValueError, match="hook not found"):
+        library.resolve("shared")
+    with pytest.raises(ValueError, match="hook not found"):
+        library.remove("shared")
+
+
+def test_hook_helpers_and_builtin_yaml_edit_preserve_round_trip_yaml(tmp_path: Path) -> None:
+    helpers = HookHelpers()
+
+    assert helpers.pass_("ok").status == "pass"
+    assert helpers.warn("check").status == "warn"
+    assert helpers.fail("bad").failed
+    assert helpers.render_template("{{ name }}", {"name": "api"}) == "api"
+
+    result = yaml_edit.transform(
+        "# top\nservices:\n  - name: api\n    config:\n      old: true\n"
+        '  - name: web\nquoted: "keep me"\n',
+        inputs={"owner": "platform"},
+        target=tmp_path,
+        file=tmp_path / "config.yml",
+        args={
+            "edits": [
+                {
+                    "op": "merge",
+                    "path": ["services", {"where": {"name": "api"}}, "config"],
+                    "value": {"owner": "{{ owner }}"},
+                },
+                {
+                    "op": "delete",
+                    "path": ["services", {"where": {"name": "web"}}],
+                },
+                {"op": "set", "path": ["enabled"], "value": True},
+            ]
+        },
+        helpers=helpers,
+    )
+    assert "# top" in result
+    assert 'quoted: "keep me"' in result
+    assert "owner: platform" in result
+    assert "enabled: true" in result
+    assert "name: web" not in result
+
+    loaded = load_yaml(result)
+    assert dump_yaml(loaded) == result
+
+    empty = yaml_edit.transform(
+        "",
+        inputs={},
+        target=tmp_path,
+        file=tmp_path / "empty.yml",
+        args={"edits": [{"op": "set", "path": ["enabled"], "value": True}]},
+        helpers=helpers,
+    )
+    assert "enabled: true" in empty
+
+
+def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n")
+    (recipe_dir / "template.txt").symlink_to(outside)
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "name": "demo",
+            "steps": [{"type": "template", "template": "template.txt", "dest": "out.txt"}],
+        }
+    )
+    planner = ApplyRecipe(
+        HookLoader(global_hooks=tmp_path / "global", builtins=()),
+        helpers=HookHelpers(),
+    )
+
+    with pytest.raises(ValueError, match="symlink"):
+        planner(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        ({}, "edits"),
+        ({"edits": [{"op": "explode", "path": ["a"], "value": 1}]}, "invalid op"),
+        (
+            {
+                "edits": [
+                    {
+                        "op": "set",
+                        "path": ["items", {"where": {"name": "missing"}}],
+                        "value": 1,
+                    }
+                ]
+            },
+            "no list item",
+        ),
+        (
+            {"edits": [{"op": "set", "path": ["a"], "value": "{{ missing }}"}]},
+            "template input",
+        ),
+    ],
+)
+def test_builtin_yaml_edit_reports_bad_args(
+    args: dict[str, object],
+    message: str,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        yaml_edit.transform(
+            "items:\n  - name: api\n",
+            inputs={},
+            target=tmp_path,
+            file=tmp_path / "config.yml",
+            args=args,
+            helpers=HookHelpers(),
+        )
+
+
+def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("hello\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "name": "demo",
+            "steps": [{"type": "template", "template": "template.txt", "dest": "nested/out.txt"}],
+        }
+    )
+    good = tmp_path / "good"
+    good.mkdir()
+    missing = tmp_path / "missing"
+    runner = RunBulkApply(
+        ApplyRecipe(
+            HookLoader(global_hooks=tmp_path / "global", builtins=()),
+            helpers=HookHelpers(),
+        )
+    )
+
+    plans = runner.plan(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        targets=[good, missing],
+        inputs={},
+        parallel=2,
+    )
+
+    assert [plan.target for plan in plans] == [good, missing]
+    assert [plan.status for plan in plans] == ["planned", "error"]
+    flush_changes(plans[0].changes)
+    assert (good / "nested" / "out.txt").read_text() == "hello\n"
+
+    removable = good / "legacy.txt"
+    removable.write_text("old\n")
+    flush_changes(
+        (
+            FileChange(
+                target=good,
+                relative_path=Path("legacy.txt"),
+                before="old\n",
+                after=None,
+            ),
+        )
+    )
+    assert not removable.exists()
+
+
+def test_flush_changes_rejects_stale_files_without_overwriting(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    config = target / "config.yml"
+    config.write_text("before\n")
+    change = FileChange(
+        target=target,
+        relative_path=Path("config.yml"),
+        before="before\n",
+        after="after\n",
+    )
+
+    config.write_text("user edit\n")
+
+    with pytest.raises(ApplyWriteError, match="changed since planning"):
+        flush_changes((change,))
+    assert config.read_text() == "user edit\n"
+
+
+def test_flush_changes_rolls_back_target_when_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    first = target / "first.txt"
+    second = target / "second.txt"
+    first.write_text("old first\n")
+    second.write_text("old second\n")
+    changes = (
+        FileChange(
+            target=target,
+            relative_path=Path("first.txt"),
+            before="old first\n",
+            after="new first\n",
+        ),
+        FileChange(
+            target=target,
+            relative_path=Path("second.txt"),
+            before="old second\n",
+            after="new second\n",
+        ),
+    )
+    original_replace = run_bulk_module.os.replace
+    calls = 0
+
+    def flaky_replace(src: Path, dst: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk full")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(run_bulk_module.os, "replace", flaky_replace)
+
+    with pytest.raises(ApplyWriteError, match="disk full"):
+        flush_changes(changes)
+    assert first.read_text() == "old first\n"
+    assert second.read_text() == "old second\n"
+
+
+def test_flush_changes_stages_replacements_next_to_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    change = FileChange(
+        target=target,
+        relative_path=Path("nested/out.txt"),
+        before=None,
+        after="new\n",
+    )
+    original_replace = run_bulk_module.os.replace
+    observed: list[tuple[Path, Path]] = []
+
+    def replace_requires_same_parent(src: Path, dst: Path) -> None:
+        source = Path(src)
+        destination = Path(dst)
+        observed.append((source, destination))
+        if source.parent != destination.parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(run_bulk_module.os, "replace", replace_requires_same_parent)
+
+    flush_changes((change,))
+
+    assert (target / "nested" / "out.txt").read_text() == "new\n"
+    assert observed == [(observed[0][0], target / "nested" / "out.txt")]
+    assert observed[0][0].parent == target / "nested"
+
+
+def test_flush_changes_rejects_target_symlink_escape(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    outside = tmp_path / "outside"
+    target.mkdir()
+    outside.mkdir()
+    (target / "linked").symlink_to(outside, target_is_directory=True)
+    change = FileChange(
+        target=target,
+        relative_path=Path("linked/out.txt"),
+        before=None,
+        after="escaped\n",
+    )
+
+    with pytest.raises(ApplyWriteError, match="symlink"):
+        flush_changes((change,))
+    assert not (outside / "out.txt").exists()
+
+
+def test_flush_changes_removes_created_directories_after_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    change = FileChange(
+        target=target,
+        relative_path=Path("created/dir/out.txt"),
+        before=None,
+        after="new\n",
+    )
+
+    def fail_replace(src: Path, dst: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(run_bulk_module.os, "replace", fail_replace)
+
+    with pytest.raises(ApplyWriteError, match="disk full"):
+        flush_changes((change,))
+    assert not (target / "created").exists()
+
+
+def test_file_change_kind_reports_create_modify_and_remove(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+
+    create = FileChange(target=target, relative_path=Path("a"), before=None, after="x")
+    modify = FileChange(target=target, relative_path=Path("a"), before="x", after="y")
+    remove = FileChange(target=target, relative_path=Path("a"), before="x", after=None)
+
+    assert create.kind == "create"
+    assert modify.kind == "modify"
+    assert remove.kind == "remove"

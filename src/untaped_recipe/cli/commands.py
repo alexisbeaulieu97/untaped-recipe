@@ -1,0 +1,287 @@
+"""Cyclopts app composition root and apply command."""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated
+
+import yaml
+from cyclopts import Parameter
+from untaped.api import (
+    ColumnsOption,
+    FormatOption,
+    clamp_parallel,
+    create_app,
+    echo,
+    parse_kv_pairs,
+    render_rows,
+    report_errors,
+    ui_context,
+)
+from untaped.batch import BatchOutcome, batch_apply
+from untaped.errors import ConfigError, UntapedError
+
+from untaped_recipe.application import RunBulkApply
+from untaped_recipe.application.apply_recipe import ApplyRecipe
+from untaped_recipe.application.run_bulk import flush_changes
+from untaped_recipe.application.targets import resolve_target_lines
+from untaped_recipe.cli.backup_commands import app as backup_app
+from untaped_recipe.cli.common import library_root
+from untaped_recipe.cli.hook_commands import app as hook_app
+from untaped_recipe.cli.recipe_commands import app as recipe_app
+from untaped_recipe.domain.plan import TargetPlan
+from untaped_recipe.domain.recipe import Recipe
+from untaped_recipe.infrastructure import BackupStore, HookLoader, RecipeLibrary
+from untaped_recipe.infrastructure.backup import BackupDraft
+from untaped_recipe.infrastructure.diff import unified_diff
+from untaped_recipe.infrastructure.hook_helpers import HookHelpers
+
+app = create_app(name="recipe", help="Apply reusable local recipes to plain directories.")
+app.command(recipe_app, name="recipe")
+app.command(hook_app, name="hook")
+app.command(backup_app, name="backup")
+
+
+@dataclass(frozen=True)
+class ApplyContext:
+    """Prepared apply state."""
+
+    root: Path
+    recipe: Recipe
+    inputs: dict[str, object]
+    plans: list[TargetPlan]
+
+
+@dataclass(frozen=True)
+class ApplyExecution:
+    """Executed apply state used for stable row rendering."""
+
+    outcome: BatchOutcome[TargetPlan, TargetPlan]
+    applied: frozenset[int]
+    failed: dict[int, str]
+
+
+@app.command(name="apply")
+def apply_command(
+    recipe: Annotated[str, Parameter(help="Recipe name or path.")],
+    dirs: Annotated[list[Path] | None, Parameter(help="Target directories.")] = None,
+    *,
+    stdin: Annotated[
+        bool,
+        Parameter(
+            name="--stdin",
+            negative="",
+            help="Read target paths or pipe records from stdin.",
+        ),
+    ] = False,
+    var: Annotated[
+        list[str] | None,
+        Parameter(name="--var", help="Input override as key=value.", consume_multiple=False),
+    ] = None,
+    vars_file: Annotated[
+        Path | None,
+        Parameter(name="--vars", help="YAML file containing input overrides."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Parameter(name="--dry-run", negative="", help="Preview without writing."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
+    ] = False,
+    backup: Annotated[
+        bool,
+        Parameter(name="--backup", negative="--no-backup", help="Create backups before writing."),
+    ] = True,
+    parallel: Annotated[
+        int,
+        Parameter(name=["--parallel", "-j"], help="Target planning workers."),
+    ] = 1,
+    fmt: FormatOption = "table",
+    columns: ColumnsOption = None,
+) -> None:
+    """Apply a recipe to target directories."""
+    with report_errors():
+        if stdin and not yes and not dry_run:
+            raise ConfigError("apply requires --yes when stdin is not interactive")
+        context = _apply_context(
+            recipe,
+            dirs=list(dirs or []),
+            stdin=stdin,
+            raw_vars=var or [],
+            vars_file=vars_file,
+            parallel=parallel,
+        )
+        _render_diffs(context.plans)
+        outcome = _execute_plans(
+            context,
+            backup=backup,
+            yes=yes,
+            dry_run=dry_run,
+        )
+        rows = _outcome_rows(context.plans, outcome, dry_run=dry_run)
+        rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.outcome")
+        if rendered:
+            echo(rendered)
+        if any(plan.status == "error" for plan in context.plans) or outcome.outcome.any_failed:
+            raise SystemExit(1)
+
+
+def _apply_context(
+    recipe: str,
+    *,
+    dirs: list[Path],
+    stdin: bool,
+    raw_vars: list[str],
+    vars_file: Path | None,
+    parallel: int,
+) -> ApplyContext:
+    root = library_root()
+    recipe_path = RecipeLibrary(root).resolve(recipe)
+    loaded = Recipe.model_validate(yaml.safe_load(recipe_path.read_text()) or {})
+    targets = _targets(dirs, stdin=stdin)
+    if not targets:
+        raise ConfigError("at least one target directory is required (or use --stdin)")
+    inputs = _input_values(raw_vars, vars_file)
+    workers = clamp_parallel(max(parallel, 1), cap=32, policy="recipe planning cap")
+    builtins = Path(__file__).parents[1] / "builtins" / "hooks"
+    runner = RunBulkApply(
+        ApplyRecipe(
+            HookLoader(global_hooks=root / "hooks", builtins=(builtins,)),
+            helpers=HookHelpers(),
+        )
+    )
+    try:
+        plans = runner.plan(
+            recipe=loaded,
+            recipe_dir=recipe_path.parent,
+            targets=targets,
+            inputs=inputs,
+            parallel=workers,
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    return ApplyContext(root=root, recipe=loaded, inputs=inputs, plans=plans)
+
+
+def _render_diffs(plans: list[TargetPlan]) -> None:
+    for plan in plans:
+        for change in plan.changes:
+            diff = unified_diff(change)
+            if diff:
+                echo(f"# {plan.target}", err=True)
+                echo(diff, err=True, nl=False)
+
+
+def _execute_plans(
+    context: ApplyContext,
+    *,
+    backup: bool,
+    yes: bool,
+    dry_run: bool,
+) -> ApplyExecution:
+    actionable = [plan for plan in context.plans if plan.status != "error" and plan.changes]
+    store = BackupStore(context.root / "backups")
+    draft: BackupDraft | None = None
+    applied: set[int] = set()
+    failed: dict[int, str] = {}
+
+    def _apply(plan: TargetPlan) -> TargetPlan:
+        nonlocal draft
+        reservation = None
+        try:
+            if backup:
+                if draft is None:
+                    draft = store.start(
+                        recipe_name=context.recipe.name,
+                        inputs=context.inputs,
+                    )
+                reservation = draft.stage(plan.changes)
+            flush_changes(plan.changes)
+            if reservation is not None and draft is not None:
+                draft.commit(reservation)
+            applied.add(id(plan))
+            return plan
+        except UntapedError as exc:
+            failed[id(plan)] = str(exc)
+            raise
+
+    outcome = batch_apply(
+        actionable,
+        _apply,
+        verb="apply",
+        noun="target",
+        label=lambda plan: str(plan.target),
+        describe=_row,
+        ui=ui_context(strict=False),
+        destructive=True,
+        assume_yes=yes,
+        preview_only=dry_run,
+    )
+    if draft is not None:
+        draft.discard_if_empty()
+    return ApplyExecution(outcome=outcome, applied=frozenset(applied), failed=failed)
+
+
+def _outcome_rows(
+    plans: list[TargetPlan],
+    execution: ApplyExecution,
+    *,
+    dry_run: bool,
+) -> list[dict[str, object]]:
+    rows = [_row(plan) for plan in plans]
+    if dry_run:
+        return [{**row, "status": "dry-run"} if row["status"] == "planned" else row for row in rows]
+    if not execution.outcome.results and not execution.failed:
+        return rows
+    rendered: list[dict[str, object]] = []
+    for plan, row in zip(plans, rows, strict=True):
+        plan_id = id(plan)
+        if plan_id in execution.failed:
+            rendered.append({**row, "status": "error", "error": execution.failed[plan_id]})
+        elif plan_id in execution.applied:
+            rendered.append({**row, "status": "applied"})
+        else:
+            rendered.append(row)
+    return rendered
+
+
+def _targets(positional: list[Path], *, stdin: bool) -> list[Path]:
+    if stdin and positional:
+        raise ConfigError("provide targets as positional args or via --stdin, not both")
+    if not stdin:
+        return positional
+    pairs: list[tuple[int, str]] = []
+    for lineno, line in enumerate(sys.stdin, start=1):
+        stripped = line.strip()
+        if stripped:
+            pairs.append((lineno, stripped))
+    if not pairs:
+        raise ConfigError("no targets received on stdin")
+    try:
+        return resolve_target_lines(pairs)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _input_values(raw_vars: list[str], vars_file: Path | None) -> dict[str, object]:
+    values: dict[str, object] = {}
+    if vars_file is not None:
+        loaded = yaml.safe_load(vars_file.read_text()) or {}
+        if not isinstance(loaded, dict):
+            raise ConfigError("--vars file must contain a YAML mapping")
+        values.update(loaded)
+    values.update(parse_kv_pairs(raw_vars, flag="--var"))
+    return values
+
+
+def _row(plan: TargetPlan) -> dict[str, object]:
+    return {
+        "target": plan.target,
+        "status": plan.status,
+        "files_changed": plan.files_changed,
+        "error": plan.error,
+    }

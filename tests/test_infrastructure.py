@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
@@ -293,6 +294,38 @@ def test_flush_changes_rolls_back_target_when_write_fails(
         flush_changes(changes)
     assert first.read_text() == "old first\n"
     assert second.read_text() == "old second\n"
+
+
+def test_flush_changes_stages_replacements_next_to_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    change = FileChange(
+        target=target,
+        relative_path=Path("nested/out.txt"),
+        before=None,
+        after="new\n",
+    )
+    original_replace = run_bulk_module.os.replace
+    observed: list[tuple[Path, Path]] = []
+
+    def replace_requires_same_parent(src: Path, dst: Path) -> None:
+        source = Path(src)
+        destination = Path(dst)
+        observed.append((source, destination))
+        if source.parent != destination.parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(run_bulk_module.os, "replace", replace_requires_same_parent)
+
+    flush_changes((change,))
+
+    assert (target / "nested" / "out.txt").read_text() == "new\n"
+    assert observed == [(observed[0][0], target / "nested" / "out.txt")]
+    assert observed[0][0].parent == target / "nested"
 
 
 def test_flush_changes_rejects_target_symlink_escape(tmp_path: Path) -> None:

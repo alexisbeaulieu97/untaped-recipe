@@ -62,8 +62,16 @@ steps:
     hook: set_owner
     args:
       owner: platform
+  - type: transform
+    files:
+      - local.yml
+      - site.yml
+    optional: true
+    hook: add_play_collections
   - type: remove
-    file: legacy.yml
+    files:
+      - legacy.yml
+      - ansible.cfg
 ```
 
 Supported input types are `str`, `int`, `bool`, and `float`. Unknown input
@@ -81,10 +89,35 @@ from resolved inputs.
 `copy` copies a recipe-local text file into a target-relative destination.
 
 `transform` reads one target file, calls a trusted Python hook, and plans the
-returned content as the new file body.
+returned content as the new file body. A transform may use `optional: true` to
+skip a missing target file and record a warning instead of failing that target.
+This is only for target layout variation; `optional` is not supported on
+`template` or `copy`.
 
 `remove` plans deletion of a target-relative file if it currently exists or was
 created earlier in the same target plan.
+
+`transform` and `remove` also accept `files` as explicit multi-file fan-out:
+
+```yaml
+- type: transform
+  files:
+    - local.yml
+    - site.yml
+    - playbooks/deploy.yml
+  optional: true
+  hook: add_play_collections
+
+- type: remove
+  files:
+    - ansible.cfg
+```
+
+Multi-file syntax is only DRY sugar. The recipe model expands it into ordinary
+single-file steps before planning, and hooks are still called once per file
+with that file's path. `file` and `files` are mutually exclusive, and `files`
+must not be empty. There is no globbing or discovery in v1; list the known
+candidate paths that the recipe is allowed to touch.
 
 All recipe-local and target-relative paths must be safe relative paths. Absolute
 paths, `..` segments, and nested symlink traversal are rejected before
@@ -111,6 +144,30 @@ Important behavior:
   is already protected another way.
 
 Structured output rows use kind `recipe.outcome`.
+Skipped optional transforms appear in the row's `warnings` field as a
+semicolon-delimited string.
+
+## Ansible Playbook Migration Example
+
+For mixed-layout Ansible repos, list the known playbook names and let optional
+transforms skip whichever ones are absent:
+
+```yaml
+version: 1
+name: ansible-2.12-playbook-migration
+steps:
+  - type: transform
+    files:
+      - local.yml
+      - site.yml
+      - playbooks/deploy.yml
+    optional: true
+    hook: add_play_collections
+
+  - type: remove
+    files:
+      - ansible.cfg
+```
 
 ## Backups
 

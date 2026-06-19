@@ -36,6 +36,13 @@ confirmation unless `--yes` is passed. Backups are created by default before
 writing and can be restored later. Target writes are transactional: if a target
 cannot be written safely, that target is rolled back and reported as failed.
 
+Recipes can list known candidate files explicitly for `transform` and `remove`
+steps. `transform.files` and `remove.files` are expanded into ordinary
+per-file steps, and `transform` can use `optional: true` to skip playbooks or
+config files that are absent in some targets. Missing optional transforms are
+reported as warnings in `recipe.outcome` rows. There is no globbing; recipes
+name the candidate paths they intend to touch.
+
 Piped stdin accepts bare paths and untaped pipe records. For
 `workspace.workspace` records it uses `record.path`; for `workspace.repo`
 records it uses `Path(record.path) / record.repo`.

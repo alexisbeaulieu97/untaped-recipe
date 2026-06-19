@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from untaped_recipe.domain.paths import safe_relative_path
 
@@ -87,6 +88,7 @@ class TransformStep(BaseStep):
     type: Literal["transform"]
     file: Path
     hook: str
+    optional: bool = False
 
     @field_validator("file")
     @classmethod
@@ -149,6 +151,21 @@ class Recipe(BaseModel):
     inputs: dict[str, InputSpec] = Field(default_factory=dict)
     steps: tuple[Step, ...] = ()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_file_fanout(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        steps = data.get("steps")
+        if not isinstance(steps, list | tuple):
+            return value
+        normalized: list[object] = []
+        for step in steps:
+            normalized.extend(_normalize_file_step(step))
+        data["steps"] = normalized
+        return data
+
     @field_validator("name")
     @classmethod
     def _name_not_blank(cls, value: str) -> str:
@@ -156,3 +173,31 @@ class Recipe(BaseModel):
         if not value:
             raise ValueError("recipe name cannot be blank")
         return value
+
+
+def _normalize_file_step(step: object) -> list[object]:
+    if not isinstance(step, Mapping):
+        return [step]
+    step_type = step.get("type")
+    if step_type not in {"transform", "remove"}:
+        return [step]
+
+    has_file = "file" in step
+    has_files = "files" in step
+    if has_file == has_files:
+        raise ValueError(f"{step_type} step requires exactly one of file or files")
+    if not has_files:
+        return [step]
+
+    files = step["files"]
+    if not isinstance(files, Sequence) or isinstance(files, str | bytes) or not files:
+        raise ValueError("files must not be empty")
+
+    base = dict(step)
+    del base["files"]
+    expanded: list[object] = []
+    for file_value in files:
+        single = dict(base)
+        single["file"] = file_value
+        expanded.append(single)
+    return expanded

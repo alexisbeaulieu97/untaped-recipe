@@ -90,10 +90,17 @@ V1 recipes use `version: 1`, `name`, optional `description`, optional
 
 - `validate`: call a read-only hook.
 - `transform`: read one target file, call a transform hook, and plan new
-  content.
+  content. `optional: true` is supported only here; missing target files are
+  skipped with a warning, but files deleted earlier in the same plan still
+  error.
 - `template`: render a recipe-local template into a target-relative path.
 - `copy`: copy a recipe-local text file into a target-relative path.
 - `remove`: remove one target-relative file if it exists.
+
+`transform` and `remove` may accept `files` as explicit fan-out syntax. Keep
+that behavior normalized in `Recipe` model validation so `ApplyRecipe` continues
+to plan ordinary single-file steps. Do not add globbing or selector discovery
+to the engine; recipes must list known candidate paths explicitly.
 
 Do not add a general YAML selector DSL to the core engine. Common YAML edits
 belong in the shipped `yaml_edit` transform hook backed by `ruamel.yaml`.

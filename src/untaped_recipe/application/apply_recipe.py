@@ -54,7 +54,7 @@ class ApplyRecipe:
             elif isinstance(step, RemoveStep):
                 self._plan_remove(step, target, buffer)
             elif isinstance(step, TransformStep):
-                self._plan_transform(step, recipe_dir, target, inputs, buffer)
+                self._plan_transform(step, recipe_dir, target, inputs, buffer, warnings)
             elif isinstance(step, ValidateStep):
                 self._plan_validate(
                     step.hook,
@@ -130,14 +130,20 @@ class ApplyRecipe:
         target: Path,
         inputs: dict[str, object],
         buffer: dict[Path, str | None],
+        warnings: list[str],
     ) -> None:
         current = buffer.get(step.file)
         path = confined_path(target, step.file, field="file")
         if current is None:
             if step.file in buffer:
                 raise ValueError(f"cannot transform deleted file: {step.file}")
-            if not path.is_file():
+            if not path.exists():
+                if step.optional:
+                    warnings.append(f"optional transform skipped missing file: {step.file}")
+                    return
                 raise ValueError(f"transform file not found: {step.file}")
+            if not path.is_file():
+                raise ValueError(f"transform path is not a file: {step.file}")
             current = path.read_text()
         module = self._hooks.load(step.hook, recipe_dir)
         transform = getattr(module, "transform", None)

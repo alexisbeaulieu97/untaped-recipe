@@ -33,6 +33,13 @@ plain directories.
   then packaged built-ins.
 - V1 step types are `validate`, `transform`, `template`, `copy`, and
   `remove`.
+- `transform` accepts either `file` or explicit `files`; `files` expands to
+  one step per listed file. Missing transform targets fail unless the transform
+  also sets `optional: true`.
+- `remove` accepts either `file` or explicit `files`; missing remove targets
+  are skipped.
+- Do not use globbing in recipes. List the known candidate paths the recipe is
+  allowed to touch.
 - Common YAML edits should use the built-in `yaml_edit` transform hook. It
   supports `set`, `merge`, and `delete` with mapping keys, list indexes, and
   `where` list-item selectors.
@@ -46,6 +53,8 @@ plain directories.
 - Use `--columns` to narrow list/output rows. `apply` emits `recipe.outcome`
   rows; library commands emit `recipe.recipe`, `recipe.hook`, and
   `recipe.backup`.
+- Optional transform skips appear in the `warnings` field of `recipe.outcome`
+  rows as a semicolon-delimited string.
 - `apply --stdin` consumes bare paths plus `workspace.workspace` and
   `workspace.repo` records.
 - The SDK provides `--quiet`/`-q`, `config doctor`, and `config edit`.

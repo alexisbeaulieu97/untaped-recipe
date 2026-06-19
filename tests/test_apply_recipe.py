@@ -2,21 +2,64 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.domain.recipe import Recipe
+from untaped_recipe.hook_worker import handle_request
+from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
-from untaped_recipe.infrastructure.hook_loader import HookLoader
+from untaped_recipe.infrastructure.hook_resolver import HookResolver, UvHookRef
+
+
+class InlineWorkers:
+    """Execute worker requests in-process for planner unit tests."""
+
+    def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
+        for name in tuple(sys.modules):
+            if name == "recipe_hooks" or name.startswith("recipe_hooks."):
+                del sys.modules[name]
+        sys.path.insert(0, str(ref.project_root / "src"))
+        try:
+            response = handle_request({"id": "1", "module": ref.module, **payload})
+        finally:
+            sys.path.pop(0)
+        if not response["ok"]:
+            raise ValueError(str(response["error"]))
+        return response["result"]
 
 
 def _planner(tmp_path: Path) -> ApplyRecipe:
     return ApplyRecipe(
-        HookLoader(global_hooks=tmp_path / "global", builtins=()),
-        helpers=HookHelpers(),
+        HookExecutor(
+            HookResolver(global_hooks=tmp_path / "global"),
+            workers=InlineWorkers(),
+            helpers=HookHelpers(),
+        )
     )
+
+
+def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:
+    package = "recipe_hooks"
+    (recipe_dir / "src" / package / "hooks").mkdir(parents=True, exist_ok=True)
+    (recipe_dir / "src" / package / "__init__.py").write_text("")
+    (recipe_dir / "src" / package / "hooks" / "__init__.py").write_text("")
+    hook_rows: list[str] = []
+    for name, code in hooks.items():
+        (recipe_dir / "src" / package / "hooks" / f"{name}.py").write_text(code)
+        hook_rows.append(f'"{name}" = {{ module = "{package}.hooks.{name}" }}')
+    (recipe_dir / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "recipe-hooks"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.hooks]\n" + "\n".join(hook_rows) + "\n"
+    )
+    (recipe_dir / "uv.lock").write_text("version = 1\n")
 
 
 def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -> None:
@@ -24,12 +67,16 @@ def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -
     recipe_dir.mkdir()
     (recipe_dir / "templates").mkdir()
     (recipe_dir / "files").mkdir()
-    (recipe_dir / "hooks").mkdir()
     (recipe_dir / "templates" / "config.yml").write_text("name: {{ service }}\n")
     (recipe_dir / "files" / "README.md").write_text("# Shared\n")
-    (recipe_dir / "hooks" / "upper.py").write_text(
-        "def transform(content, *, inputs, target, file, args, helpers):\n"
-        "    return content.upper()\n"
+    _write_hook_project(
+        recipe_dir,
+        {
+            "upper": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content.upper()\n"
+            )
+        },
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -70,9 +117,14 @@ def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -
 def test_apply_recipe_failing_validate_aborts_target_without_changes(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "hooks").mkdir()
-    (recipe_dir / "hooks" / "fail.py").write_text(
-        "def validate(*, inputs, target, args, helpers):\n    return helpers.fail('not ready')\n"
+    _write_hook_project(
+        recipe_dir,
+        {
+            "fail": (
+                "def validate(*, inputs, target, args, helpers):\n"
+                "    return helpers.fail('not ready')\n"
+            )
+        },
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -101,10 +153,14 @@ def test_apply_recipe_failing_validate_aborts_target_without_changes(tmp_path: P
 def test_optional_transform_skips_missing_disk_files_with_warning(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "hooks").mkdir()
-    (recipe_dir / "hooks" / "mark.py").write_text(
-        "def transform(content, *, inputs, target, file, args, helpers):\n"
-        "    return content + file.name + '\\n'\n"
+    _write_hook_project(
+        recipe_dir,
+        {
+            "mark": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content + file.name + '\\n'\n"
+            )
+        },
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -134,9 +190,14 @@ def test_optional_transform_skips_missing_disk_files_with_warning(tmp_path: Path
 def test_optional_transform_still_errors_after_explicit_remove(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "hooks").mkdir()
-    (recipe_dir / "hooks" / "noop.py").write_text(
-        "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+    _write_hook_project(
+        recipe_dir,
+        {
+            "noop": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content\n"
+            )
+        },
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -164,9 +225,14 @@ def test_optional_transform_still_errors_after_explicit_remove(tmp_path: Path) -
 def test_optional_transform_errors_when_target_path_is_not_a_file(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "hooks").mkdir()
-    (recipe_dir / "hooks" / "noop.py").write_text(
-        "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+    _write_hook_project(
+        recipe_dir,
+        {
+            "noop": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content\n"
+            )
+        },
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -193,11 +259,15 @@ def test_optional_transform_errors_when_target_path_is_not_a_file(tmp_path: Path
 def test_optional_transform_uses_content_created_earlier_in_plan(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "hooks").mkdir()
     (recipe_dir / "template.yml").write_text("created\n")
-    (recipe_dir / "hooks" / "suffix.py").write_text(
-        "def transform(content, *, inputs, target, file, args, helpers):\n"
-        "    return content + 'transformed\\n'\n"
+    _write_hook_project(
+        recipe_dir,
+        {
+            "suffix": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content + 'transformed\\n'\n"
+            )
+        },
     )
     target = tmp_path / "target"
     target.mkdir()

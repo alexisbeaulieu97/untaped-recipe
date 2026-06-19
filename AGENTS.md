@@ -32,8 +32,10 @@ recipe execution, previews, backups, and restore.
 7. Do not add shell-command steps without a new design review. V1 writes are
    engine-mediated so preview, backups, and per-target transactional writes stay
    coherent.
-8. Python hooks are trusted local code. The engine does not sandbox hooks, but
-   normal file mutation must still be expressed as planned file changes.
+8. External Python hooks are trusted local uv hook projects executed by pooled
+   workers. Built-ins are engine-owned direct imports. Do not reintroduce
+   importlib file loading for arbitrary `.py` hooks, pluggy, or PEP 723 hooks
+   without a new design review.
 9. Backups are on by default for applies. Restore refuses to overwrite edits
    made after the backup unless `--force` is passed.
 10. Finish changes with the development workflow below.
@@ -47,7 +49,7 @@ src/untaped_recipe/
 ├── cli/                 # Cyclopts commands and output rendering
 ├── application/         # apply orchestration, target parsing, ports
 ├── domain/              # schema, verdicts, file changes, plans
-├── infrastructure/      # libraries, hook loading, backups, diffs, YAML
+├── infrastructure/      # libraries, hook resolution/execution, backups, diffs, YAML
 ├── builtins/hooks/      # packaged trusted transform hooks
 └── skills/              # packaged agent skill
 ```
@@ -77,11 +79,14 @@ Recipes resolve in this order:
 
 Hooks resolve in this order:
 
-1. recipe-local `hooks/<name>.py`
-2. global `hooks/<name>.py`
-3. packaged built-ins under `src/untaped_recipe/builtins/hooks/`
+1. recipe project `pyproject.toml` entries under `[tool.untaped_recipe.hooks]`
+2. global hook projects under `hooks/<name>/`
+3. namespaced hook packs under `hooks/<namespace>/` for dotted names
+4. packaged built-ins registered in `src/untaped_recipe/builtins/registry.py`
 
 Hook names in recipes must be safe logical names, not filesystem paths.
+Recipes never declare hook runtimes. The resolver returns either a built-in
+reference or a uv hook project reference.
 
 ## Recipe Schema
 
@@ -106,6 +111,23 @@ Do not add a general YAML selector DSL to the core engine. Common YAML edits
 belong in the shipped `yaml_edit` transform hook backed by `ruamel.yaml`.
 
 ## Hook Contracts
+
+External hook projects are uv-managed directories with `pyproject.toml`,
+`uv.lock`, package code under `src/`, and a hook metadata table:
+
+```toml
+[tool.untaped_recipe.hooks]
+"ansible.add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
+```
+
+External hooks run out-of-process through NDJSON stdin/stdout workers. Worker
+stdout is protocol-only; hook `print()` output is redirected to stderr. The
+worker uses stdlib wire parsing, and the engine validates worker responses
+before using them. One worker is pooled per hook project per apply invocation
+and requests are serialized per worker.
+
+Built-ins use the direct registry and run in-process. Keep built-ins reserved
+for engine-owned code such as `yaml_edit`.
 
 Transform hooks expose:
 

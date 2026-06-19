@@ -28,7 +28,7 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
     """List hooks."""
     with report_errors():
         rows: list[dict[str, object]] = [
-            {"name": entry.name, "path": str(entry.path)}
+            {"name": entry.name, "hooks": ", ".join(entry.hooks), "path": str(entry.path)}
             for entry in HookLibrary(library_root()).list()
         ]
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.hook")
@@ -36,21 +36,32 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
             echo(rendered)
 
 
+@app.command(name="init")
+def init_command(
+    name: Annotated[str, Parameter(help="Hook name or namespaced hook name.")],
+    /,
+) -> None:
+    """Scaffold a uv hook project."""
+    with report_errors():
+        path = HookLibrary(library_root()).init(name)
+        echo(str(path))
+
+
 @app.command(name="show")
 def show_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) -> None:
-    """Print a hook file."""
+    """Print a hook project file."""
     with report_errors():
-        echo(HookLibrary(library_root()).resolve(name).read_text(), nl=False)
+        echo(HookLibrary(library_root()).resolve_editable(name).read_text(), nl=False)
 
 
 @app.command(name="add")
 def add_command(
-    source: Annotated[Path, Parameter(help="Hook file.")],
+    source: Annotated[Path, Parameter(help="Hook project directory.")],
     /,
     *,
     name: Annotated[str | None, Parameter(name="--name", help="Library name.")] = None,
 ) -> None:
-    """Copy a hook into the library."""
+    """Copy a hook project into the library."""
     with report_errors():
         path = HookLibrary(library_root()).add(source, name=name)
         echo(str(path))
@@ -66,7 +77,7 @@ def remove_command(
         Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
     ] = False,
 ) -> None:
-    """Remove a hook from the library."""
+    """Remove a hook project from the library."""
     with report_errors():
         library = HookLibrary(library_root())
 
@@ -90,6 +101,6 @@ def remove_command(
 
 @app.command(name="edit")
 def edit_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) -> None:
-    """Open a hook in $VISUAL or $EDITOR."""
+    """Open a hook project file in $VISUAL or $EDITOR."""
     with report_errors():
-        edit_path(HookLibrary(library_root()).resolve(name))
+        edit_path(HookLibrary(library_root()).resolve_editable(name))

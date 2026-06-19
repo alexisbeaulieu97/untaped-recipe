@@ -3,17 +3,37 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import ModuleType
 from typing import Protocol
 
 from untaped_recipe.domain.plan import Verdict
 
 
-class HookLoaderPort(Protocol):
-    """Load a trusted hook module by name or path."""
+class HookExecutorPort(Protocol):
+    """Execute trusted hooks through their resolved runtime."""
 
-    def load(self, name: str, recipe_dir: Path) -> ModuleType:
-        """Return a Python module containing a transform or validate callable."""
+    def transform(
+        self,
+        hook: str,
+        content: str,
+        *,
+        recipe_dir: Path,
+        target: Path,
+        file: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+    ) -> str:
+        """Run a transform hook and return replacement content."""
+
+    def validate(
+        self,
+        hook: str,
+        *,
+        recipe_dir: Path,
+        target: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+    ) -> Verdict:
+        """Run a validate hook and return its coerced verdict."""
 
 
 class HookHelpersPort(Protocol):

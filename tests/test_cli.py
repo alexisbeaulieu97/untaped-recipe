@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,31 @@ from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.infrastructure.backup import BackupStore
 
 pytestmark = pytest.mark.usefixtures("isolate_config")
+
+
+def _write_hook_project(
+    root: Path,
+    *,
+    public_name: str,
+    module_name: str,
+    code: str,
+    package: str = "recipe_hooks",
+) -> None:
+    module_path = root / "src" / package / "hooks" / f"{module_name}.py"
+    module_path.parent.mkdir(parents=True, exist_ok=True)
+    (root / "src" / package / "__init__.py").write_text("")
+    (root / "src" / package / "hooks" / "__init__.py").write_text("")
+    module_path.write_text(code)
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        f'name = "{root.name}-hooks"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.hooks]\n"
+        f'"{public_name}" = {{ module = "{package}.hooks.{module_name}" }}\n'
+    )
+    subprocess.run(["uv", "lock"], cwd=root, check=True)
 
 
 def test_apply_yes_writes_and_emits_json_summary(tmp_path: Path) -> None:
@@ -278,7 +304,6 @@ def test_apply_outcome_includes_optional_transform_warnings(tmp_path: Path) -> N
 def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "hooks").mkdir()
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
         "name: ansible-2.12-playbook-migration\n"
@@ -294,9 +319,14 @@ def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> 
         "    files:\n"
         "      - ansible.cfg\n"
     )
-    (recipe_dir / "hooks" / "add_play_collections.py").write_text(
-        "def transform(content, *, inputs, target, file, args, helpers):\n"
-        "    return content + '# collections added to ' + file.name + '\\n'\n"
+    _write_hook_project(
+        recipe_dir,
+        public_name="add_play_collections",
+        module_name="add_play_collections",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return content + '# collections added to ' + file.name + '\\n'\n"
+        ),
     )
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -333,8 +363,6 @@ def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> 
 def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text("version: 1\nname: demo\nsteps: []\n")
-    hook = tmp_path / "check.py"
-    hook.write_text("VALUE = 'hook'\n")
     editor = tmp_path / "editor.sh"
     marker = tmp_path / "edited.txt"
     editor.write_text(f"#!/bin/sh\nprintf '%s' \"$1\" > {marker}\n")
@@ -358,20 +386,48 @@ def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.Mo
     removed_recipe = invoker.invoke(app, ["recipe", "remove", "demo", "--yes"])
     assert removed_recipe.exit_code == 0, removed_recipe.output
 
-    added_hook = invoker.invoke(app, ["hook", "add", str(hook), "--name", "check"])
+    initialized_hook = invoker.invoke(app, ["hook", "init", "check"])
+    assert initialized_hook.exit_code == 0, initialized_hook.output
+    initialized_path = Path(initialized_hook.stdout.strip())
+    assert (initialized_path / "pyproject.toml").is_file()
+    assert (initialized_path / "uv.lock").is_file()
+
+    listed_initialized_hooks = invoker.invoke(app, ["hook", "list", "--format", "json"])
+    assert listed_initialized_hooks.exit_code == 0, listed_initialized_hooks.output
+    initialized_row = json.loads(listed_initialized_hooks.stdout)[0]
+    assert initialized_row["name"] == "check"
+    assert initialized_row["hooks"] == "check"
+    shown_initialized_hook = invoker.invoke(app, ["hook", "show", "check"])
+    assert "def transform" in shown_initialized_hook.stdout
+    edited_initialized_hook = invoker.invoke(app, ["hook", "edit", "check"])
+    assert edited_initialized_hook.exit_code == 0, edited_initialized_hook.output
+    assert marker.read_text().endswith("check.py")
+    removed_initialized_hook = invoker.invoke(app, ["hook", "remove", "check", "--yes"])
+    assert removed_initialized_hook.exit_code == 0, removed_initialized_hook.output
+
+    hook_project = tmp_path / "shared-project"
+    _write_hook_project(
+        hook_project,
+        public_name="shared",
+        module_name="shared",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+        ),
+    )
+    added_hook = invoker.invoke(app, ["hook", "add", str(hook_project), "--name", "shared"])
     assert added_hook.exit_code == 0, added_hook.output
     listed_hooks = invoker.invoke(app, ["hook", "list", "--format", "json"])
     assert listed_hooks.exit_code == 0, listed_hooks.output
-    assert json.loads(listed_hooks.stdout)[0]["name"] == "check"
-    shown_hook = invoker.invoke(app, ["hook", "show", "check"])
-    assert "VALUE = 'hook'" in shown_hook.stdout
-    edited_hook = invoker.invoke(app, ["hook", "edit", "check"])
+    assert json.loads(listed_hooks.stdout)[0]["name"] == "shared"
+    shown_hook = invoker.invoke(app, ["hook", "show", "shared"])
+    assert "def transform" in shown_hook.stdout
+    edited_hook = invoker.invoke(app, ["hook", "edit", "shared"])
     assert edited_hook.exit_code == 0, edited_hook.output
-    assert marker.read_text().endswith("check.py")
-    refused_hook_remove = invoker.invoke(app, ["hook", "remove", "check"])
+    assert marker.read_text().endswith("shared.py")
+    refused_hook_remove = invoker.invoke(app, ["hook", "remove", "shared"])
     assert refused_hook_remove.exit_code != 0
     assert "requires --yes" in refused_hook_remove.output
-    removed_hook = invoker.invoke(app, ["hook", "remove", "check", "--yes"])
+    removed_hook = invoker.invoke(app, ["hook", "remove", "shared", "--yes"])
     assert removed_hook.exit_code == 0, removed_hook.output
 
 

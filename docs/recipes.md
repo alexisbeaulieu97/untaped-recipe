@@ -14,17 +14,21 @@ hooks/
 backups/
 ```
 
-Recipes can be stored as a package directory:
+Recipes can be stored as a project directory:
 
 ```text
 recipes/add-config/
 ├── recipe.yml
+├── pyproject.toml
+├── uv.lock
 ├── templates/
 │   └── config.yml
 ├── files/
 │   └── README.md
-└── hooks/
-    └── set_owner.py
+└── src/
+    └── add_config_hooks/
+        └── hooks/
+            └── set_owner.py
 ```
 
 Or as a single file:
@@ -34,6 +38,25 @@ recipes/add-config.yml
 ```
 
 Resolution order is package, single library file, then filesystem path.
+
+Single-file recipes are best when they use only templates, copy/remove steps,
+built-ins, or hooks already installed in the global hook library. Use a recipe
+project when the recipe needs local hook code or hook-specific dependencies.
+Recipe projects declare local hooks in `pyproject.toml`:
+
+```toml
+[tool.untaped_recipe.hooks]
+"set_owner" = { module = "add_config_hooks.hooks.set_owner" }
+```
+
+The recipe still uses the simple hook name:
+
+```yaml
+steps:
+  - type: transform
+    file: pyproject.toml
+    hook: set_owner
+```
 
 ## Schema
 
@@ -168,6 +191,11 @@ steps:
     files:
       - ansible.cfg
 ```
+
+The `add_play_collections` hook can be recipe-local in the recipe project's
+`pyproject.toml`, a global hook project under `hooks/add_play_collections/`, or
+part of a namespaced pack such as `hooks/ansible/` and referenced as
+`ansible.add_play_collections`.
 
 ## Backups
 

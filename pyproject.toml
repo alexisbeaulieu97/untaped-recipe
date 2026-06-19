@@ -2,6 +2,7 @@
 name = "untaped-recipe"
 version = "0.1.0"
 description = "Apply reusable local recipes across plain directories."
+readme = "README.md"
 authors = [
     { name = "Alexis Beaulieu", email = "alexisbeaulieu97@gmail.com" }
 ]
@@ -20,6 +21,9 @@ untaped-recipe = "untaped_recipe.__main__:main"
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+source-include = ["AGENTS.md", "docs/**"]
 
 [dependency-groups]
 dev = [

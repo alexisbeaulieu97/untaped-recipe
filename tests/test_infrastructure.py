@@ -13,9 +13,11 @@ from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, f
 from untaped_recipe.builtins.hooks import yaml_edit
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.domain.recipe import Recipe
+from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_library import HookLibrary
-from untaped_recipe.infrastructure.hook_loader import HookLoader
+from untaped_recipe.infrastructure.hook_resolver import HookResolver
+from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 from untaped_recipe.infrastructure.ruamel_io import dump_yaml, load_yaml
 
@@ -50,27 +52,53 @@ def test_recipe_library_file_package_crud_and_errors(tmp_path: Path) -> None:
 
 
 def test_hook_library_crud_and_errors(tmp_path: Path) -> None:
-    source = tmp_path / "source.py"
-    source.write_text("VALUE = 'source'\n")
+    source = tmp_path / "source"
+    _write_hook_project(source, hook_name="shared")
     library = HookLibrary(tmp_path / "library")
 
     assert library.list() == []
     hook = library.add(source, name="shared")
 
-    assert hook == tmp_path / "library" / "hooks" / "shared.py"
+    assert hook == tmp_path / "library" / "hooks" / "shared"
     assert library.resolve("shared") == hook
     assert library.resolve(str(source)) == source
-    assert [entry.name for entry in library.list()] == ["shared"]
+    entries = library.list()
+    assert [entry.name for entry in entries] == ["shared"]
+    assert entries[0].hooks == ("shared",)
+    assert library.resolve_editable("shared").name == "shared.py"
     with pytest.raises(ValueError, match="already exists"):
         library.add(source, name="shared")
     with pytest.raises(ValueError, match="source not found"):
-        library.add(tmp_path / "missing.py")
+        library.add(tmp_path / "missing")
+    (tmp_path / "not-a-dir.py").write_text("VALUE = 1\n")
+    with pytest.raises(ValueError, match="uv hook project directory"):
+        library.add(tmp_path / "not-a-dir.py")
 
     assert library.remove("shared") == hook
     with pytest.raises(ValueError, match="hook not found"):
         library.resolve("shared")
     with pytest.raises(ValueError, match="hook not found"):
         library.remove("shared")
+
+
+def _write_hook_project(root: Path, *, hook_name: str) -> None:
+    package = "shared_hooks"
+    (root / "src" / package / "hooks").mkdir(parents=True, exist_ok=True)
+    (root / "src" / package / "__init__.py").write_text("")
+    (root / "src" / package / "hooks" / "__init__.py").write_text("")
+    (root / "src" / package / "hooks" / f"{hook_name}.py").write_text(
+        "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+    )
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "shared-hooks"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.hooks]\n"
+        f'"{hook_name}" = {{ module = "{package}.hooks.{hook_name}" }}\n'
+    )
+    (root / "uv.lock").write_text("version = 1\n")
 
 
 def test_hook_helpers_and_builtin_yaml_edit_preserve_round_trip_yaml(tmp_path: Path) -> None:
@@ -139,8 +167,11 @@ def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> No
         }
     )
     planner = ApplyRecipe(
-        HookLoader(global_hooks=tmp_path / "global", builtins=()),
-        helpers=HookHelpers(),
+        HookExecutor(
+            HookResolver(global_hooks=tmp_path / "global"),
+            workers=UvHookWorkerPool(),
+            helpers=HookHelpers(),
+        )
     )
 
     with pytest.raises(ValueError, match="symlink"):
@@ -202,8 +233,11 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
     missing = tmp_path / "missing"
     runner = RunBulkApply(
         ApplyRecipe(
-            HookLoader(global_hooks=tmp_path / "global", builtins=()),
-            helpers=HookHelpers(),
+            HookExecutor(
+                HookResolver(global_hooks=tmp_path / "global"),
+                workers=UvHookWorkerPool(),
+                helpers=HookHelpers(),
+            )
         )
     )
 

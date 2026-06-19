@@ -33,10 +33,11 @@ from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.recipe_commands import app as recipe_app
 from untaped_recipe.domain.plan import TargetPlan
 from untaped_recipe.domain.recipe import Recipe
-from untaped_recipe.infrastructure import BackupStore, HookLoader, RecipeLibrary
+from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolver, RecipeLibrary
 from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
+from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 
 app = create_app(name="recipe", help="Apply reusable local recipes to plain directories.")
 app.command(recipe_app, name="recipe")
@@ -147,23 +148,26 @@ def _apply_context(
         raise ConfigError("at least one target directory is required (or use --stdin)")
     inputs = _input_values(raw_vars, vars_file)
     workers = clamp_parallel(max(parallel, 1), cap=32, policy="recipe planning cap")
-    builtins = Path(__file__).parents[1] / "builtins" / "hooks"
-    runner = RunBulkApply(
-        ApplyRecipe(
-            HookLoader(global_hooks=root / "hooks", builtins=(builtins,)),
-            helpers=HookHelpers(),
+    with UvHookWorkerPool() as hook_workers:
+        runner = RunBulkApply(
+            ApplyRecipe(
+                HookExecutor(
+                    HookResolver(global_hooks=root / "hooks"),
+                    workers=hook_workers,
+                    helpers=HookHelpers(),
+                )
+            )
         )
-    )
-    try:
-        plans = runner.plan(
-            recipe=loaded,
-            recipe_dir=recipe_path.parent,
-            targets=targets,
-            inputs=inputs,
-            parallel=workers,
-        )
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
+        try:
+            plans = runner.plan(
+                recipe=loaded,
+                recipe_dir=recipe_path.parent,
+                targets=targets,
+                inputs=inputs,
+                parallel=workers,
+            )
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     return ApplyContext(root=root, recipe=loaded, inputs=inputs, plans=plans)
 
 

@@ -280,8 +280,9 @@ def _input_values(raw_vars: list[str], vars_file: Path | None) -> dict[str, obje
 
 def _row(plan: TargetPlan) -> dict[str, object]:
     return {
-        "target": plan.target,
+        "target": str(plan.target),
         "status": plan.status,
         "files_changed": plan.files_changed,
+        "warnings": "; ".join(plan.warnings),
         "error": plan.error,
     }

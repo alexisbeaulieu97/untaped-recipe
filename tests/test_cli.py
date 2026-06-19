@@ -234,6 +234,102 @@ def test_apply_var_values_keep_equals_and_unknown_vars_are_rejected(tmp_path: Pa
     assert "unknown input" in rejected.output
 
 
+def test_apply_outcome_includes_optional_transform_warnings(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "name: demo\n"
+        "steps:\n"
+        "  - type: transform\n"
+        "    file: missing.yml\n"
+        "    optional: true\n"
+        "    hook: unused\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    json_result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run", "--format", "json"],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    rows = json.loads(json_result.stdout)
+    assert rows[0]["warnings"] == "optional transform skipped missing file: missing.yml"
+
+    yaml_result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run", "--format", "yaml"],
+    )
+    assert yaml_result.exit_code == 0, yaml_result.output
+    assert "warnings: 'optional transform skipped missing file: missing.yml'" in yaml_result.stdout
+
+    pipe_result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run", "--format", "pipe"],
+    )
+    assert pipe_result.exit_code == 0, pipe_result.output
+    pipe_row = json.loads(pipe_result.stdout)
+    assert pipe_row["kind"] == "recipe.outcome"
+    assert pipe_row["record"]["warnings"] == (
+        "optional transform skipped missing file: missing.yml"
+    )
+
+
+def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "hooks").mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "name: ansible-2.12-playbook-migration\n"
+        "steps:\n"
+        "  - type: transform\n"
+        "    files:\n"
+        "      - local.yml\n"
+        "      - site.yml\n"
+        "      - playbooks/deploy.yml\n"
+        "    optional: true\n"
+        "    hook: add_play_collections\n"
+        "  - type: remove\n"
+        "    files:\n"
+        "      - ansible.cfg\n"
+    )
+    (recipe_dir / "hooks" / "add_play_collections.py").write_text(
+        "def transform(content, *, inputs, target, file, args, helpers):\n"
+        "    return content + '# collections added to ' + file.name + '\\n'\n"
+    )
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (second / "playbooks").mkdir()
+    (first / "local.yml").write_text("- hosts: localhost\n")
+    (first / "ansible.cfg").write_text("[defaults]\n")
+    (second / "local.yml").write_text("- hosts: localhost\n")
+    (second / "site.yml").write_text("- hosts: all\n")
+    (second / "playbooks" / "deploy.yml").write_text("- hosts: deploy\n")
+    (second / "ansible.cfg").write_text("[defaults]\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(first), str(second), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["warnings"] == (
+        "optional transform skipped missing file: site.yml; "
+        "optional transform skipped missing file: playbooks/deploy.yml"
+    )
+    assert rows[1]["warnings"] == ""
+    assert "# collections added to local.yml" in (first / "local.yml").read_text()
+    assert not (first / "ansible.cfg").exists()
+    assert "# collections added to local.yml" in (second / "local.yml").read_text()
+    assert "# collections added to site.yml" in (second / "site.yml").read_text()
+    assert "# collections added to deploy.yml" in (second / "playbooks" / "deploy.yml").read_text()
+    assert not (second / "ansible.cfg").exists()
+
+
 def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text("version: 1\nname: demo\nsteps: []\n")

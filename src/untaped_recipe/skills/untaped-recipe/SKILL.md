@@ -61,10 +61,11 @@ plain directories.
   names, or template rendering. The context is `target.path`, `target.name`,
   `target.parent_path`, `target.parent_name`, and optional incoming pipe
   `record`. Missing, undefined, or null candidates fall through; `false`, `0`,
-  and `""` are real values.
+  and `""` are real values. Oversized derived values are rejected.
 - Input precedence is fixed value/source override, recipe `from`, recipe
-  `default`, `--interactive` prompt, then required-input error. A fixed value
-  and `--input-from` source override for the same input is a usage error.
+  `--interactive` prompt, recipe `default`, then required-input error. A fixed
+  value and `--input-from` source override for the same input is a usage error.
+  Empty interactive answers accept the default when one exists.
 - `apply foo` resolves only standalone library recipe `recipes/foo/`.
 - `apply pack:recipe` resolves an installed pack recipe from `packs/pack/`.
 - `apply ./recipe.yml` runs a path-only single-file recipe.

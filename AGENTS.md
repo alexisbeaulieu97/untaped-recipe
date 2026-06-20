@@ -165,7 +165,7 @@ candidate values fall through to the next candidate; `false`, `0`, and `""`
 are real values.
 
 Input precedence is fixed value/source override first, then recipe `from`,
-recipe `default`, interactive prompt, and required-input error. A fixed value
+interactive prompt, recipe `default`, and required-input error. A fixed value
 from `--var`/`--vars` and a source override from `--input-from` for the same
 input is a usage error. `--interactive --check` is rejected.
 `--stdin --interactive` must read target data from stdin and prompt only

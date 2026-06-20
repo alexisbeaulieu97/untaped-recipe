@@ -11,7 +11,9 @@ from untaped_recipe.application.inputs import (
     InputResolutionConfig,
     InputResolutionResult,
     NoPromptAvailable,
+    prepare_input_resolution,
     redact_inputs,
+    resolve_global_values,
     resolve_target_inputs,
 )
 from untaped_recipe.application.targets import Target
@@ -25,8 +27,17 @@ class PromptRecorder:
         self.answers = answers
         self.messages: list[str] = []
 
-    def ask(self, message: str, *, sensitive: bool) -> str:
-        self.messages.append(f"{message}|sensitive={sensitive}")
+    def ask(
+        self,
+        message: str,
+        *,
+        sensitive: bool,
+        default: object | None = None,
+        required: bool = True,
+    ) -> str:
+        self.messages.append(
+            f"{message}|sensitive={sensitive}|default={default}|required={required}"
+        )
         try:
             return self.answers[message]
         except KeyError as exc:
@@ -71,6 +82,47 @@ def _recipe() -> Recipe:
     )
 
 
+def _config(
+    recipe: Recipe,
+    *,
+    fixed_values: dict[str, object] | None = None,
+    input_from: dict[str, str] | None = None,
+    interactive: bool = False,
+    prompt: PromptRecorder | None = None,
+) -> InputResolutionConfig:
+    return prepare_input_resolution(
+        recipe,
+        fixed_values=fixed_values or {},
+        input_from=input_from or {},
+        interactive=interactive,
+        prompt=None if prompt is None else prompt.ask,
+    )
+
+
+def _resolve(
+    recipe: Recipe,
+    target: Target,
+    *,
+    fixed_values: dict[str, object] | None = None,
+    input_from: dict[str, str] | None = None,
+    interactive: bool = False,
+    prompt: PromptRecorder | None = None,
+) -> InputResolutionResult:
+    config = _config(
+        recipe,
+        fixed_values=fixed_values,
+        input_from=input_from,
+        interactive=interactive,
+        prompt=prompt,
+    )
+    return resolve_target_inputs(
+        recipe,
+        target,
+        config=config,
+        global_values=resolve_global_values(recipe, config),
+    )
+
+
 def test_resolve_target_inputs_uses_record_target_fallbacks_and_native_values() -> None:
     target = Target(
         path=Path("/work/acme/api"),
@@ -79,10 +131,10 @@ def test_resolve_target_inputs_uses_record_target_fallbacks_and_native_values() 
         lineno=7,
     )
 
-    result = resolve_target_inputs(
+    result = _resolve(
         _recipe(),
         target,
-        config=InputResolutionConfig(global_values={"token": "secret"}),
+        fixed_values={"token": "secret"},
     )
 
     assert result == InputResolutionResult(
@@ -107,10 +159,10 @@ def test_resolve_target_inputs_uses_record_target_fallbacks_and_native_values() 
 def test_resolve_target_inputs_falls_back_to_target_name_without_record(
     record: dict[str, object] | None,
 ) -> None:
-    result = resolve_target_inputs(
+    result = _resolve(
         _recipe(),
         Target(path=Path("/work/acme/api"), record=record),
-        config=InputResolutionConfig(global_values={"token": "secret"}),
+        fixed_values={"token": "secret"},
     )
 
     assert result.values["service"] == "api"
@@ -133,10 +185,9 @@ def test_input_resolution_rejects_unsafe_template_access() -> None:
     )
 
     with pytest.raises(ValueError, match="invalid input source expression"):
-        resolve_target_inputs(
+        _resolve(
             recipe,
             Target(path=Path("/work/acme/api")),
-            config=InputResolutionConfig(),
         )
 
 
@@ -151,34 +202,27 @@ def test_resolve_target_inputs_treats_missing_required_target_input_as_target_er
     )
 
     with pytest.raises(ValueError, match="missing required input: team"):
-        resolve_target_inputs(
+        _resolve(
             recipe,
             Target(path=Path("/work/acme/api")),
-            config=InputResolutionConfig(),
         )
 
 
 def test_input_resolution_rejects_cli_value_and_source_conflicts() -> None:
     with pytest.raises(ConfigError, match="cannot combine --var/--vars and --input-from"):
-        resolve_target_inputs(
+        _config(
             _recipe(),
-            Target(path=Path("/work/acme/api")),
-            config=InputResolutionConfig(
-                global_values={"service": "api", "token": "secret"},
-                input_from={"service": "{{ target.name }}"},
-            ),
+            fixed_values={"service": "api", "token": "secret"},
+            input_from={"service": "{{ target.name }}"},
         )
 
 
 def test_input_resolution_rejects_input_from_for_explicit_global_scope() -> None:
     with pytest.raises(ConfigError, match="scope global"):
-        resolve_target_inputs(
+        _config(
             _recipe(),
-            Target(path=Path("/work/acme/api")),
-            config=InputResolutionConfig(
-                global_values={"token": "secret"},
-                input_from={"token": "{{ target.name }}"},
-            ),
+            fixed_values={"token": "secret"},
+            input_from={"token": "{{ target.name }}"},
         )
 
 
@@ -209,16 +253,48 @@ def test_interactive_prompts_for_global_and_target_inputs() -> None:
         }
     )
 
-    result = resolve_target_inputs(
+    result = _resolve(
         recipe,
         Target(path=Path("/work/acme/api")),
-        config=InputResolutionConfig(interactive=True, prompt=prompt.ask),
+        interactive=True,
+        prompt=prompt,
     )
 
     assert result.values == {"owner": "platform", "service": "api"}
     assert prompt.messages == [
-        "owner (Owning team.)|sensitive=False",
-        "service for /work/acme/api (Service name.)|sensitive=False",
+        "owner (Owning team.)|sensitive=False|default=None|required=True",
+        "service for /work/acme/api (Service name.)|sensitive=False|default=None|required=True",
+    ]
+
+
+def test_interactive_prompt_runs_before_default_and_empty_uses_default() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "replicas": {"type": "int", "default": 2},
+                "owner": {"type": "str", "default": "platform"},
+            },
+        }
+    )
+    prompt = PromptRecorder(
+        {
+            "replicas (default: 2)": "5",
+            "owner (default: platform)": "",
+        }
+    )
+
+    result = _resolve(
+        recipe,
+        Target(path=Path("/work/acme/api")),
+        interactive=True,
+        prompt=prompt,
+    )
+
+    assert result.values == {"replicas": 5, "owner": "platform"}
+    assert prompt.messages == [
+        "replicas (default: 2)|sensitive=False|default=2|required=False",
+        "owner (default: platform)|sensitive=False|default=platform|required=False",
     ]
 
 
@@ -228,11 +304,39 @@ def test_interactive_without_prompt_backend_fails_clearly() -> None:
     )
 
     with pytest.raises(NoPromptAvailable, match="interactive input requires a terminal"):
-        resolve_target_inputs(
+        _resolve(
             recipe,
             Target(path=Path("/work/acme/api")),
-            config=InputResolutionConfig(interactive=True),
+            interactive=True,
         )
+
+
+def test_invalid_jinja_syntax_fails_during_input_preparation() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "from": "{{ target.name"},
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match="invalid input source expression for service"):
+        _config(recipe)
+
+
+def test_derived_value_size_is_bounded() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "from": "{{ 'x' * 9000 }}"},
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="maximum length"):
+        _resolve(recipe, Target(path=Path("/work/acme/api")))
 
 
 def test_redact_inputs_only_redacts_sensitive_declared_inputs() -> None:

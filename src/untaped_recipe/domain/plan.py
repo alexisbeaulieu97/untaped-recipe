@@ -66,7 +66,6 @@ class TargetPlan(BaseModel):
     changes: tuple[FileChange, ...] = ()
     warnings: tuple[str, ...] = ()
     error: str = ""
-    inputs: dict[str, object] = Field(default_factory=dict)
     display_inputs: dict[str, object] = Field(default_factory=dict)
 
     @property

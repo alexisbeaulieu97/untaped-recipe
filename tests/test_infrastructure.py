@@ -451,8 +451,8 @@ def test_bulk_plan_resolves_per_target_inputs_and_preserves_duplicate_order(
     )
 
     assert [plan.target for plan in plans] == [target, other, target]
-    assert [plan.inputs["service"] for plan in plans] == ["first", "second", "third"]
     assert [plan.display_inputs["token"] for plan in plans] == ["***", "***", "***"]
+    assert [plan.display_inputs["service"] for plan in plans] == ["first", "second", "third"]
     assert [plan.changes[0].after for plan in plans] == [
         "service=first\n",
         "service=second\n",
@@ -535,7 +535,6 @@ def test_bulk_plan_input_resolution_errors_have_empty_inputs(tmp_path: Path) -> 
     )
 
     assert plans[0].status == "error"
-    assert plans[0].inputs == {}
     assert plans[0].display_inputs == {}
 
 

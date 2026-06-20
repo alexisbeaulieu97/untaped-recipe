@@ -17,7 +17,7 @@ InputScope = Literal["target", "global"]
 class InputSpec(BaseModel):
     """One declared recipe input."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: InputType = "str"
     default: object | None = None
@@ -33,7 +33,7 @@ class InputSpec(BaseModel):
         if not isinstance(value, Mapping):
             return value
         data = dict(value)
-        raw_from = data.get("from", data.get("from_", ()))
+        raw_from = data.get("from", ())
         if raw_from is None:
             from_values: tuple[str, ...] = ()
         elif isinstance(raw_from, str):
@@ -59,15 +59,21 @@ class InputSpec(BaseModel):
         if self.type == "str":
             return str(value)
         if self.type == "int":
-            if isinstance(value, int) and not isinstance(value, bool):
-                return value
-            if isinstance(value, float):
-                return int(value)
-            return int(str(value))
+            try:
+                if isinstance(value, int) and not isinstance(value, bool):
+                    return value
+                if isinstance(value, float):
+                    return int(value)
+                return int(str(value))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("cannot coerce value to int") from exc
         if self.type == "float":
-            if isinstance(value, int | float) and not isinstance(value, bool):
-                return float(value)
-            return float(str(value))
+            try:
+                if isinstance(value, int | float) and not isinstance(value, bool):
+                    return float(value)
+                return float(str(value))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("cannot coerce value to float") from exc
         if isinstance(value, bool):
             return value
         normalized = str(value).strip().lower()
@@ -75,27 +81,7 @@ class InputSpec(BaseModel):
             return True
         if normalized in {"0", "false", "no", "off"}:
             return False
-        raise ValueError(f"cannot coerce {value!r} to bool")
-
-    @staticmethod
-    def resolve_all(
-        specs: dict[str, InputSpec],
-        *,
-        overrides: dict[str, object],
-    ) -> dict[str, object]:
-        """Resolve all declared inputs from overrides and defaults."""
-        unknown = sorted(set(overrides) - set(specs))
-        if unknown:
-            raise ValueError(f"unknown input: {unknown[0]}")
-        values: dict[str, object] = {}
-        for name, spec in specs.items():
-            if name in overrides:
-                values[name] = spec.coerce(overrides[name])
-            elif spec.default is not None:
-                values[name] = spec.coerce(spec.default)
-            elif spec.required:
-                raise ValueError(f"missing required input: {name}")
-        return values
+        raise ValueError("cannot coerce value to bool")
 
 
 class BaseStep(BaseModel):

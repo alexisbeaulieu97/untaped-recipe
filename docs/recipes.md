@@ -201,7 +201,7 @@ Supported input types are `str`, `int`, `bool`, and `float`.
 Input specs support:
 
 - `type`: one of `str`, `int`, `bool`, or `float`.
-- `default`: fallback value when no source or fixed value resolves.
+- `default`: fallback value when no fixed value, source, or prompt resolves.
 - `required`: require a value after sources and defaults.
 - `description`: prompt/help text for humans.
 - `sensitive`: redact the value in output rows and backup metadata.
@@ -226,18 +226,20 @@ or template rendering. The context contains:
   records.
 
 Missing, undefined, or null candidate values fall through to the next
-candidate. `false`, `0`, and `""` are real values.
+candidate. `false`, `0`, and `""` are real values. Derived values are bounded
+to small scalar-sized results; oversized rendered values are rejected.
 
 Input precedence for each declared input is:
 
 1. fixed value from `--var`/`--vars` or source override from `--input-from`
 2. recipe `from`
-3. recipe `default`
-4. `--interactive` prompt
+3. `--interactive` prompt
+4. recipe `default`
 5. required-input error
 
 A fixed value and source override for the same input is a usage error. Unknown
-input names in `--var`, `--vars`, or `--input-from` are rejected.
+input names in `--var`, `--vars`, or `--input-from` are rejected. When a
+default exists, interactive prompts show it and an empty answer accepts it.
 
 Examples:
 

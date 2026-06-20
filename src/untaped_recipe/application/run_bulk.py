@@ -10,7 +10,8 @@ from untaped_recipe.application.inputs import (
     InputResolutionConfig,
     InputResolutionResult,
     PromptFunc,
-    resolve_global_inputs,
+    prepare_input_resolution,
+    resolve_global_values,
     resolve_target_inputs,
 )
 from untaped_recipe.application.targets import Target
@@ -42,21 +43,14 @@ class RunBulkApply:
         parallel: int = 1,
     ) -> list[TargetPlan]:
         """Return a plan or error row for every target."""
-        config = InputResolutionConfig(
-            global_values=inputs,
+        config = prepare_input_resolution(
+            recipe,
+            fixed_values=inputs,
             input_from=input_from or {},
             interactive=interactive,
             prompt=prompt,
         )
-        global_inputs = resolve_global_inputs(recipe, config)
-        target_values = dict(inputs)
-        target_values.update(global_inputs)
-        target_config = InputResolutionConfig(
-            global_values=target_values,
-            input_from=input_from or {},
-            interactive=interactive,
-            prompt=prompt,
-        )
+        global_values = resolve_global_values(recipe, config)
         if interactive:
             parallel = 1
         if parallel <= 1 or len(targets) <= 1:
@@ -66,7 +60,8 @@ class RunBulkApply:
                     recipe_dir,
                     local_hook_project,
                     target,
-                    target_config,
+                    config,
+                    global_values,
                 )
                 for target in targets
             ]
@@ -79,7 +74,8 @@ class RunBulkApply:
                     recipe_dir,
                     local_hook_project,
                     target,
-                    target_config,
+                    config,
+                    global_values,
                 ): index
                 for index, target in enumerate(targets)
             }
@@ -95,10 +91,16 @@ class RunBulkApply:
         local_hook_project: Path | None,
         target: Target,
         config: InputResolutionConfig,
+        global_values: dict[str, object],
     ) -> TargetPlan:
         resolved: InputResolutionResult | None = None
         try:
-            resolved = resolve_target_inputs(recipe, target, config=config)
+            resolved = resolve_target_inputs(
+                recipe,
+                target,
+                config=config,
+                global_values=global_values,
+            )
             plan = self._planner(
                 recipe=recipe,
                 recipe_dir=recipe_dir,
@@ -108,7 +110,6 @@ class RunBulkApply:
             )
             return plan.model_copy(
                 update={
-                    "inputs": resolved.values,
                     "display_inputs": resolved.display_values,
                 }
             )
@@ -117,6 +118,5 @@ class RunBulkApply:
                 target=target.path,
                 status="error",
                 error=str(exc),
-                inputs={} if resolved is None else resolved.values,
                 display_inputs={} if resolved is None else resolved.display_values,
             )

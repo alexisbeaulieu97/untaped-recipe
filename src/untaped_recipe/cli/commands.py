@@ -141,7 +141,9 @@ def apply_command(
         if interactive and check:
             raise ConfigError("--interactive cannot be used with --check")
         if stdin and not yes and not dry_run and not check:
-            raise ConfigError("apply requires --yes when stdin is not interactive")
+            raise ConfigError(
+                "apply requires --yes with --stdin unless --dry-run or --check is used"
+            )
         with ExitStack() as stack:
             prompt = _interactive_prompt(stdin=stdin, interactive=interactive, stack=stack)
             context = _apply_context(
@@ -388,10 +390,17 @@ def _interactive_prompt(
     else:
         ui = ui_context(strict=True)
 
-    def ask(message: str, *, sensitive: bool) -> str:
+    def ask(
+        message: str,
+        *,
+        sensitive: bool,
+        default: object | None = None,
+        required: bool = True,
+    ) -> object:
         if sensitive:
-            return ui.secret(message)
-        return ui.text(message)
+            return ui.secret(message, required=required)
+        text_default = None if default is None else str(default)
+        return ui.text(message, default=text_default, required=required)
 
     return ask
 

@@ -132,16 +132,18 @@ and `global` otherwise. Per-target `from` values are sandboxed strict native
 Jinja expressions evaluated only for input derivation, with `target.path`,
 `target.name`, `target.parent_path`, `target.parent_name`, and optional
 incoming pipe `record` in scope. Missing, undefined, or null candidates fall
-through; `false`, `0`, and empty strings are real values.
+through; `false`, `0`, and empty strings are real values. Oversized derived
+values are rejected.
 
 Use `--input-from NAME=JINJA` to override a per-target source, `--var` or
 `--vars` to provide fixed values, and `--interactive` to prompt for unresolved
 inputs. A fixed value and source override for the same input is rejected.
 `scope: global` rejects recipe `from` and `--input-from`, but accepts
-`--var`/`--vars`. `--interactive --check` is rejected. With
-`--stdin --interactive`, target records still come from stdin and prompts use
-the controlling terminal. `--stdin` writes still require `--yes` unless
-`--dry-run` or `--check` is used.
+`--var`/`--vars`. Interactive prompts run before recipe defaults; an empty
+answer accepts the default when one exists. `--interactive --check` is
+rejected. With `--stdin --interactive`, target records still come from stdin
+and prompts use the controlling terminal. `--stdin` writes still require
+`--yes` unless `--dry-run` or `--check` is used.
 
 Every `recipe.outcome` row includes resolved declared inputs. Inputs marked
 `sensitive: true` are redacted in rows and backup metadata; real values still

@@ -11,6 +11,13 @@ from untaped.errors import ConfigError
 
 from untaped_recipe.application.targets import Target
 from untaped_recipe.domain.recipe import InputSpec, Recipe
+from untaped_recipe.infrastructure.input_jinja import (
+    UNRESOLVED,
+    CompiledInputSource,
+    InputSourceError,
+    compile_input_source,
+    derive_input_value,
+)
 
 REDACTED = "***"
 _UNSET = object()
@@ -19,7 +26,14 @@ _UNSET = object()
 class PromptFunc(Protocol):
     """Prompt callback used by interactive input resolution."""
 
-    def __call__(self, message: str, *, sensitive: bool) -> str: ...
+    def __call__(
+        self,
+        message: str,
+        *,
+        sensitive: bool,
+        default: object | None = None,
+        required: bool = True,
+    ) -> object: ...
 
 
 class NoPromptAvailable(ConfigError):
@@ -30,8 +44,9 @@ class NoPromptAvailable(ConfigError):
 class InputResolutionConfig:
     """Invocation-level input resolution settings."""
 
-    global_values: Mapping[str, object] = field(default_factory=dict)
-    input_from: Mapping[str, str] = field(default_factory=dict)
+    fixed_values: Mapping[str, object] = field(default_factory=dict)
+    cli_sources: Mapping[str, CompiledInputSource] = field(default_factory=dict)
+    recipe_sources: Mapping[str, CompiledInputSource] = field(default_factory=dict)
     interactive: bool = False
     prompt: PromptFunc | None = None
 
@@ -44,34 +59,42 @@ class InputResolutionResult:
     display_values: dict[str, object]
 
 
-class _RenderableTemplate(Protocol):
-    """Rendered template protocol for lazy Jinja loading."""
+def prepare_input_resolution(
+    recipe: Recipe,
+    *,
+    fixed_values: Mapping[str, object],
+    input_from: Mapping[str, str],
+    interactive: bool = False,
+    prompt: PromptFunc | None = None,
+) -> InputResolutionConfig:
+    """Validate and compile invocation-level input resolution settings."""
+    _validate_config(recipe, fixed_values=fixed_values, input_from=input_from)
+    cli_sources = {
+        name: _compile_named_source(name, (expression,)) for name, expression in input_from.items()
+    }
+    recipe_sources = {
+        name: _compile_named_source(name, spec.from_)
+        for name, spec in recipe.inputs.items()
+        if spec.from_
+    }
+    return InputResolutionConfig(
+        fixed_values=fixed_values,
+        cli_sources=cli_sources,
+        recipe_sources=recipe_sources,
+        interactive=interactive,
+        prompt=prompt,
+    )
 
-    def render(self, *args: object, **kwargs: object) -> object: ...
 
-
-class _JinjaEnvironment(Protocol):
-    """Minimal Jinja environment protocol used by input derivation."""
-
-    def from_string(self, source: str) -> _RenderableTemplate: ...
-
-
-def resolve_global_inputs(recipe: Recipe, config: InputResolutionConfig) -> dict[str, object]:
+def resolve_global_values(recipe: Recipe, config: InputResolutionConfig) -> dict[str, object]:
     """Resolve invocation-global input values once before target planning."""
-    _validate_config(recipe, config)
     values: dict[str, object] = {}
     for name, spec in recipe.inputs.items():
         if spec.scope != "global":
             continue
-        if name in config.global_values:
-            values[name] = spec.coerce(config.global_values[name])
-        elif spec.default is not None:
-            values[name] = spec.coerce(spec.default)
-        elif spec.required:
-            if config.interactive:
-                values[name] = spec.coerce(_prompt_value(name, spec, None, config))
-            else:
-                raise ValueError(f"missing required input: {name}")
+        value = _resolve_one(name, spec, target=None, config=config)
+        if value is not _UNSET:
+            values[name] = value
     return values
 
 
@@ -80,34 +103,18 @@ def resolve_target_inputs(
     target: Target,
     *,
     config: InputResolutionConfig,
+    global_values: Mapping[str, object],
 ) -> InputResolutionResult:
     """Resolve all declared inputs for one target."""
-    _validate_config(recipe, config)
     values: dict[str, object] = {}
     for name, spec in recipe.inputs.items():
-        if name in config.global_values:
-            values[name] = spec.coerce(config.global_values[name])
-            continue
         if spec.scope == "global":
-            if spec.default is not None:
-                values[name] = spec.coerce(spec.default)
-            elif spec.required:
-                if config.interactive:
-                    values[name] = spec.coerce(_prompt_value(name, spec, None, config))
-                else:
-                    raise ValueError(f"missing required input: {name}")
+            if name in global_values:
+                values[name] = global_values[name]
             continue
-
-        rendered = _resolve_target_source(name, spec, target, config)
-        if rendered is not _UNSET:
-            values[name] = spec.coerce(rendered)
-        elif spec.default is not None:
-            values[name] = spec.coerce(spec.default)
-        elif spec.required:
-            if config.interactive:
-                values[name] = spec.coerce(_prompt_value(name, spec, target.path, config))
-            else:
-                raise ValueError(f"missing required input: {name}")
+        value = _resolve_one(name, spec, target=target, config=config)
+        if value is not _UNSET:
+            values[name] = value
     return InputResolutionResult(values=values, display_values=redact_inputs(recipe.inputs, values))
 
 
@@ -125,50 +132,64 @@ def redact_inputs(
     return redacted
 
 
-def _validate_config(recipe: Recipe, config: InputResolutionConfig) -> None:
-    unknown_values = sorted(set(config.global_values) - set(recipe.inputs))
+def _resolve_one(
+    name: str,
+    spec: InputSpec,
+    *,
+    target: Target | None,
+    config: InputResolutionConfig,
+) -> object:
+    if name in config.fixed_values:
+        return spec.coerce(config.fixed_values[name])
+    source = config.cli_sources.get(name)
+    if source is None and target is not None:
+        source = config.recipe_sources.get(name)
+    if source is not None and target is not None:
+        rendered = _derive_source_value(source, target)
+        if rendered is not UNRESOLVED:
+            return spec.coerce(rendered)
+    if config.interactive and (spec.required or spec.default is not None):
+        prompt_target = None if target is None else target.path
+        return spec.coerce(_prompt_value(name, spec, prompt_target, config))
+    if spec.default is not None:
+        return spec.coerce(spec.default)
+    if spec.required:
+        raise ValueError(f"missing required input: {name}")
+    return _UNSET
+
+
+def _validate_config(
+    recipe: Recipe,
+    *,
+    fixed_values: Mapping[str, object],
+    input_from: Mapping[str, str],
+) -> None:
+    unknown_values = sorted(set(fixed_values) - set(recipe.inputs))
     if unknown_values:
         raise ConfigError(f"unknown input: {unknown_values[0]}")
-    unknown_sources = sorted(set(config.input_from) - set(recipe.inputs))
+    unknown_sources = sorted(set(input_from) - set(recipe.inputs))
     if unknown_sources:
         raise ConfigError(f"unknown input: {unknown_sources[0]}")
-    for name in config.input_from:
+    for name in input_from:
         if recipe.inputs[name].scope == "global":
             raise ConfigError(f"cannot use --input-from for input {name!r} with scope global")
-    conflicts = sorted(set(config.global_values) & set(config.input_from))
+    conflicts = sorted(set(fixed_values) & set(input_from))
     if conflicts:
         raise ConfigError(f"cannot combine --var/--vars and --input-from for {conflicts[0]}")
 
 
-def _resolve_target_source(
-    name: str,
-    spec: InputSpec,
-    target: Target,
-    config: InputResolutionConfig,
-) -> object:
-    source = (config.input_from[name],) if name in config.input_from else spec.from_
-    if not source:
-        return _UNSET
-    context = _target_context(target)
-    return _resolve_from(source, context=context)
+def _compile_named_source(name: str, candidates: tuple[str, ...]) -> CompiledInputSource:
+    try:
+        return compile_input_source(candidates)
+    except InputSourceError as exc:
+        raise ConfigError(f"invalid input source expression for {name}: {exc}") from exc
 
 
-def _resolve_from(candidates: tuple[str, ...], *, context: dict[str, object]) -> object:
-    from jinja2 import Undefined  # noqa: PLC0415
-    from jinja2.exceptions import TemplateError, UndefinedError  # noqa: PLC0415
-
-    env = _jinja_env()
-    for expression in candidates:
-        try:
-            value = env.from_string(expression).render(**context)
-        except UndefinedError:
-            continue
-        except TemplateError as exc:
-            raise ValueError(f"invalid input source expression: {exc}") from exc
-        if value is None or isinstance(value, Undefined):
-            continue
-        return value
-    return _UNSET
+def _derive_source_value(source: CompiledInputSource, target: Target) -> object:
+    try:
+        return derive_input_value(source, context=_target_context(target))
+    except InputSourceError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _target_context(target: Target) -> dict[str, object]:
@@ -190,21 +211,22 @@ def _prompt_value(
     spec: InputSpec,
     target: Path | None,
     config: InputResolutionConfig,
-) -> str:
+) -> object:
     if config.prompt is None:
         raise NoPromptAvailable("interactive input requires a terminal prompt backend")
-    description = f" ({spec.description})" if spec.description else ""
-    message = f"{name}{description}" if target is None else f"{name} for {target}{description}"
-    return config.prompt(message, sensitive=spec.sensitive)
-
-
-def _jinja_env() -> _JinjaEnvironment:
-    from jinja2 import StrictUndefined  # noqa: PLC0415
-    from jinja2.nativetypes import NativeCodeGenerator, native_concat  # noqa: PLC0415
-    from jinja2.sandbox import SandboxedEnvironment  # noqa: PLC0415
-
-    class _NativeSandboxedEnvironment(SandboxedEnvironment):
-        code_generator_class = NativeCodeGenerator
-        concat = staticmethod(native_concat)  # type: ignore[assignment]
-
-    return _NativeSandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
+    details: list[str] = []
+    if spec.description:
+        details.append(spec.description)
+    if spec.default is not None:
+        details.append(f"default: {spec.default}")
+    suffix = f" ({'; '.join(details)})" if details else ""
+    message = f"{name}{suffix}" if target is None else f"{name} for {target}{suffix}"
+    value = config.prompt(
+        message,
+        sensitive=spec.sensitive,
+        default=spec.default,
+        required=spec.required and spec.default is None,
+    )
+    if value == "" and spec.default is not None:
+        return spec.default
+    return value

@@ -471,6 +471,95 @@ def test_apply_derives_target_inputs_and_redacts_outcome_rows(tmp_path: Path) ->
     assert "secret" not in result.stdout
 
 
+def test_apply_sensitive_target_input_coercion_error_does_not_leak_secret(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: int\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "    from: '{{ record.token }}'\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "recipe.target",
+            "record": {"path": str(target), "token": secret},
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--dry-run", "--format", "json"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 1, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == "cannot coerce value to int"
+    assert rows[0]["inputs"] == {}
+
+
+def test_apply_sensitive_global_input_coercion_error_does_not_leak_secret(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: int\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--var", f"token={secret}", "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert "cannot coerce value to int" in result.output
+
+
+def test_apply_invalid_jinja_source_fails_before_target_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  service:\n    type: str\n    from: '{{ target.name'\nsteps: []\n"
+    )
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(first), str(second), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "invalid input source expression for service" in result.stderr
+
+
 def test_apply_outcome_inputs_render_in_yaml_and_table(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(

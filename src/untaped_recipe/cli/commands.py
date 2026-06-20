@@ -9,7 +9,6 @@ from typing import Annotated
 
 import yaml
 from cyclopts import Parameter
-from pydantic import ValidationError
 from untaped.api import (
     ColumnsOption,
     FormatOption,
@@ -39,6 +38,7 @@ from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
+from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 app = create_app(name="recipe", help="Apply reusable local recipes to plain directories.")
 app.command(recipe_app, name="recipe")
@@ -214,13 +214,9 @@ def _apply_context(
 
 def _load_recipe(recipe_path: Path) -> Recipe:
     try:
-        raw = yaml.safe_load(recipe_path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"invalid recipe YAML: {exc}") from exc
-    try:
-        return Recipe.model_validate(raw)
-    except ValidationError as exc:
-        raise ConfigError(f"invalid recipe: {exc}") from exc
+        return load_recipe_file(recipe_path)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _render_diffs(plans: list[TargetPlan]) -> None:

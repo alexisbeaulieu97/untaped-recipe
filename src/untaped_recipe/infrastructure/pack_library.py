@@ -8,16 +8,13 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-from pydantic import ValidationError
-
 from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
-from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.domain.recipe_project import (
     append_recipe_metadata,
     read_recipe_project_metadata,
     remove_recipe_metadata,
 )
+from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 from untaped_recipe.infrastructure.uv_project import lock_project
 
 
@@ -251,12 +248,8 @@ def _validate_pack_recipes(project_root: Path) -> None:
         if not path.is_file():
             raise ValueError(f"pack recipe file not found: {recipe_id}")
         try:
-            raw = yaml.safe_load(path.read_text()) or {}
-        except yaml.YAMLError as exc:
-            raise ValueError(f"invalid pack recipe YAML: {recipe_id}: {exc}") from exc
-        try:
-            Recipe.model_validate(raw)
-        except ValidationError as exc:
+            load_recipe_file(path)
+        except ValueError as exc:
             raise ValueError(f"invalid pack recipe: {recipe_id}: {exc}") from exc
 
 

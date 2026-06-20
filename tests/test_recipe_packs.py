@@ -112,6 +112,46 @@ def test_recipe_library_installs_and_resolves_uv_recipe_projects(tmp_path: Path)
     assert RecipeLibrary(root).list()[0].name == "demo"
 
 
+def test_recipe_library_rejects_directory_metadata_id_mismatch(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    project = root / "recipes" / "demo"
+    project.mkdir(parents=True)
+    (project / "recipe.yml").write_text("version: 1\nsteps: []\n")
+    (project / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-other"\n'
+        'version = "0.1.0"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        '"other" = { path = "recipe.yml" }\n'
+    )
+    (project / "uv.lock").write_text("version = 1\n")
+
+    with pytest.raises(ValueError, match="does not match metadata"):
+        RecipeLibrary(root).resolve_detail("demo")
+
+
+def test_recipe_add_rejects_multi_recipe_standalone_projects(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "one.yml").write_text("version: 1\nsteps: []\n")
+    (source / "two.yml").write_text("version: 1\nsteps: []\n")
+    (source / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-multi"\n'
+        'version = "0.1.0"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        '"one" = { path = "one.yml" }\n'
+        '"two" = { path = "two.yml" }\n'
+    )
+    (source / "uv.lock").write_text("version = 1\n")
+
+    with pytest.raises(
+        ValueError, match="standalone recipe project must expose exactly one recipe"
+    ):
+        RecipeLibrary(root).add(source)
+
+
 def test_pack_library_manages_empty_packs_and_nested_recipes(tmp_path: Path) -> None:
     root = tmp_path / "library"
     pack_root = PackLibrary(root).init("ansible", base_dir=tmp_path)
@@ -318,6 +358,50 @@ def test_pack_library_reports_error_paths(tmp_path: Path) -> None:
 def test_malformed_pack_recipe_ref_is_reported_cleanly(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="pack recipe refs must use <pack>:<recipe>"):
         RecipeLibrary(tmp_path / "library").resolve_detail("ansible:playbook:extra")
+
+
+@pytest.mark.parametrize("ref", ["missing:recipe", "pack:", "pack:recipe:extra"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("show",),
+        ("check", "--format", "json"),
+        ("edit",),
+        ("remove", "--yes"),
+    ],
+)
+def test_recipe_commands_reject_pack_refs_before_library_resolution(
+    ref: str,
+    command: tuple[str, ...],
+) -> None:
+    result = CliInvoker().invoke(app, ["recipe", *command, ref])
+
+    assert result.exit_code != 0
+    if command[0] == "check":
+        rows = json.loads(result.stdout)
+        assert "pack recipes are managed with pack recipe" in rows[0]["error"]
+    else:
+        assert "pack recipes are managed with pack recipe" in result.output
+
+
+def test_recipe_check_error_row_uses_existing_project_path(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "recipe.yml").write_text("version: 1\nsteps: []\n")
+    (project / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-demo"\n'
+        'version = "0.1.0"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        '"demo" = { path = "custom.yml" }\n'
+    )
+
+    result = CliInvoker().invoke(app, ["recipe", "check", str(project), "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["path"] == str(project)
+    assert "recipe file not found: custom.yml" in rows[0]["error"]
 
 
 def test_cli_recipe_and_pack_authoring_workflows(

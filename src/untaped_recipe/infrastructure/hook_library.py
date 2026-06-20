@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from collections.abc import MutableMapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal
 
 import tomlkit
-from tomlkit.exceptions import ParseError
-from tomlkit.toml_document import TOMLDocument
 
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
@@ -23,6 +20,7 @@ from untaped_recipe.domain.hook_project import (
     validate_hook_modules,
 )
 from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
+from untaped_recipe.domain.project_toml import read_toml_document, toml_table
 from untaped_recipe.infrastructure.uv_project import lock_project
 
 
@@ -248,40 +246,14 @@ def _hook_stub(kind: Literal["transform", "validate"]) -> str:
 
 
 def _append_hook_metadata(path: Path, public_name: str, module: str) -> None:
-    doc = _read_toml_document(path)
-    tool = _toml_table(doc, "tool", "tool", create=True)
-    untaped = _toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
-    hooks = _toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
+    doc = read_toml_document(path)
+    tool = toml_table(doc, "tool", "tool", create=True)
+    untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
+    hooks = toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
     entry = tomlkit.inline_table()
     entry["module"] = module
     hooks[public_name] = entry
     path.write_text(doc.as_string())
-
-
-def _read_toml_document(path: Path) -> TOMLDocument:
-    try:
-        return tomlkit.loads(path.read_text())
-    except ParseError as exc:
-        raise ValueError(f"invalid recipe project pyproject: {path}") from exc
-
-
-def _toml_table(
-    container: MutableMapping[str, Any],
-    key: str,
-    field: str,
-    *,
-    create: bool,
-) -> MutableMapping[str, Any]:
-    value = container.get(key)
-    if value is None:
-        if not create:
-            raise ValueError(f"[{field}] must be a table")
-        table = tomlkit.table()
-        container[key] = table
-        return cast(MutableMapping[str, Any], table)
-    if not isinstance(value, MutableMapping):
-        raise ValueError(f"[{field}] must be a table")
-    return cast(MutableMapping[str, Any], value)
 
 
 def _rollback_scoped_hook(

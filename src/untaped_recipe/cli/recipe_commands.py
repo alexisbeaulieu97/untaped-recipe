@@ -5,9 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
 
-import yaml
 from cyclopts import Parameter
-from pydantic import ValidationError
 from untaped.api import (
     ColumnsOption,
     FormatOption,
@@ -20,15 +18,20 @@ from untaped.batch import batch_apply
 
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
 from untaped_recipe.domain.hook_project import read_hook_metadata, validate_hook_modules
-from untaped_recipe.domain.paths import confined_path
+from untaped_recipe.domain.paths import confined_path, is_explicit_path
 from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
 from untaped_recipe.infrastructure.hook_library import add_hook_to_project
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary, RecipeResolution
+from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 app = create_app(name="recipe", help="Manage reusable recipes.")
 hook_app = create_app(name="hook", help="Manage hooks local to a standalone recipe.")
 app.command(hook_app, name="hook")
+
+_PACK_RECIPE_COMMAND_ERROR = (
+    "pack recipes are managed with pack recipe commands; use pack recipe show/edit or pack check"
+)
 
 
 @app.command(name="init")
@@ -117,6 +120,7 @@ def remove_command(
 ) -> None:
     """Remove a recipe from the library."""
     with report_config_errors():
+        _reject_pack_ref_for_recipe_command(name)
         library = RecipeLibrary(library_root())
 
         def _remove(item: str) -> Path:
@@ -177,7 +181,7 @@ def _check_recipe(
         _check_assets(recipe, recipe_path.parent)
         _check_local_hook_project(local_hook_project)
         _check_hooks(recipe, root, local_hook_project)
-    except (ValueError, OSError, yaml.YAMLError, ValidationError) as exc:
+    except (ValueError, OSError) as exc:
         return {
             "recipe": recipe_ref,
             "status": "error",
@@ -194,12 +198,7 @@ def _check_recipe(
 
 def _check_error_row(name: str, exc: Exception) -> dict[str, object]:
     path = Path(name).expanduser()
-    if path.is_dir() and (path / "recipe.yml").exists():
-        display_path = str(path / "recipe.yml")
-    elif path.exists():
-        display_path = str(path)
-    else:
-        display_path = ""
+    display_path = str(path) if path.exists() else ""
     return {
         "recipe": name,
         "status": "error",
@@ -209,24 +208,20 @@ def _check_error_row(name: str, exc: Exception) -> dict[str, object]:
 
 
 def _resolve_recipe_command(name: str, *, root: Path | None = None) -> RecipeResolution:
+    _reject_pack_ref_for_recipe_command(name)
     resolution = RecipeLibrary(root or library_root()).resolve_detail(name)
     if resolution.kind == "pack":
-        raise ValueError(
-            "pack recipes are managed with pack recipe commands; use pack recipe show/edit "
-            "or pack check"
-        )
+        raise ValueError(_PACK_RECIPE_COMMAND_ERROR)
     return resolution
 
 
 def _load_recipe(path: Path) -> Recipe:
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise ValueError(f"invalid recipe YAML: {exc}") from exc
-    try:
-        return Recipe.model_validate(raw)
-    except ValidationError as exc:
-        raise ValueError(f"invalid recipe: {exc}") from exc
+    return load_recipe_file(path)
+
+
+def _reject_pack_ref_for_recipe_command(name: str) -> None:
+    if ":" in name and not is_explicit_path(name):
+        raise ValueError(_PACK_RECIPE_COMMAND_ERROR)
 
 
 def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:

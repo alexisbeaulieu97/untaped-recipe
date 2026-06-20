@@ -6,15 +6,12 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-from pydantic import ValidationError
-
 from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
-from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.domain.recipe_project import (
     RecipeProjectMetadata,
     read_recipe_project_metadata,
 )
+from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 from untaped_recipe.infrastructure.uv_project import lock_project
 
 
@@ -229,14 +226,7 @@ class RecipeLibrary:
 
 
 def _validate_recipe_file(path: Path) -> None:
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise ValueError(f"invalid recipe YAML: {exc}") from exc
-    try:
-        Recipe.model_validate(raw)
-    except ValidationError as exc:
-        raise ValueError(f"invalid recipe: {exc}") from exc
+    load_recipe_file(path)
 
 
 def _single_recipe(metadata: RecipeProjectMetadata) -> tuple[str, Path]:

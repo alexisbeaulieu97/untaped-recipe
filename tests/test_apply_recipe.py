@@ -102,7 +102,6 @@ def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "inputs": {"service": {"type": "str", "required": True}},
             "steps": [
                 {"type": "template", "template": "templates/config.yml", "dest": "config.yml"},
@@ -148,7 +147,6 @@ def test_apply_recipe_failing_validate_aborts_target_without_changes(tmp_path: P
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [
                 {"type": "validate", "hook": "fail"},
                 {"type": "template", "template": "missing", "dest": "out.txt"},
@@ -185,7 +183,6 @@ def test_optional_transform_skips_missing_disk_files_with_warning(tmp_path: Path
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [
                 {
                     "type": "transform",
@@ -222,7 +219,6 @@ def test_optional_transform_still_errors_after_explicit_remove(tmp_path: Path) -
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [
                 {"type": "remove", "file": "local.yml"},
                 {
@@ -257,7 +253,6 @@ def test_optional_transform_errors_when_target_path_is_not_a_file(tmp_path: Path
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [
                 {
                     "type": "transform",
@@ -291,7 +286,6 @@ def test_optional_transform_uses_content_created_earlier_in_plan(tmp_path: Path)
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [
                 {"type": "template", "template": "template.yml", "dest": "generated.yml"},
                 {
@@ -321,7 +315,6 @@ def test_remove_files_removes_multiple_files_and_skips_missing_files(tmp_path: P
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [{"type": "remove", "files": ["ansible.cfg", "old.cfg", "missing.cfg"]}],
         }
     )

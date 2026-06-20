@@ -17,28 +17,27 @@ from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 def test_recipe_library_resolves_name_before_path_and_copies_packages(tmp_path: Path) -> None:
     root = tmp_path / "library"
     source = tmp_path / "source-recipe"
-    source.mkdir()
-    (source / "recipe.yml").write_text("version: 1\nname: copied\nsteps: []\n")
+    _write_recipe_project(source, recipe_id="copied")
     library = RecipeLibrary(root)
 
-    copied = library.add(source, name="copied")
+    copied = library.add(source)
 
-    assert copied == root / "recipes" / "copied" / "recipe.yml"
-    assert library.resolve("copied") == copied
+    assert copied == root / "recipes" / "copied"
+    assert library.resolve("copied") == copied / "recipe.yml"
     explicit = tmp_path / "copied"
-    explicit.write_text("version: 1\nname: explicit\nsteps: []\n")
+    explicit.write_text("version: 1\nsteps: []\n")
     assert library.resolve(str(explicit)) == explicit
     assert [entry.name for entry in library.list()] == ["copied"]
 
     invalid_package = tmp_path / "invalid"
     invalid_package.mkdir()
-    with pytest.raises(ValueError, match=r"recipe\.yml"):
-        library.add(invalid_package, name="invalid")
+    with pytest.raises(ValueError, match=r"pyproject\.toml"):
+        library.add(invalid_package)
 
 
 def test_recipe_and_hook_libraries_reject_unsafe_names(tmp_path: Path) -> None:
-    recipe_source = tmp_path / "recipe.yml"
-    recipe_source.write_text("version: 1\nname: demo\nsteps: []\n")
+    recipe_source = tmp_path / "recipe-project"
+    _write_recipe_project(recipe_source, recipe_id="../outside")
     hook_source = tmp_path / "hook-project"
     _write_hook_project(hook_source, hook_name="hook")
     root = tmp_path / "library"
@@ -47,13 +46,28 @@ def test_recipe_and_hook_libraries_reject_unsafe_names(tmp_path: Path) -> None:
     hook_library = HookLibrary(root)
 
     with pytest.raises(ValueError, match="safe library name"):
-        recipe_library.add(recipe_source, name="../outside")
+        recipe_library.add(recipe_source)
     with pytest.raises(ValueError, match="safe library name"):
         recipe_library.remove("/tmp/outside")
     with pytest.raises(ValueError, match="safe library name"):
         hook_library.add(hook_source, name="../outside")
     with pytest.raises(ValueError, match="safe library name"):
         hook_library.remove("/tmp/outside")
+
+
+def _write_recipe_project(root: Path, *, recipe_id: str) -> None:
+    root.mkdir(parents=True)
+    (root / "recipe.yml").write_text("version: 1\nsteps: []\n")
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        f'name = "untaped-recipe-{root.name}"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.recipes]\n"
+        f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'
+    )
+    (root / "uv.lock").write_text("version = 1\n")
 
 
 def test_hook_resolver_uses_recipe_local_then_global_then_builtin(tmp_path: Path) -> None:

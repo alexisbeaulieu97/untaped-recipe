@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-import yaml
 from cyclopts import Parameter
-from pydantic import ValidationError
 from untaped.api import (
     ColumnsOption,
     FormatOption,
@@ -20,12 +18,36 @@ from untaped.batch import batch_apply
 
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
 from untaped_recipe.domain.hook_project import read_hook_metadata, validate_hook_modules
-from untaped_recipe.domain.paths import confined_path
+from untaped_recipe.domain.paths import confined_path, is_explicit_path
 from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
+from untaped_recipe.infrastructure.hook_library import add_hook_to_project
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
-from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
+from untaped_recipe.infrastructure.recipe_library import RecipeLibrary, RecipeResolution
+from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 app = create_app(name="recipe", help="Manage reusable recipes.")
+hook_app = create_app(name="hook", help="Manage hooks local to a standalone recipe.")
+app.command(hook_app, name="hook")
+
+_PACK_RECIPE_COMMAND_ERROR = (
+    "pack recipes are managed with pack recipe commands; use pack recipe show/edit or pack check"
+)
+
+
+@app.command(name="init")
+def init_command(
+    name: Annotated[str, Parameter(help="Recipe id.")],
+    /,
+    *,
+    library: Annotated[
+        bool,
+        Parameter(name="--library", negative="", help="Create inside the configured library."),
+    ] = False,
+) -> None:
+    """Scaffold a standalone uv recipe project."""
+    with report_config_errors():
+        path = RecipeLibrary(library_root()).init(name, library=library)
+        echo(str(path))
 
 
 @app.command(name="list")
@@ -42,38 +64,43 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
 
 
 @app.command(name="show")
-def show_command(name: Annotated[str, Parameter(help="Recipe name or path.")], /) -> None:
+def show_command(name: Annotated[str, Parameter(help="Recipe id or path.")], /) -> None:
     """Print a recipe file."""
     with report_config_errors():
-        echo(RecipeLibrary(library_root()).resolve(name).read_text(), nl=False)
+        resolution = _resolve_recipe_command(name)
+        echo(resolution.path.read_text(), nl=False)
 
 
 @app.command(name="add")
 def add_command(
-    source: Annotated[Path, Parameter(help="Recipe file or directory.")],
+    source: Annotated[Path, Parameter(help="Standalone uv recipe project directory.")],
     /,
-    *,
-    name: Annotated[str | None, Parameter(name="--name", help="Library name.")] = None,
 ) -> None:
-    """Copy a recipe into the library."""
+    """Install a standalone recipe project into the library."""
     with report_config_errors():
-        path = RecipeLibrary(library_root()).add(source, name=name)
+        path = RecipeLibrary(library_root()).add(source)
         echo(str(path))
 
 
 @app.command(name="check")
 def check_command(
-    name: Annotated[str, Parameter(help="Recipe name or path.")],
+    name: Annotated[str, Parameter(help="Recipe id or path.")],
     /,
     *,
     fmt: FormatOption = "table",
     columns: ColumnsOption = None,
 ) -> None:
-    """Validate a recipe package without target directories or hook execution."""
+    """Validate a recipe project or explicit recipe file."""
     with report_config_errors():
         root = library_root()
-        resolution = RecipeLibrary(root).resolve_detail(name)
-        row = _check_recipe(root, resolution.path, resolution.local_hook_project)
+        try:
+            resolution = _resolve_recipe_command(name, root=root)
+        except ValueError as exc:
+            row = _check_error_row(name, exc)
+        else:
+            row = _check_recipe(
+                root, resolution.path, resolution.ref, resolution.local_hook_project
+            )
         rendered = render_rows([row], fmt=fmt, columns=columns, kind="recipe.check")
         if rendered:
             echo(rendered)
@@ -83,7 +110,7 @@ def check_command(
 
 @app.command(name="remove")
 def remove_command(
-    name: Annotated[str, Parameter(help="Recipe name.")],
+    name: Annotated[str, Parameter(help="Recipe id.")],
     /,
     *,
     yes: Annotated[
@@ -93,6 +120,7 @@ def remove_command(
 ) -> None:
     """Remove a recipe from the library."""
     with report_config_errors():
+        _reject_pack_ref_for_recipe_command(name)
         library = RecipeLibrary(library_root())
 
         def _remove(item: str) -> Path:
@@ -114,48 +142,86 @@ def remove_command(
 
 
 @app.command(name="edit")
-def edit_command(name: Annotated[str, Parameter(help="Recipe name or path.")], /) -> None:
+def edit_command(name: Annotated[str, Parameter(help="Recipe id or path.")], /) -> None:
     """Open a recipe in $VISUAL or $EDITOR."""
     with report_config_errors():
-        edit_path(RecipeLibrary(library_root()).resolve(name))
+        resolution = _resolve_recipe_command(name)
+        edit_path(resolution.path)
+
+
+@hook_app.command(name="init")
+def hook_init_command(
+    recipe: Annotated[str, Parameter(help="Standalone recipe id or project path.")],
+    hook: Annotated[str, Parameter(help="Hook name.")],
+    /,
+    *,
+    kind: Annotated[
+        Literal["transform", "validate"],
+        Parameter(name="--kind", help="Hook callable kind."),
+    ] = "transform",
+) -> None:
+    """Scaffold a hook inside a standalone recipe project."""
+    with report_config_errors():
+        resolution = RecipeLibrary(library_root()).resolve_detail(recipe)
+        if resolution.kind != "recipe" or resolution.project_root is None:
+            raise ValueError("recipe hook init requires a standalone recipe project")
+        path = add_hook_to_project(resolution.project_root, hook, kind=kind)
+        echo(str(path))
 
 
 def _check_recipe(
     root: Path,
     recipe_path: Path,
+    recipe_ref: str,
     local_hook_project: Path | None,
 ) -> dict[str, object]:
-    recipe_name = recipe_path.stem
     try:
         recipe = _load_recipe(recipe_path)
-        recipe_name = recipe.name
+        _check_project_lock(local_hook_project)
         _check_assets(recipe, recipe_path.parent)
         _check_local_hook_project(local_hook_project)
         _check_hooks(recipe, root, local_hook_project)
-    except (ValueError, OSError, yaml.YAMLError, ValidationError) as exc:
+    except (ValueError, OSError) as exc:
         return {
-            "recipe": recipe_name,
+            "recipe": recipe_ref,
             "status": "error",
             "path": str(recipe_path),
             "error": str(exc),
         }
     return {
-        "recipe": recipe_name,
+        "recipe": recipe_ref,
         "status": "ok",
         "path": str(recipe_path),
         "error": "",
     }
 
 
+def _check_error_row(name: str, exc: Exception) -> dict[str, object]:
+    path = Path(name).expanduser()
+    display_path = str(path) if path.exists() else ""
+    return {
+        "recipe": name,
+        "status": "error",
+        "path": display_path,
+        "error": str(exc),
+    }
+
+
+def _resolve_recipe_command(name: str, *, root: Path | None = None) -> RecipeResolution:
+    _reject_pack_ref_for_recipe_command(name)
+    resolution = RecipeLibrary(root or library_root()).resolve_detail(name)
+    if resolution.kind == "pack":
+        raise ValueError(_PACK_RECIPE_COMMAND_ERROR)
+    return resolution
+
+
 def _load_recipe(path: Path) -> Recipe:
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise ValueError(f"invalid recipe YAML: {exc}") from exc
-    try:
-        return Recipe.model_validate(raw)
-    except ValidationError as exc:
-        raise ValueError(f"invalid recipe: {exc}") from exc
+    return load_recipe_file(path)
+
+
+def _reject_pack_ref_for_recipe_command(name: str) -> None:
+    if ":" in name and not is_explicit_path(name):
+        raise ValueError(_PACK_RECIPE_COMMAND_ERROR)
 
 
 def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:
@@ -168,6 +234,11 @@ def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:
             source = confined_path(recipe_dir, step.source, field="source")
             if not source.is_file():
                 raise ValueError(f"copy source not found: {step.source}")
+
+
+def _check_project_lock(local_hook_project: Path | None) -> None:
+    if local_hook_project is not None and not (local_hook_project / "uv.lock").is_file():
+        raise ValueError(f"recipe project is missing uv.lock: {local_hook_project}")
 
 
 def _check_local_hook_project(local_hook_project: Path | None) -> None:

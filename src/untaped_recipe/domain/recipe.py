@@ -146,7 +146,6 @@ class Recipe(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: Literal[1]
-    name: str
     description: str = ""
     inputs: dict[str, InputSpec] = Field(default_factory=dict)
     steps: tuple[Step, ...] = ()
@@ -165,14 +164,6 @@ class Recipe(BaseModel):
             normalized.extend(_normalize_file_step(step))
         data["steps"] = normalized
         return data
-
-    @field_validator("name")
-    @classmethod
-    def _name_not_blank(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("recipe name cannot be blank")
-        return value
 
 
 def _normalize_file_step(step: object) -> list[object]:

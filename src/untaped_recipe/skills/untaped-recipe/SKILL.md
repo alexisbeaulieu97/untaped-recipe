@@ -1,6 +1,6 @@
 ---
 name: untaped-recipe
-description: Use the untaped-recipe CLI to apply local recipe packages to directories.
+description: Use the untaped-recipe CLI to apply local recipe projects and packs.
 ---
 
 # Untaped Recipe
@@ -24,29 +24,44 @@ plain directories.
 - Backups are created by default; use `--no-backup` only when the target tree is already protected.
 - `untaped-recipe backup list|show|restore` manages backup bundles; `show` and
   `restore` accept full ids, unambiguous prefixes, or `latest`.
-- `untaped-recipe recipe list|show|add|check|remove|edit` manages local
-  recipes; `check` is static preflight that validates schema, assets, and hook
-  metadata without targets, inputs, or hook execution. `remove` is destructive
-  and requires confirmation or `--yes`.
+- `untaped-recipe recipe init|list|show|add|check|remove|edit` manages
+  standalone recipe projects; `check` is static preflight that validates schema,
+  assets, and hook metadata without targets, inputs, or hook execution. `remove`
+  is destructive and requires confirmation or `--yes`.
+- `untaped-recipe pack init|list|show|add|check|remove|edit` manages recipe pack
+  projects. `untaped-recipe pack recipe init|list|show|edit|remove` manages
+  recipes inside a pack; pack recipe removal is destructive and requires
+  confirmation or `--yes`.
 - `untaped-recipe hook init|list|show|add|remove|edit` manages uv hook
   project directories; `remove` is destructive and requires confirmation or
   `--yes`. `hook add` derives the library directory from the declared hook
-  namespace; `--name`, if passed, must match that namespace.
+  metadata; `--name`, if passed, must match that derived name.
 
 ## Recipe Model
 
 - Library root defaults to `~/.untaped/untaped-recipes`.
-- Recipe resolution checks `recipes/<name>/recipe.yml`, then
-  `recipes/<name>.yml`, then explicit filesystem paths.
-- Recipes can be single files, recipe projects with `recipe.yml`, or explicit
-  filesystem paths. Use recipe projects when hooks should ship with the recipe.
-- Recipe-local hooks are declared in the recipe project's `pyproject.toml`.
-  Global hooks live under `<library_root>/hooks/<name>/`; namespaced packs live
-  under `<library_root>/hooks/<namespace>/` and are referenced as
-  `namespace.hook`.
+- Library items are uv projects: standalone recipes under
+  `<library_root>/recipes/<recipe-id>/`, packs under
+  `<library_root>/packs/<pack-id>/`, and reusable global hooks under
+  `<library_root>/hooks/<hook-id>/`.
+- Public recipe and pack identity comes from top-level `pyproject.toml`
+  metadata, not from `recipe.yml`.
+- Recipe YAML is behavior-only: `version`, optional `description`, optional
+  `inputs`, and `steps`. `name:` is rejected.
+- `apply foo` resolves only standalone library recipe `recipes/foo/`.
+- `apply pack:recipe` resolves an installed pack recipe from `packs/pack/`.
+- `apply ./recipe.yml` runs a path-only single-file recipe.
+- `apply ./recipe-project` runs a local standalone recipe project.
+- `apply ./pack-project --recipe recipe` runs a recipe from a local pack.
+- Recipe-local and pack-local hooks are declared in the top-level project
+  `pyproject.toml`. Global hooks live under `<library_root>/hooks/<name>/`.
 - Recipes only name hooks; they do not declare runtimes.
 - Hook resolution checks recipe-local pyproject metadata, then global hook
-  projects or namespaced packs, then packaged built-ins.
+  projects, then packaged built-ins.
+- Use `untaped-recipe recipe init <name>` and
+  `untaped-recipe pack init <name>` to scaffold authoring projects. Add local
+  hooks with `untaped-recipe recipe hook init <recipe> <hook>` or
+  `untaped-recipe pack hook init <pack> <hook>`.
 - V1 step types are `validate`, `transform`, `template`, `copy`, and
   `remove`.
 - `transform` accepts either `file` or explicit `files`; `files` expands to
@@ -63,8 +78,7 @@ plain directories.
   shipped hook and custom behavior belongs in trusted Python hooks.
 - External hooks are uv-managed projects with `pyproject.toml`, `uv.lock`, and
   `[tool.untaped_recipe.hooks]` metadata. Use
-  `untaped-recipe hook init <name>` or
-  `untaped-recipe hook init <namespace.hook>` to scaffold one.
+  `untaped-recipe hook init <name>` to scaffold a reusable global hook.
 - Built-ins are direct engine imports and do not start uv workers. External
   hooks run through pooled uv workers, up to the clamped `--parallel` value per
   hook project; hook stdout must not be used for data because stdout is reserved
@@ -84,6 +98,8 @@ plain directories.
   `recipe.backup`.
 - Optional transform skips appear in the `warnings` field of `recipe.outcome`
   rows as a semicolon-delimited string.
+- Apply rows and backup metadata use canonical recipe refs: `foo` for
+  standalone recipes and `pack:recipe` for pack recipes.
 - `--check` emits `recipe.outcome` rows with `status` set to `check`.
 - `apply --stdin` consumes bare paths plus `workspace.workspace` and
   `workspace.repo` records.

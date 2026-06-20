@@ -18,7 +18,7 @@ SPEC = ToolSpec(
         SkillAsset(
             name="untaped-recipe",
             source=Path(str(files("untaped_recipe").joinpath("skills", "untaped-recipe"))),
-            description="Use the untaped-recipe CLI to apply local recipe packages to directories.",
+            description="Use the untaped-recipe CLI to apply local recipe projects and packs.",
         ),
     ),
 )

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+import tomlkit
 
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
@@ -16,7 +19,9 @@ from untaped_recipe.domain.hook_project import (
     read_hook_metadata,
     validate_hook_modules,
 )
-from untaped_recipe.domain.paths import safe_library_name
+from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
+from untaped_recipe.domain.project_toml import read_toml_document, toml_table
+from untaped_recipe.infrastructure.uv_project import lock_project
 
 
 @dataclass(frozen=True)
@@ -39,7 +44,7 @@ class HookLibrary:
         """Directory containing reusable hook projects."""
         return self._root / "hooks"
 
-    def init(self, name: str) -> Path:
+    def init(self, name: str, *, kind: Literal["transform", "validate"] = "transform") -> Path:
         """Scaffold a uv hook project in the global hook library."""
         public_name = normalize_hook_name(name)
         project_name = project_name_for_hook(public_name)
@@ -50,15 +55,22 @@ class HookLibrary:
         self.hooks_dir.mkdir(parents=True, exist_ok=True)
         temp_root = self.hooks_dir / f".{project_name}.tmp-{uuid.uuid4().hex}"
         try:
-            self._scaffold(public_name, project_name, temp_root)
-            _lock_project(temp_root)
+            self._scaffold(public_name, project_name, temp_root, kind=kind)
+            lock_project(temp_root)
             temp_root.rename(project_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
             raise
         return project_root
 
-    def _scaffold(self, public_name: str, project_name: str, project_root: Path) -> None:
+    def _scaffold(
+        self,
+        public_name: str,
+        project_name: str,
+        project_root: Path,
+        *,
+        kind: Literal["transform", "validate"],
+    ) -> None:
         """Write a hook project scaffold under ``project_root``."""
         module_leaf = public_name.rsplit(".", maxsplit=1)[-1]
         package = _package_name(project_name)
@@ -67,7 +79,7 @@ class HookLibrary:
         (project_root / "src" / package / "__init__.py").write_text("")
         (project_root / "src" / package / "hooks" / "__init__.py").write_text("")
         (project_root / "src" / package / "hooks" / f"{module_leaf}.py").write_text(
-            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+            _hook_stub(kind)
         )
         (project_root / "pyproject.toml").write_text(
             "[project]\n"
@@ -105,11 +117,7 @@ class HookLibrary:
     def resolve(self, name: str) -> Path:
         """Resolve a reusable hook project name or explicit project path."""
         explicit = Path(name).expanduser()
-        if (
-            _is_explicit_path(name)
-            and explicit.is_dir()
-            and (explicit / "pyproject.toml").is_file()
-        ):
+        if is_explicit_path(name) and explicit.is_dir() and (explicit / "pyproject.toml").is_file():
             return explicit.resolve()
         hook_name = _library_project_name(name)
         path = self.hooks_dir / hook_name
@@ -159,8 +167,60 @@ class HookLibrary:
         return entries
 
 
-def _is_explicit_path(name: str) -> bool:
-    return name.startswith(("/", "./", "../", "~")) or "/" in name
+def add_hook_to_project(
+    project_root: Path,
+    name: str,
+    *,
+    kind: Literal["transform", "validate"] = "transform",
+) -> Path:
+    """Scaffold a hook module inside an existing recipe or pack uv project."""
+    if not (project_root / "pyproject.toml").is_file():
+        raise ValueError(f"project must contain pyproject.toml: {project_root}")
+    public_name = normalize_hook_name(name)
+    metadata = read_hook_metadata(project_root)
+    if public_name in metadata.hooks:
+        raise ValueError(f"hook already exists: {public_name}")
+    module_leaf = public_name.rsplit(".", maxsplit=1)[-1]
+    package = _local_package_name(project_root.name)
+    module = f"{package}.hooks.{module_leaf}"
+    pyproject = project_root / "pyproject.toml"
+    before_pyproject = pyproject.read_text()
+    package_dir = project_root / "src" / package
+    hooks_dir = package_dir / "hooks"
+    module_path = project_root / "src" / package / "hooks" / f"{module_leaf}.py"
+    if module_path.exists():
+        raise ValueError(f"hook module already exists: {module_path}")
+    package_existed = package_dir.exists()
+    hooks_existed = hooks_dir.exists()
+    package_init = package_dir / "__init__.py"
+    hooks_init = hooks_dir / "__init__.py"
+    package_init_existed = package_init.exists()
+    hooks_init_existed = hooks_init.exists()
+    try:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        if not package_init_existed:
+            package_init.write_text("")
+        if not hooks_init_existed:
+            hooks_init.write_text("")
+        module_path.write_text(_hook_stub(kind))
+        _append_hook_metadata(pyproject, public_name, module)
+        lock_project(project_root)
+    except Exception:
+        _rollback_scoped_hook(
+            pyproject=pyproject,
+            before_pyproject=before_pyproject,
+            module_path=module_path,
+            package_init=package_init,
+            hooks_init=hooks_init,
+            package_init_existed=package_init_existed,
+            hooks_init_existed=hooks_init_existed,
+            package_dir=package_dir,
+            hooks_dir=hooks_dir,
+            package_existed=package_existed,
+            hooks_existed=hooks_existed,
+        )
+        raise
+    return module_path
 
 
 def _library_project_name(name: str) -> str:
@@ -175,20 +235,50 @@ def _package_name(project_name: str) -> str:
     return "untaped_recipe_hooks_" + project_name.replace("-", "_").replace(".", "_")
 
 
-def _lock_project(project_root: Path) -> None:
-    try:
-        subprocess.run(
-            ["uv", "lock"],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise ValueError("uv executable not found for hook project initialization") from exc
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.strip() or exc.stdout.strip()
-        message = "failed to create hook project uv.lock"
-        if detail:
-            message = f"{message}: {detail}"
-        raise ValueError(message) from exc
+def _local_package_name(project_name: str) -> str:
+    return project_name.replace("-", "_").replace(".", "_") + "_hooks"
+
+
+def _hook_stub(kind: Literal["transform", "validate"]) -> str:
+    if kind == "validate":
+        return "def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n"
+    return "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+
+
+def _append_hook_metadata(path: Path, public_name: str, module: str) -> None:
+    doc = read_toml_document(path)
+    tool = toml_table(doc, "tool", "tool", create=True)
+    untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
+    hooks = toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
+    entry = tomlkit.inline_table()
+    entry["module"] = module
+    hooks[public_name] = entry
+    path.write_text(doc.as_string())
+
+
+def _rollback_scoped_hook(
+    *,
+    pyproject: Path,
+    before_pyproject: str,
+    module_path: Path,
+    package_init: Path,
+    hooks_init: Path,
+    package_init_existed: bool,
+    hooks_init_existed: bool,
+    package_dir: Path,
+    hooks_dir: Path,
+    package_existed: bool,
+    hooks_existed: bool,
+) -> None:
+    pyproject.write_text(before_pyproject)
+    for path, existed in (
+        (module_path, False),
+        (hooks_init, hooks_init_existed),
+        (package_init, package_init_existed),
+    ):
+        if not existed and path.exists():
+            path.unlink()
+    for path, existed in ((hooks_dir, hooks_existed), (package_dir, package_existed)):
+        if not existed and path.exists():
+            with suppress(OSError):
+                path.rmdir()

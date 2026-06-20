@@ -9,7 +9,6 @@ from typing import Annotated
 
 import yaml
 from cyclopts import Parameter
-from pydantic import ValidationError
 from untaped.api import (
     ColumnsOption,
     FormatOption,
@@ -30,6 +29,7 @@ from untaped_recipe.application.targets import resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import library_root, report_config_errors, settings
 from untaped_recipe.cli.hook_commands import app as hook_app
+from untaped_recipe.cli.pack_commands import app as pack_app
 from untaped_recipe.cli.recipe_commands import app as recipe_app
 from untaped_recipe.domain.plan import TargetPlan
 from untaped_recipe.domain.recipe import Recipe
@@ -38,9 +38,11 @@ from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
+from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 app = create_app(name="recipe", help="Apply reusable local recipes to plain directories.")
 app.command(recipe_app, name="recipe")
+app.command(pack_app, name="pack")
 app.command(hook_app, name="hook")
 app.command(backup_app, name="backup")
 
@@ -51,6 +53,7 @@ class ApplyContext:
 
     root: Path
     recipe: Recipe
+    recipe_ref: str
     inputs: dict[str, object]
     plans: list[TargetPlan]
 
@@ -66,9 +69,13 @@ class ApplyExecution:
 
 @app.command(name="apply")
 def apply_command(
-    recipe: Annotated[str, Parameter(help="Recipe name or path.")],
+    recipe_ref: Annotated[str, Parameter(help="Recipe id, pack:recipe ref, or path.")],
     dirs: Annotated[list[Path] | None, Parameter(help="Target directories.")] = None,
     *,
+    recipe_id: Annotated[
+        str | None,
+        Parameter(name="--recipe", help="Recipe id when applying a local pack path."),
+    ] = None,
     stdin: Annotated[
         bool,
         Parameter(
@@ -121,13 +128,14 @@ def apply_command(
         if stdin and not yes and not dry_run and not check:
             raise ConfigError("apply requires --yes when stdin is not interactive")
         context = _apply_context(
-            recipe,
+            recipe_ref,
             dirs=list(dirs or []),
             stdin=stdin,
             raw_vars=var or [],
             vars_file=vars_file,
             parallel=parallel,
             hook_timeout_seconds=_hook_timeout_seconds(hook_timeout),
+            recipe_id=recipe_id,
         )
         _render_diffs(context.plans)
         outcome = _execute_plans(
@@ -136,7 +144,12 @@ def apply_command(
             yes=yes or check,
             dry_run=dry_run or check,
         )
-        rows = _outcome_rows(context.plans, outcome, preview_status=_preview_status(dry_run, check))
+        rows = _outcome_rows(
+            context.plans,
+            outcome,
+            recipe_ref=context.recipe_ref,
+            preview_status=_preview_status(dry_run, check),
+        )
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.outcome")
         if rendered:
             echo(rendered)
@@ -155,9 +168,10 @@ def _apply_context(
     vars_file: Path | None,
     parallel: int,
     hook_timeout_seconds: float,
+    recipe_id: str | None = None,
 ) -> ApplyContext:
     root = library_root()
-    recipe_resolution = RecipeLibrary(root).resolve_detail(recipe)
+    recipe_resolution = RecipeLibrary(root).resolve_detail(recipe, recipe_id=recipe_id)
     recipe_path = recipe_resolution.path
     loaded = _load_recipe(recipe_path)
     targets = _targets(dirs, stdin=stdin)
@@ -189,18 +203,20 @@ def _apply_context(
             )
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
-    return ApplyContext(root=root, recipe=loaded, inputs=inputs, plans=plans)
+    return ApplyContext(
+        root=root,
+        recipe=loaded,
+        recipe_ref=recipe_resolution.ref,
+        inputs=inputs,
+        plans=plans,
+    )
 
 
 def _load_recipe(recipe_path: Path) -> Recipe:
     try:
-        raw = yaml.safe_load(recipe_path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"invalid recipe YAML: {exc}") from exc
-    try:
-        return Recipe.model_validate(raw)
-    except ValidationError as exc:
-        raise ConfigError(f"invalid recipe: {exc}") from exc
+        return load_recipe_file(recipe_path)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _render_diffs(plans: list[TargetPlan]) -> None:
@@ -232,7 +248,7 @@ def _execute_plans(
             if backup:
                 if draft is None:
                     draft = store.start(
-                        recipe_name=context.recipe.name,
+                        recipe_name=context.recipe_ref,
                         inputs=context.inputs,
                     )
                 reservation = draft.stage(plan.changes)
@@ -273,9 +289,10 @@ def _outcome_rows(
     plans: list[TargetPlan],
     execution: ApplyExecution,
     *,
+    recipe_ref: str,
     preview_status: str | None,
 ) -> list[dict[str, object]]:
-    rows = [_row(plan) for plan in plans]
+    rows = [{**_row(plan), "recipe": recipe_ref} for plan in plans]
     if preview_status is not None:
         return [
             {**row, "status": preview_status} if row["status"] == "planned" else row for row in rows

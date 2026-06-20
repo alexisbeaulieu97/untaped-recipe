@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -156,10 +157,13 @@ class PackLibrary:
         recipe_path = project_root / relative_path
         if recipe_path.exists():
             raise ValueError(f"pack recipe already exists: {recipe_id}")
+        if recipe_path.parent.exists():
+            raise ValueError(f"pack recipe directory already exists: {recipe_path.parent}")
         pyproject = project_root / "pyproject.toml"
         before_pyproject = pyproject.read_text()
         try:
-            (recipe_path.parent / "templates").mkdir(parents=True)
+            recipe_path.parent.mkdir(parents=True)
+            (recipe_path.parent / "templates").mkdir()
             (recipe_path.parent / "files").mkdir()
             recipe_path.write_text(
                 "version: 1\n"
@@ -214,7 +218,7 @@ class PackLibrary:
         if not path.is_file():
             raise ValueError(f"pack recipe file not found: {relative_path}")
         recipe_dir = path.parent
-        backup_dir = recipe_dir.with_name(f".{recipe_id}.remove-tmp")
+        backup_dir = recipe_dir.with_name(f".{recipe_id}.remove-tmp-{uuid.uuid4().hex}")
         if backup_dir.exists():
             raise ValueError(f"temporary pack recipe removal path already exists: {backup_dir}")
         pyproject = project_root / "pyproject.toml"
@@ -225,11 +229,15 @@ class PackLibrary:
             recipe_dir.rename(backup_dir)
             moved = True
             lock_project(project_root)
-        except Exception:
+        except Exception as exc:
             pyproject.write_text(before_pyproject)
             if moved and backup_dir.exists():
                 if recipe_dir.exists():
-                    shutil.rmtree(recipe_dir)
+                    raise ValueError(
+                        "pack recipe removal rollback incomplete; "
+                        f"recipe directory already exists: {recipe_dir}; "
+                        f"original recipe preserved at: {backup_dir}"
+                    ) from exc
                 backup_dir.rename(recipe_dir)
             raise
         shutil.rmtree(backup_dir)

@@ -227,6 +227,23 @@ def test_pack_recipe_init_rolls_back_on_lock_failure(
     assert not (pack_root / "recipes" / "broken").exists()
 
 
+def test_pack_recipe_init_refuses_existing_recipe_dir_without_deleting_contents(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    pack_root = PackLibrary(root).init("ansible", base_dir=tmp_path)
+    recipe_dir = pack_root / "recipes" / "broken"
+    recipe_dir.mkdir()
+    notes = recipe_dir / "notes.md"
+    notes.write_text("keep\n")
+
+    with pytest.raises(ValueError, match="pack recipe directory already exists"):
+        PackLibrary(root).init_recipe(pack_root, "broken")
+
+    assert notes.read_text() == "keep\n"
+    assert read_recipe_project_metadata(pack_root).recipe_paths() == {}
+
+
 def test_pack_recipe_remove_rolls_back_on_lock_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -246,6 +263,33 @@ def test_pack_recipe_remove_rolls_back_on_lock_failure(
 
     assert (pack_root / "pyproject.toml").read_text() == before
     assert recipe_path.is_file()
+
+
+def test_pack_recipe_remove_preserves_replacement_dir_on_rollback_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    pack_root = PackLibrary(root).init("ansible", base_dir=tmp_path)
+    recipe_path = PackLibrary(root).init_recipe(pack_root, "playbook")
+    recipe_dir = recipe_path.parent
+    before = (pack_root / "pyproject.toml").read_text()
+
+    def fail_lock_with_conflict(project_root: Path) -> None:
+        recipe_dir.mkdir()
+        (recipe_dir / "replacement.md").write_text("keep replacement\n")
+        raise ValueError("lock failed")
+
+    monkeypatch.setattr(pack_library_module, "lock_project", fail_lock_with_conflict)
+
+    with pytest.raises(ValueError, match="rollback incomplete"):
+        PackLibrary(root).remove_recipe(pack_root, "playbook")
+
+    assert (pack_root / "pyproject.toml").read_text() == before
+    assert (recipe_dir / "replacement.md").read_text() == "keep replacement\n"
+    backups = list((pack_root / "recipes").glob(".playbook.remove-tmp-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "recipe.yml").is_file()
 
 
 def test_pack_library_reports_error_paths(tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ from untaped.errors import ConfigError, UntapedError
 
 from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
-from untaped_recipe.application.run_bulk import flush_changes
+from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import library_root, report_config_errors, settings
@@ -242,6 +242,13 @@ def _execute_plans(
             applied.add(id(plan))
             return plan
         except UntapedError as exc:
+            if (
+                reservation is not None
+                and draft is not None
+                and isinstance(exc, ApplyWriteError)
+                and exc.rollback_incomplete
+            ):
+                draft.commit(reservation)
             failed[id(plan)] = str(exc)
             raise
 

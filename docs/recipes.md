@@ -164,7 +164,8 @@ Important behavior:
 - Every target is planned before writes begin.
 - Diffs are written to stderr.
 - Provide targets either as positional directories or with `--stdin`, not both.
-- Piped stdin requires `--yes` before planning unless `--dry-run` is used.
+- Piped stdin requires `--yes` before planning unless `--dry-run` or `--check`
+  is used.
 - `--dry-run` previews and reports without writing.
 - `--check` previews without writing, creates no backups, prompts for nothing,
   and exits non-zero if any target would change or fail.
@@ -173,8 +174,9 @@ Important behavior:
   write failures are reported as per-target errors.
 - Backups are created by default; pass `--no-backup` only when the target tree
   is already protected another way.
-- `recipe check` validates recipe schema, recipe-local assets, and hook project
-  metadata without targets or hook execution.
+- `recipe check` is a static preflight that validates recipe schema,
+  recipe-local assets, and hook project metadata without targets, inputs, or
+  hook execution.
 
 Structured output rows use kind `recipe.outcome`.
 Skipped optional transforms appear in the row's `warnings` field as a
@@ -211,7 +213,9 @@ part of a namespaced pack such as `hooks/ansible/` and referenced as
 ## Backups
 
 Backup bundles record target paths, touched files, before and after hashes,
-recipe name, inputs, and creation time.
+recipe name, inputs, and creation time. Backups store text content for the
+engine-managed files that recipes edit; restores do not preserve file mode or
+mtime.
 
 ```bash
 untaped-recipe backup list

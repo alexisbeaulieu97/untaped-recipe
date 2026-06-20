@@ -19,6 +19,7 @@ from untaped.api import (
 from untaped.batch import batch_apply
 
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
+from untaped_recipe.domain.hook_project import read_hook_metadata, validate_hook_modules
 from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
@@ -129,6 +130,7 @@ def _check_recipe(
         recipe = _load_recipe(recipe_path)
         recipe_name = recipe.name
         _check_assets(recipe, recipe_path.parent)
+        _check_local_hook_project(local_hook_project)
         _check_hooks(recipe, root, local_hook_project)
     except (ValueError, OSError, yaml.YAMLError, ValidationError) as exc:
         return {
@@ -166,6 +168,19 @@ def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:
             source = confined_path(recipe_dir, step.source, field="source")
             if not source.is_file():
                 raise ValueError(f"copy source not found: {step.source}")
+
+
+def _check_local_hook_project(local_hook_project: Path | None) -> None:
+    if local_hook_project is None:
+        return
+    if not (local_hook_project / "pyproject.toml").is_file():
+        return
+    metadata = read_hook_metadata(local_hook_project)
+    if not metadata.hooks:
+        return
+    if not (local_hook_project / "uv.lock").is_file():
+        raise ValueError(f"hook project is missing uv.lock: {local_hook_project}")
+    validate_hook_modules(local_hook_project, metadata)
 
 
 def _check_hooks(recipe: Recipe, root: Path, local_hook_project: Path | None) -> None:

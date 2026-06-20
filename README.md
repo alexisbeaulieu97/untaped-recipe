@@ -95,9 +95,11 @@ library directory is derived from the hook metadata namespace. Declared hook
 modules must live under the project's `src/` layout. Use explicit paths such as
 `./my-hook-project` when referring to a project in the current directory; bare
 hook names resolve through the library. `recipe remove` and `hook remove`
-require confirmation or `--yes`. `backup show` and `backup restore` accept full
-ids, unambiguous prefixes, or `latest`; restore uses the same transactional
-write path and symlink confinement as apply.
+require confirmation or `--yes`. `recipe check` is static preflight; it does
+not execute hooks against targets. `backup show` and `backup restore` accept
+full ids, unambiguous prefixes, or `latest`; restore uses the same
+transactional write path and symlink confinement as apply. Backups store text
+content and do not preserve file mode or mtime.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

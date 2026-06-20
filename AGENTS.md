@@ -38,7 +38,8 @@ recipe execution, previews, backups, and restore.
    without a new design review.
 9. Backups are on by default for applies. Restore refuses to overwrite edits
    made after the backup unless `--force` is passed and uses the same
-   transactional, symlink-confined write path as apply.
+   transactional, symlink-confined write path as apply. Backups store text
+   content for engine-managed files and do not preserve mode or mtime.
 10. Finish changes with the development workflow below.
 
 ## Architecture

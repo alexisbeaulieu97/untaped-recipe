@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from untaped.testing import CliInvoker
 
+import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe import app
 from untaped_recipe.cli.common import library_root
 from untaped_recipe.domain.plan import FileChange
@@ -77,6 +78,97 @@ def test_apply_yes_writes_and_emits_json_summary(tmp_path: Path) -> None:
     rows = json.loads(result.stdout)
     assert rows[0]["status"] == "applied"
     assert "out.txt" in result.stderr
+
+
+def test_apply_preserves_backup_when_write_rollback_is_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "name: demo\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: one.txt\n"
+        "    dest: one.txt\n"
+        "  - type: template\n"
+        "    template: two.txt\n"
+        "    dest: two.txt\n"
+    )
+    (recipe_dir / "one.txt").write_text("one-after\n")
+    (recipe_dir / "two.txt").write_text("two-after\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "one.txt").write_text("one-before\n")
+    (target / "two.txt").write_text("two-before\n")
+    original_replace = file_writer_module.os.replace
+
+    def fail_second_write_and_first_rollback(source: Path, dest: Path) -> None:
+        source_path = Path(source)
+        dest_path = Path(dest)
+        if ".rollback." in source_path.name:
+            raise OSError("rollback denied")
+        if dest_path.name == "two.txt":
+            raise OSError("write failed")
+        original_replace(source, dest)
+
+    monkeypatch.setattr(file_writer_module.os, "replace", fail_second_write_and_first_rollback)
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(target), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code != 0, result.output
+    assert "rollback incomplete" in result.stdout
+    store = BackupStore(library_root() / "backups")
+    bundles = store.list()
+    assert len(bundles) == 1
+    metadata = store.metadata("latest")
+    assert [entry["relative_path"] for entry in metadata["files"]] == ["one.txt", "two.txt"]
+
+
+def test_apply_discards_backup_when_failed_write_rolls_back_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "name: demo\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: one.txt\n"
+        "    dest: one.txt\n"
+        "  - type: template\n"
+        "    template: two.txt\n"
+        "    dest: two.txt\n"
+    )
+    (recipe_dir / "one.txt").write_text("one-after\n")
+    (recipe_dir / "two.txt").write_text("two-after\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "one.txt").write_text("one-before\n")
+    (target / "two.txt").write_text("two-before\n")
+    original_replace = file_writer_module.os.replace
+
+    def fail_second_write(source: Path, dest: Path) -> None:
+        if Path(dest).name == "two.txt":
+            raise OSError("write failed")
+        original_replace(source, dest)
+
+    monkeypatch.setattr(file_writer_module.os, "replace", fail_second_write)
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(target), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code != 0, result.output
+    assert BackupStore(library_root() / "backups").list() == []
 
 
 def test_apply_dry_run_and_noninteractive_default_write_nothing(tmp_path: Path) -> None:
@@ -723,6 +815,90 @@ def test_recipe_check_reports_broken_local_hook_projects(
         (recipe_dir / "uv.lock").unlink()
     if remove_module:
         (recipe_dir / "src" / "recipe_hooks" / "hooks" / "check.py").unlink()
+
+    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert expected in rows[0]["error"]
+
+
+def test_recipe_check_validates_unreferenced_local_hook_project_lockfile(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text("version: 1\nname: demo\nsteps: []\n")
+    _write_hook_project(
+        recipe_dir,
+        public_name="check",
+        module_name="check",
+        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+    )
+    (recipe_dir / "uv.lock").unlink()
+
+    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert "missing uv.lock" in rows[0]["error"]
+
+
+def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "name: demo\n"
+        "steps:\n"
+        "  - type: transform\n"
+        "    file: config.yml\n"
+        "    hook: yaml_edit\n"
+        "    args: {edits: []}\n"
+    )
+    _write_hook_project(
+        recipe_dir,
+        public_name="local_check",
+        module_name="check",
+        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+    )
+    (recipe_dir / "src" / "recipe_hooks" / "hooks" / "check.py").unlink()
+
+    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert "hook module file not found" in rows[0]["error"]
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "expected"),
+    [
+        (
+            "[project]\nname = 'recipe-hooks'\nversion = '0.1.0'\n\n"
+            "[tool.untaped_recipe.hooks]\n"
+            '"bad-name" = { module = "recipe_hooks.hooks.check" }\n',
+            "invalid hook name",
+        ),
+        (
+            "[project]\nname = 'recipe-hooks'\nversion = '0.1.0'\n\n"
+            "[tool.untaped_recipe.hooks]\n"
+            '"check" = { module =',
+            "invalid hook project pyproject",
+        ),
+    ],
+)
+def test_recipe_check_validates_unreferenced_local_hook_project_metadata(
+    tmp_path: Path,
+    pyproject: str,
+    expected: str,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text("version: 1\nname: demo\nsteps: []\n")
+    (recipe_dir / "pyproject.toml").write_text(pyproject)
+    (recipe_dir / "uv.lock").write_text("version = 1\n")
 
     result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
 

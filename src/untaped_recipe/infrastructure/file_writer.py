@@ -16,6 +16,10 @@ from untaped_recipe.domain.plan import FileChange
 class ApplyWriteError(UntapedError):
     """A planned target could not be written safely."""
 
+    def __init__(self, message: str, *, rollback_incomplete: bool = False) -> None:
+        super().__init__(message)
+        self.rollback_incomplete = rollback_incomplete
+
 
 def flush_changes(changes: tuple[FileChange, ...]) -> None:
     """Write all planned changes for one target after planning succeeds."""
@@ -37,7 +41,10 @@ def flush_changes(changes: tuple[FileChange, ...]) -> None:
         rollback_errors = _rollback(applied, created_dirs)
         if rollback_errors:
             details = "; ".join(rollback_errors)
-            raise ApplyWriteError(f"{exc}; rollback incomplete: {details}") from exc
+            raise ApplyWriteError(
+                f"{exc}; rollback incomplete: {details}",
+                rollback_incomplete=True,
+            ) from exc
         if isinstance(exc, ApplyWriteError):
             raise
         raise ApplyWriteError(str(exc)) from exc

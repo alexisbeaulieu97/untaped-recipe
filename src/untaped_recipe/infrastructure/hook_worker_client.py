@@ -7,7 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Lock, Thread
+from threading import Condition, Lock, Thread
 from typing import Protocol, TextIO
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validator
@@ -106,8 +106,9 @@ class _UvHookWorkerGroup:
         self._max_workers = max(max_workers, 1)
         self._hook_timeout_seconds = hook_timeout_seconds
         self._workers: list[UvHookWorker] = []
-        self._idle: Queue[UvHookWorker] = Queue()
-        self._lock = Lock()
+        self._idle: list[UvHookWorker] = []
+        self._condition = Condition()
+        self._closed = False
 
     def request(self, payload: dict[str, object]) -> object:
         """Lease one serialized worker for a request."""
@@ -118,42 +119,54 @@ class _UvHookWorkerGroup:
             self._retire(worker)
             raise
         finally:
-            if worker in self._workers:
-                self._idle.put(worker)
+            self._release(worker)
 
     def close(self) -> None:
         """Close every worker in the group."""
-        with self._lock:
+        with self._condition:
+            self._closed = True
             workers = tuple(self._workers)
             self._workers.clear()
-            while True:
-                try:
-                    self._idle.get_nowait()
-                except Empty:
-                    break
+            self._idle.clear()
+            self._condition.notify_all()
         for worker in workers:
             worker.close()
 
     def _retire(self, worker: UvHookWorker) -> None:
-        with self._lock:
+        with self._condition:
             if worker in self._workers:
                 self._workers.remove(worker)
+            if worker in self._idle:
+                self._idle.remove(worker)
+            self._condition.notify_all()
         worker.close()
 
     def _lease(self) -> UvHookWorker:
-        try:
-            return self._idle.get_nowait()
-        except Empty:
-            pass
-        with self._lock:
-            if len(self._workers) < self._max_workers:
+        with self._condition:
+            while not self._closed:
+                if self._idle:
+                    return self._idle.pop()
+                if len(self._workers) < self._max_workers:
+                    break
+                self._condition.wait()
+            if self._closed:
+                raise FatalHookWorkerError("hook worker pool is closed")
+            try:
                 worker = UvHookWorker(
                     self._project_root,
                     hook_timeout_seconds=self._hook_timeout_seconds,
                 )
-                self._workers.append(worker)
-                return worker
-        return self._idle.get()
+            except Exception:
+                self._condition.notify_all()
+                raise
+            self._workers.append(worker)
+            return worker
+
+    def _release(self, worker: UvHookWorker) -> None:
+        with self._condition:
+            if worker in self._workers and not self._closed:
+                self._idle.append(worker)
+            self._condition.notify()
 
 
 class UvHookWorker:

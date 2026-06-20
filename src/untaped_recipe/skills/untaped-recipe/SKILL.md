@@ -25,9 +25,9 @@ plain directories.
 - `untaped-recipe backup list|show|restore` manages backup bundles; `show` and
   `restore` accept full ids, unambiguous prefixes, or `latest`.
 - `untaped-recipe recipe list|show|add|check|remove|edit` manages local
-  recipes; `check` validates schema, assets, and hook metadata without target
-  directories or hook execution. `remove` is destructive and requires
-  confirmation or `--yes`.
+  recipes; `check` is static preflight that validates schema, assets, and hook
+  metadata without targets, inputs, or hook execution. `remove` is destructive
+  and requires confirmation or `--yes`.
 - `untaped-recipe hook init|list|show|add|remove|edit` manages uv hook
   project directories; `remove` is destructive and requires confirmation or
   `--yes`. `hook add` derives the library directory from the declared hook
@@ -104,3 +104,5 @@ target. Piped stdin without `--yes` is refused before planning unless
 target-relative paths reject absolute paths, `..` segments, and nested symlink
 traversal. Backup restore uses the same transactional, symlink-confined write
 path as apply and preserves later-edit hash guards unless `--force` is passed.
+Backups store text content for engine-managed files and do not preserve file
+mode or mtime.

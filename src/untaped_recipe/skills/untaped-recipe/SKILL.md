@@ -46,6 +46,8 @@ plain directories.
   `<library_root>/hooks/<hook-id>/`.
 - Public recipe and pack identity comes from top-level `pyproject.toml`
   metadata, not from `recipe.yml`.
+- Recipe YAML is behavior-only: `version`, optional `description`, optional
+  `inputs`, and `steps`. `name:` is rejected.
 - `apply foo` resolves only standalone library recipe `recipes/foo/`.
 - `apply pack:recipe` resolves an installed pack recipe from `packs/pack/`.
 - `apply ./recipe.yml` runs a path-only single-file recipe.

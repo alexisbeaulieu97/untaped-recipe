@@ -127,8 +127,9 @@ reference or a uv hook project reference.
 
 V1 recipe YAML is behavior-only. Public identity comes from uv project metadata
 or from the explicit file path stem for path-only files. Recipe YAML uses
-`version: 1`, optional `description`, optional `inputs`, and `steps`; do not
-make new behavior depend on `name`. Step types are:
+`version: 1`, optional `description`, optional `inputs`, and `steps`. `name`
+is not part of the recipe YAML schema and must be rejected as extra behavior
+metadata. Step types are:
 
 - `validate`: call a read-only hook.
 - `transform`: read one target file, call a transform hook, and plan new

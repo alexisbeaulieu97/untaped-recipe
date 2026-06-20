@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
+from typing import Any, cast
 
+import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from tomlkit.exceptions import ParseError
+from tomlkit.toml_document import TOMLDocument
 
 from untaped_recipe.domain.paths import safe_library_name, safe_relative_path
 
@@ -17,6 +21,13 @@ class RecipeDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     path: Path
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _path_is_string(cls, value: object) -> object:
+        if not isinstance(value, str | Path):
+            raise ValueError("recipe path must be a string")
+        return value
 
     @field_validator("path")
     @classmethod
@@ -59,7 +70,9 @@ class RecipeProjectMetadata(BaseModel):
         if untaped is None:
             return cls()
         raw_pack = untaped.get("pack")
-        pack = str(raw_pack) if raw_pack is not None else None
+        if raw_pack is not None and not isinstance(raw_pack, str):
+            raise ValueError("[tool.untaped_recipe].pack must be a string")
+        pack = raw_pack
         raw_recipes = untaped.get("recipes")
         if raw_recipes is None:
             recipes: dict[str, object] = {}
@@ -93,26 +106,30 @@ def append_recipe_metadata(project_root: Path, recipe_id: str, relative_path: Pa
     metadata = read_recipe_project_metadata(project_root)
     if recipe_id in metadata.recipes:
         raise ValueError(f"recipe already exists in project metadata: {recipe_id}")
-    _append_recipe_table_entry(project_root / "pyproject.toml", recipe_id, relative_path)
+    pyproject = project_root / "pyproject.toml"
+    doc = _read_toml_document(pyproject)
+    recipes = _recipes_table(doc, create=True)
+    if recipes is None:
+        raise ValueError("[tool.untaped_recipe.recipes] must be a table")
+    entry = tomlkit.inline_table()
+    entry["path"] = relative_path.as_posix()
+    recipes[recipe_id] = entry
+    pyproject.write_text(doc.as_string())
 
 
 def remove_recipe_metadata(project_root: Path, recipe_id: str) -> None:
     """Remove one generated recipe metadata table from a project pyproject."""
     safe_library_name(recipe_id, field="recipe")
     pyproject = project_root / "pyproject.toml"
-    lines = pyproject.read_text().splitlines()
-    if not _remove_recipe_table_entry(lines, recipe_id):
-        header = f'[tool.untaped_recipe.recipes."{recipe_id}"]'
-        start = _find_header(lines, header)
-        if start is None:
-            raise ValueError(f"recipe not found in project metadata: {recipe_id}")
-        end = start + 1
-        while end < len(lines) and not lines[end].startswith("["):
-            end += 1
-        del lines[start:end]
-    while lines and lines[-1] == "":
-        lines.pop()
-    pyproject.write_text("\n".join(lines) + "\n")
+    metadata = read_recipe_project_metadata(project_root)
+    if recipe_id not in metadata.recipes:
+        raise ValueError(f"recipe not found in project metadata: {recipe_id}")
+    doc = _read_toml_document(pyproject)
+    recipes = _recipes_table(doc, create=False)
+    if recipes is None or recipe_id not in recipes:
+        raise ValueError(f"recipe not found in project metadata: {recipe_id}")
+    del recipes[recipe_id]
+    pyproject.write_text(doc.as_string())
 
 
 def _mapping(value: object, field: str) -> Mapping[str, object] | None:
@@ -123,39 +140,46 @@ def _mapping(value: object, field: str) -> Mapping[str, object] | None:
     return value
 
 
-def _append_recipe_table_entry(path: Path, recipe_id: str, relative_path: Path) -> None:
-    entry = f'"{recipe_id}" = {{ path = "{relative_path.as_posix()}" }}'
-    lines = path.read_text().splitlines()
-    header_index = _find_header(lines, "[tool.untaped_recipe.recipes]")
-    if header_index is None:
-        while lines and lines[-1] == "":
-            lines.pop()
-        lines.extend(["", "[tool.untaped_recipe.recipes]", entry])
-        path.write_text("\n".join(lines) + "\n")
-        return
-    insert_at = header_index + 1
-    while insert_at < len(lines) and not lines[insert_at].startswith("["):
-        insert_at += 1
-    lines.insert(insert_at, entry)
-    path.write_text("\n".join(lines) + "\n")
+def _read_toml_document(path: Path) -> TOMLDocument:
+    try:
+        return tomlkit.loads(path.read_text())
+    except ParseError as exc:
+        raise ValueError(f"invalid recipe project pyproject: {path}") from exc
 
 
-def _remove_recipe_table_entry(lines: list[str], recipe_id: str) -> bool:
-    header_index = _find_header(lines, "[tool.untaped_recipe.recipes]")
-    if header_index is None:
-        return False
-    index = header_index + 1
-    prefix = f'"{recipe_id}"'
-    while index < len(lines) and not lines[index].startswith("["):
-        if lines[index].strip().startswith(prefix):
-            del lines[index]
-            return True
-        index += 1
-    return False
+def _recipes_table(
+    doc: TOMLDocument,
+    *,
+    create: bool,
+) -> MutableMapping[str, Any] | None:
+    tool = _toml_table(doc, "tool", "tool", create=create)
+    if tool is None:
+        return None
+    untaped = _toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=create)
+    if untaped is None:
+        return None
+    return _toml_table(
+        untaped,
+        "recipes",
+        "tool.untaped_recipe.recipes",
+        create=create,
+    )
 
 
-def _find_header(lines: list[str], header: str) -> int | None:
-    for index, line in enumerate(lines):
-        if line.strip() == header:
-            return index
-    return None
+def _toml_table(
+    container: MutableMapping[str, Any],
+    key: str,
+    field: str,
+    *,
+    create: bool,
+) -> MutableMapping[str, Any] | None:
+    value = container.get(key)
+    if value is None:
+        if not create:
+            return None
+        table = tomlkit.table()
+        container[key] = table
+        return cast(MutableMapping[str, Any], table)
+    if not isinstance(value, MutableMapping):
+        raise ValueError(f"[{field}] must be a table")
+    return cast(MutableMapping[str, Any], value)

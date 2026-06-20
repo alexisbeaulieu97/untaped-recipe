@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from untaped.testing import CliInvoker
 
+import untaped_recipe.infrastructure.pack_library as pack_library_module
 from untaped_recipe import app
 from untaped_recipe.cli.common import library_root
 from untaped_recipe.domain.recipe import Recipe
@@ -29,6 +30,11 @@ def test_recipe_yaml_is_behavior_without_embedded_name() -> None:
     )
 
     assert recipe.description.startswith("A recipe")
+
+
+def test_recipe_yaml_rejects_embedded_name() -> None:
+    with pytest.raises(ValueError, match="name"):
+        Recipe.model_validate({"version": 1, "name": "demo", "steps": []})
 
 
 def test_recipe_project_metadata_supports_standalone_recipes_and_packs(
@@ -67,6 +73,21 @@ def test_recipe_project_metadata_supports_standalone_recipes_and_packs(
     )
 
 
+def test_recipe_project_metadata_rejects_non_string_pack(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-pack-demo"\n'
+        'version = "0.1.0"\n\n'
+        "[tool.untaped_recipe]\n"
+        "pack = true\n"
+    )
+
+    with pytest.raises(ValueError, match=r"\[tool\.untaped_recipe\]\.pack must be a string"):
+        read_recipe_project_metadata(project)
+
+
 def test_recipe_library_installs_and_resolves_uv_recipe_projects(tmp_path: Path) -> None:
     root = tmp_path / "library"
     source = tmp_path / "source"
@@ -103,12 +124,15 @@ def test_pack_library_manages_empty_packs_and_nested_recipes(tmp_path: Path) -> 
     metadata = read_recipe_project_metadata(pack_root)
 
     assert recipe_path == pack_root / "recipes" / "playbook-migration" / "recipe.yml"
-    assert (
-        '"playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }'
-        in (pack_root / "pyproject.toml").read_text()
-    )
     assert metadata.recipe_paths() == {
         "playbook-migration": Path("recipes/playbook-migration/recipe.yml")
+    }
+    second_recipe_path = PackLibrary(root).init_recipe(pack_root, "inventory-cleanup")
+    metadata = read_recipe_project_metadata(pack_root)
+    assert second_recipe_path == pack_root / "recipes" / "inventory-cleanup" / "recipe.yml"
+    assert metadata.recipe_paths() == {
+        "inventory-cleanup": Path("recipes/inventory-cleanup/recipe.yml"),
+        "playbook-migration": Path("recipes/playbook-migration/recipe.yml"),
     }
     added = PackLibrary(root).add(pack_root)
     assert added == root / "packs" / "ansible"
@@ -117,7 +141,139 @@ def test_pack_library_manages_empty_packs_and_nested_recipes(tmp_path: Path) -> 
 
     removed = PackLibrary(root).remove_recipe(pack_root, "playbook-migration")
     assert removed == pack_root / "recipes" / "playbook-migration"
-    assert read_recipe_project_metadata(pack_root).recipe_paths() == {}
+    assert read_recipe_project_metadata(pack_root).recipe_paths() == {
+        "inventory-cleanup": Path("recipes/inventory-cleanup/recipe.yml")
+    }
+
+
+@pytest.mark.parametrize(
+    ("recipe_id", "recipe_path"),
+    [
+        ("root", Path("recipe.yml")),
+        ("one", Path("recipes") / "shared" / "one.yml"),
+    ],
+)
+def test_pack_recipe_remove_refuses_non_generated_layout_without_deleting_pack(
+    tmp_path: Path,
+    recipe_id: str,
+    recipe_path: Path,
+) -> None:
+    project = tmp_path / "pack"
+    full_recipe_path = project / recipe_path
+    full_recipe_path.parent.mkdir(parents=True)
+    full_recipe_path.write_text("version: 1\nsteps: []\n")
+    (project / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-pack-custom"\n'
+        'version = "0.1.0"\n\n'
+        "[tool.untaped_recipe]\n"
+        'pack = "custom"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        f'"{recipe_id}" = {{ path = "{recipe_path.as_posix()}" }}\n'
+    )
+    (project / "uv.lock").write_text("version = 1\n")
+    before = (project / "pyproject.toml").read_text()
+
+    with pytest.raises(ValueError, match="only generated pack recipe layouts can be removed"):
+        PackLibrary(tmp_path / "library").remove_recipe(project, recipe_id)
+
+    assert project.is_dir()
+    assert full_recipe_path.is_file()
+    assert (project / "pyproject.toml").read_text() == before
+
+
+def test_pack_recipe_remove_handles_valid_bare_toml_keys(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    project = PackLibrary(root).init("ansible", base_dir=tmp_path)
+    recipe_path = project / "recipes" / "playbook" / "recipe.yml"
+    recipe_path.parent.mkdir(parents=True)
+    recipe_path.write_text("version: 1\nsteps: []\n")
+    (project / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-pack-ansible"\n'
+        'version = "0.1.0"\n\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe]\n"
+        'pack = "ansible"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        'playbook = { path = "recipes/playbook/recipe.yml" }\n'
+    )
+
+    removed = PackLibrary(root).remove_recipe(project, "playbook")
+
+    assert removed == project / "recipes" / "playbook"
+    assert not removed.exists()
+    assert read_recipe_project_metadata(project).recipe_paths() == {}
+
+
+def test_pack_recipe_init_rolls_back_on_lock_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    pack_root = PackLibrary(root).init("ansible", base_dir=tmp_path)
+    before = (pack_root / "pyproject.toml").read_text()
+
+    def fail_lock(project_root: Path) -> None:
+        raise ValueError(f"lock failed: {project_root}")
+
+    monkeypatch.setattr(pack_library_module, "lock_project", fail_lock, raising=False)
+
+    with pytest.raises(ValueError, match="lock failed"):
+        PackLibrary(root).init_recipe(pack_root, "broken")
+
+    assert (pack_root / "pyproject.toml").read_text() == before
+    assert not (pack_root / "recipes" / "broken").exists()
+
+
+def test_pack_recipe_remove_rolls_back_on_lock_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    pack_root = PackLibrary(root).init("ansible", base_dir=tmp_path)
+    recipe_path = PackLibrary(root).init_recipe(pack_root, "playbook")
+    before = (pack_root / "pyproject.toml").read_text()
+
+    def fail_lock(project_root: Path) -> None:
+        raise ValueError(f"lock failed: {project_root}")
+
+    monkeypatch.setattr(pack_library_module, "lock_project", fail_lock, raising=False)
+
+    with pytest.raises(ValueError, match="lock failed"):
+        PackLibrary(root).remove_recipe(pack_root, "playbook")
+
+    assert (pack_root / "pyproject.toml").read_text() == before
+    assert recipe_path.is_file()
+
+
+def test_pack_library_reports_error_paths(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    library = PackLibrary(root)
+    pack_root = library.init("ansible", base_dir=tmp_path)
+    (pack_root / "uv.lock").unlink()
+
+    with pytest.raises(ValueError, match=r"missing uv\.lock"):
+        library.add(pack_root)
+    with pytest.raises(ValueError, match="pack not found"):
+        library.resolve("missing")
+
+    standalone = RecipeLibrary(root).init("demo", base_dir=tmp_path)
+    with pytest.raises(ValueError, match="requires a recipe pack project"):
+        library.add(standalone)
+
+    (pack_root / "uv.lock").write_text("version = 1\n")
+    library.add(pack_root)
+    with pytest.raises(ValueError, match="already exists"):
+        library.add(pack_root)
+    with pytest.raises(ValueError, match="pack recipe not found"):
+        library.recipe_path("ansible", "missing")
+
+
+def test_malformed_pack_recipe_ref_is_reported_cleanly(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="pack recipe refs must use <pack>:<recipe>"):
+        RecipeLibrary(tmp_path / "library").resolve_detail("ansible:playbook:extra")
 
 
 def test_cli_recipe_and_pack_authoring_workflows(
@@ -177,6 +333,20 @@ def test_cli_recipe_and_pack_authoring_workflows(
         ["pack", "recipe", "list", "ansible", "--format", "json"],
     )
     assert json.loads(pack_recipes.stdout)[0]["name"] == "playbook-migration"
+
+    recipe_show_pack_ref = invoker.invoke(app, ["recipe", "show", "ansible:playbook-migration"])
+    assert recipe_show_pack_ref.exit_code != 0
+    assert "pack recipes are managed with pack recipe" in recipe_show_pack_ref.output
+    recipe_check_pack_ref = invoker.invoke(
+        app,
+        ["recipe", "check", "ansible:playbook-migration", "--format", "json"],
+    )
+    assert recipe_check_pack_ref.exit_code == 1, recipe_check_pack_ref.output
+    check_rows = json.loads(recipe_check_pack_ref.stdout)
+    assert "pack recipes are managed with pack recipe" in check_rows[0]["error"]
+    recipe_edit_pack_ref = invoker.invoke(app, ["recipe", "edit", "ansible:playbook-migration"])
+    assert recipe_edit_pack_ref.exit_code != 0
+    assert "pack recipes are managed with pack recipe" in recipe_edit_pack_ref.output
 
     edited_pack_recipe = invoker.invoke(
         app,

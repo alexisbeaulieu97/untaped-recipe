@@ -10,14 +10,14 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from untaped_recipe.domain.paths import safe_library_name
+from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.domain.recipe_project import (
     append_recipe_metadata,
     read_recipe_project_metadata,
     remove_recipe_metadata,
 )
-from untaped_recipe.infrastructure.hook_library import _lock_project
+from untaped_recipe.infrastructure.uv_project import lock_project
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ class PackLibrary:
             raise ValueError(f"temporary pack scaffold already exists: {temp_root}")
         try:
             _scaffold_pack_project(project_root=temp_root, pack_id=pack_id)
-            _lock_project(temp_root)
+            lock_project(temp_root)
             temp_root.rename(project_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -99,7 +99,7 @@ class PackLibrary:
         pack_ref = str(pack)
         explicit = Path(pack_ref).expanduser()
         if (
-            _is_explicit_path(pack_ref)
+            is_explicit_path(pack_ref)
             and explicit.is_dir()
             and (explicit / "pyproject.toml").is_file()
         ):
@@ -156,18 +156,25 @@ class PackLibrary:
         recipe_path = project_root / relative_path
         if recipe_path.exists():
             raise ValueError(f"pack recipe already exists: {recipe_id}")
-        (recipe_path.parent / "templates").mkdir(parents=True)
-        (recipe_path.parent / "files").mkdir()
-        recipe_path.write_text(
-            "version: 1\n"
-            "description: ''\n"
-            "inputs: {}\n"
-            "steps: []\n"
-            "\n"
-            "# Add template, copy, transform, validate, or remove steps here.\n"
-        )
-        append_recipe_metadata(project_root, recipe_id, relative_path)
-        _lock_project(project_root)
+        pyproject = project_root / "pyproject.toml"
+        before_pyproject = pyproject.read_text()
+        try:
+            (recipe_path.parent / "templates").mkdir(parents=True)
+            (recipe_path.parent / "files").mkdir()
+            recipe_path.write_text(
+                "version: 1\n"
+                "description: ''\n"
+                "inputs: {}\n"
+                "steps: []\n"
+                "\n"
+                "# Add template, copy, transform, validate, or remove steps here.\n"
+            )
+            append_recipe_metadata(project_root, recipe_id, relative_path)
+            lock_project(project_root)
+        except Exception:
+            pyproject.write_text(before_pyproject)
+            shutil.rmtree(recipe_path.parent, ignore_errors=True)
+            raise
         return recipe_path
 
     def list_recipes(self, pack: str | Path) -> builtins.list[PackRecipeEntry]:
@@ -196,12 +203,36 @@ class PackLibrary:
         """Remove one generated recipe from a pack project."""
         recipe_id = safe_library_name(recipe_id, field="recipe")
         project_root = self.resolve(pack)
-        path = self.recipe_path(pack, recipe_id)
+        metadata = read_recipe_project_metadata(project_root)
+        relative_path = metadata.recipe_paths().get(recipe_id)
+        if relative_path is None:
+            raise ValueError(f"pack recipe not found: {recipe_id}")
+        generated_path = Path("recipes") / recipe_id / "recipe.yml"
+        if relative_path != generated_path:
+            raise ValueError("only generated pack recipe layouts can be removed")
+        path = project_root / relative_path
+        if not path.is_file():
+            raise ValueError(f"pack recipe file not found: {relative_path}")
         recipe_dir = path.parent
-        remove_recipe_metadata(project_root, recipe_id)
-        if recipe_dir.is_dir():
-            shutil.rmtree(recipe_dir)
-        _lock_project(project_root)
+        backup_dir = recipe_dir.with_name(f".{recipe_id}.remove-tmp")
+        if backup_dir.exists():
+            raise ValueError(f"temporary pack recipe removal path already exists: {backup_dir}")
+        pyproject = project_root / "pyproject.toml"
+        before_pyproject = pyproject.read_text()
+        moved = False
+        try:
+            remove_recipe_metadata(project_root, recipe_id)
+            recipe_dir.rename(backup_dir)
+            moved = True
+            lock_project(project_root)
+        except Exception:
+            pyproject.write_text(before_pyproject)
+            if moved and backup_dir.exists():
+                if recipe_dir.exists():
+                    shutil.rmtree(recipe_dir)
+                backup_dir.rename(recipe_dir)
+            raise
+        shutil.rmtree(backup_dir)
         return recipe_dir
 
 
@@ -219,10 +250,6 @@ def _validate_pack_recipes(project_root: Path) -> None:
             Recipe.model_validate(raw)
         except ValidationError as exc:
             raise ValueError(f"invalid pack recipe: {recipe_id}: {exc}") from exc
-
-
-def _is_explicit_path(value: str) -> bool:
-    return value.startswith(("/", "./", "../", "~")) or "/" in value
 
 
 def _scaffold_pack_project(*, project_root: Path, pack_id: str) -> None:

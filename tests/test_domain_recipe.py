@@ -20,7 +20,6 @@ def test_recipe_schema_accepts_all_v1_step_types() -> None:
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "description": "Demo recipe.",
             "inputs": {
                 "service": {"type": "str", "required": True},
@@ -54,7 +53,6 @@ def test_transform_files_normalize_to_single_file_steps() -> None:
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [
                 {
                     "type": "transform",
@@ -84,7 +82,6 @@ def test_remove_files_normalize_to_single_file_steps() -> None:
     recipe = Recipe.model_validate(
         {
             "version": 1,
-            "name": "demo",
             "steps": [
                 {
                     "type": "remove",

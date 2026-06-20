@@ -53,7 +53,6 @@ def test_apply_yes_writes_and_emits_json_summary(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
         "version: 1\n"
-        "name: demo\n"
         "inputs:\n"
         "  service: {type: str, required: true}\n"
         "steps:\n"
@@ -94,7 +93,6 @@ def test_apply_preserves_backup_when_write_rollback_is_incomplete(
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
-        "name: demo\n"
         "steps:\n"
         "  - type: template\n"
         "    template: one.txt\n"
@@ -144,7 +142,6 @@ def test_apply_discards_backup_when_failed_write_rolls_back_cleanly(
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
-        "name: demo\n"
         "steps:\n"
         "  - type: template\n"
         "    template: one.txt\n"
@@ -180,12 +177,7 @@ def test_apply_discards_backup_when_failed_write_rolls_back_cleanly(
 def test_apply_dry_run_and_noninteractive_default_write_nothing(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
-        "version: 1\n"
-        "name: demo\n"
-        "steps:\n"
-        "  - type: template\n"
-        "    template: template.txt\n"
-        "    dest: out.txt\n"
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
     )
     (tmp_path / "template.txt").write_text("hello\n")
     target = tmp_path / "target"
@@ -204,12 +196,7 @@ def test_apply_dry_run_and_noninteractive_default_write_nothing(tmp_path: Path) 
 def test_apply_check_reports_drift_without_writing_or_backing_up(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
-        "version: 1\n"
-        "name: demo\n"
-        "steps:\n"
-        "  - type: template\n"
-        "    template: template.txt\n"
-        "    dest: out.txt\n"
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
     )
     (tmp_path / "template.txt").write_text("hello\n")
     target = tmp_path / "target"
@@ -242,12 +229,7 @@ def test_apply_check_reports_drift_without_writing_or_backing_up(tmp_path: Path)
 def test_apply_stdin_requires_yes_and_resolves_workspace_repo_pipe(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
-        "version: 1\n"
-        "name: demo\n"
-        "steps:\n"
-        "  - type: template\n"
-        "    template: template.txt\n"
-        "    dest: out.txt\n"
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
     )
     (tmp_path / "template.txt").write_text("hello\n")
     workspace = tmp_path / "workspace"
@@ -277,12 +259,7 @@ def test_apply_stdin_requires_yes_and_resolves_workspace_repo_pipe(tmp_path: Pat
 def test_apply_check_allows_stdin_without_yes(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
-        "version: 1\n"
-        "name: demo\n"
-        "steps:\n"
-        "  - type: template\n"
-        "    template: template.txt\n"
-        "    dest: out.txt\n"
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
     )
     (tmp_path / "template.txt").write_text("hello\n")
     target = tmp_path / "target"
@@ -305,7 +282,6 @@ def test_apply_stdin_without_yes_refuses_before_hooks_run(tmp_path: Path) -> Non
     marker = tmp_path / "hook-ran"
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
-        "name: demo\n"
         "steps:\n"
         "  - type: validate\n"
         "    hook: touch\n"
@@ -342,6 +318,7 @@ def test_apply_stdin_without_yes_refuses_before_hooks_run(tmp_path: Path) -> Non
     [
         ("version: [\n", "invalid recipe YAML"),
         ("version: 2\nsteps: []\n", "invalid recipe"),
+        ("version: 1\nname: demo\nsteps: []\n", "name"),
     ],
 )
 def test_apply_recipe_load_errors_are_reported_cleanly(
@@ -376,12 +353,7 @@ def test_apply_missing_recipe_is_reported_cleanly(tmp_path: Path) -> None:
 def test_apply_creates_one_backup_bundle_for_bulk_invocation(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
-        "version: 1\n"
-        "name: demo\n"
-        "steps:\n"
-        "  - type: template\n"
-        "    template: template.txt\n"
-        "    dest: config.txt\n"
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: config.txt\n"
     )
     (tmp_path / "template.txt").write_text("after\n")
     first = tmp_path / "first"
@@ -403,12 +375,7 @@ def test_apply_creates_one_backup_bundle_for_bulk_invocation(tmp_path: Path) -> 
 def test_apply_backup_bundle_records_only_successful_targets(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
-        "version: 1\n"
-        "name: demo\n"
-        "steps:\n"
-        "  - type: template\n"
-        "    template: template.txt\n"
-        "    dest: config.txt\n"
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: config.txt\n"
     )
     (tmp_path / "template.txt").write_text("after\n")
     target = tmp_path / "target"
@@ -434,7 +401,6 @@ def test_apply_var_values_keep_equals_and_unknown_vars_are_rejected(tmp_path: Pa
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
         "version: 1\n"
-        "name: demo\n"
         "inputs:\n"
         "  service: {type: str, required: true}\n"
         "steps:\n"
@@ -465,7 +431,6 @@ def test_apply_outcome_includes_optional_transform_warnings(tmp_path: Path) -> N
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
         "version: 1\n"
-        "name: demo\n"
         "steps:\n"
         "  - type: transform\n"
         "    file: missing.yml\n"
@@ -507,7 +472,6 @@ def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> 
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
-        "name: ansible-2.12-playbook-migration\n"
         "steps:\n"
         "  - type: transform\n"
         "    files:\n"
@@ -564,12 +528,7 @@ def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> 
 def test_explicit_single_file_recipe_does_not_use_sibling_hook_project(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
-        "version: 1\n"
-        "name: single-file\n"
-        "steps:\n"
-        "  - type: transform\n"
-        "    file: local.yml\n"
-        "    hook: sibling\n"
+        "version: 1\nsteps:\n  - type: transform\n    file: local.yml\n    hook: sibling\n"
     )
     _write_hook_project(
         tmp_path,
@@ -599,7 +558,6 @@ def test_external_hook_args_with_yaml_dates_cross_worker_as_strings(tmp_path: Pa
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
-        "name: date-args\n"
         "steps:\n"
         "  - type: transform\n"
         "    file: local.yml\n"
@@ -726,7 +684,6 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
     (recipe_dir / "copy.txt").write_text("copy\n")
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
-        "name: demo\n"
         "steps:\n"
         "  - type: template\n"
         "    template: template.txt\n"
@@ -765,7 +722,6 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
         ("version: 2\nsteps: []\n", "invalid recipe"),
         (
             "version: 1\n"
-            "name: demo\n"
             "steps:\n"
             "  - type: template\n"
             "    template: missing.txt\n"
@@ -773,7 +729,7 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
             "template not found",
         ),
         (
-            "version: 1\nname: demo\nsteps:\n  - type: validate\n    hook: missing\n",
+            "version: 1\nsteps:\n  - type: validate\n    hook: missing\n",
             "hook not found",
         ),
     ],
@@ -815,7 +771,7 @@ def test_recipe_check_reports_broken_local_hook_projects(
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
-        "version: 1\nname: demo\nsteps:\n  - type: validate\n    hook: check\n"
+        "version: 1\nsteps:\n  - type: validate\n    hook: check\n"
     )
     _write_hook_project(
         recipe_dir,
@@ -839,7 +795,7 @@ def test_recipe_check_reports_broken_local_hook_projects(
 def test_recipe_check_validates_unreferenced_local_hook_project_lockfile(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "recipe.yml").write_text("version: 1\nname: demo\nsteps: []\n")
+    (recipe_dir / "recipe.yml").write_text("version: 1\nsteps: []\n")
     _write_hook_project(
         recipe_dir,
         public_name="check",
@@ -861,7 +817,6 @@ def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
         "version: 1\n"
-        "name: demo\n"
         "steps:\n"
         "  - type: transform\n"
         "    file: config.yml\n"
@@ -912,7 +867,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_metadata(
 ) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
-    (recipe_dir / "recipe.yml").write_text("version: 1\nname: demo\nsteps: []\n")
+    (recipe_dir / "recipe.yml").write_text("version: 1\nsteps: []\n")
     (recipe_dir / "pyproject.toml").write_text(pyproject)
     (recipe_dir / "uv.lock").write_text("version = 1\n")
 

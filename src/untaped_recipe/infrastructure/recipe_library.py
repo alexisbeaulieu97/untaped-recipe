@@ -9,13 +9,13 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from untaped_recipe.domain.paths import safe_library_name
+from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.domain.recipe_project import (
     RecipeProjectMetadata,
     read_recipe_project_metadata,
 )
-from untaped_recipe.infrastructure.hook_library import _lock_project
+from untaped_recipe.infrastructure.uv_project import lock_project
 
 
 @dataclass(frozen=True)
@@ -33,10 +33,8 @@ class RecipeResolution:
 
     path: Path
     kind: str
-    recipe_id: str
     ref: str
     project_root: Path | None = None
-    pack_id: str | None = None
 
     @property
     def local_hook_project(self) -> Path | None:
@@ -79,7 +77,7 @@ class RecipeLibrary:
             raise ValueError(f"temporary recipe scaffold already exists: {temp_root}")
         try:
             _scaffold_recipe_project(project_root=temp_root, recipe_id=recipe_id)
-            _lock_project(temp_root)
+            lock_project(temp_root)
             temp_root.rename(project_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -94,10 +92,10 @@ class RecipeLibrary:
         """Resolve a recipe id, pack reference, or path with metadata."""
         if recipe_id is not None:
             return self._resolve_path_recipe(recipe, recipe_id=recipe_id)
-        if ":" in recipe and not _is_explicit_path(recipe):
+        if ":" in recipe and not is_explicit_path(recipe):
             pack_id, pack_recipe_id = _split_pack_ref(recipe)
             return self._resolve_pack_recipe(pack_id, pack_recipe_id)
-        if not _is_explicit_path(recipe):
+        if not is_explicit_path(recipe):
             recipe_name = safe_library_name(recipe, field="recipe")
             return self._resolve_standalone_library_recipe(recipe_name)
         return self._resolve_path_recipe(recipe, recipe_id=None)
@@ -112,7 +110,6 @@ class RecipeLibrary:
             return RecipeResolution(
                 path=path,
                 kind="file",
-                recipe_id=file_recipe_id,
                 ref=file_recipe_id,
             )
         if path.is_dir() and (path / "pyproject.toml").is_file():
@@ -129,7 +126,6 @@ class RecipeLibrary:
             return RecipeResolution(
                 path=full_path,
                 kind="recipe",
-                recipe_id=standalone_id,
                 ref=standalone_id,
                 project_root=path,
             )
@@ -152,7 +148,6 @@ class RecipeLibrary:
         return RecipeResolution(
             path=full_path,
             kind="recipe",
-            recipe_id=recipe_id,
             ref=recipe_id,
             project_root=project_root,
         )
@@ -183,10 +178,8 @@ class RecipeLibrary:
         return RecipeResolution(
             path=full_path,
             kind="pack",
-            recipe_id=recipe_id,
             ref=f"{metadata.pack}:{recipe_id}",
             project_root=project_root,
-            pack_id=metadata.pack,
         )
 
     def add(self, source: Path) -> Path:
@@ -261,15 +254,15 @@ def _project_recipe_path(project_root: Path, relative_path: Path) -> Path:
 
 
 def _split_pack_ref(recipe: str) -> tuple[str, str]:
+    if recipe.count(":") != 1:
+        raise ValueError("pack recipe refs must use <pack>:<recipe>")
     pack_id, recipe_id = recipe.split(":", maxsplit=1)
+    if not pack_id or not recipe_id:
+        raise ValueError("pack recipe refs must use <pack>:<recipe>")
     return (
         safe_library_name(pack_id, field="pack"),
         safe_library_name(recipe_id, field="recipe"),
     )
-
-
-def _is_explicit_path(value: str) -> bool:
-    return value.startswith(("/", "./", "../", "~")) or "/" in value
 
 
 def _scaffold_recipe_project(*, project_root: Path, recipe_id: str) -> None:

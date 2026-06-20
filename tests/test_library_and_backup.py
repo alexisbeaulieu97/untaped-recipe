@@ -25,7 +25,7 @@ def test_recipe_library_resolves_name_before_path_and_copies_packages(tmp_path: 
     assert copied == root / "recipes" / "copied"
     assert library.resolve("copied") == copied / "recipe.yml"
     explicit = tmp_path / "copied"
-    explicit.write_text("version: 1\nname: explicit\nsteps: []\n")
+    explicit.write_text("version: 1\nsteps: []\n")
     assert library.resolve(str(explicit)) == explicit
     assert [entry.name for entry in library.list()] == ["copied"]
 

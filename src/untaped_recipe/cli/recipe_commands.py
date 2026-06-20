@@ -24,7 +24,7 @@ from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
 from untaped_recipe.infrastructure.hook_library import add_hook_to_project
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
-from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
+from untaped_recipe.infrastructure.recipe_library import RecipeLibrary, RecipeResolution
 
 app = create_app(name="recipe", help="Manage reusable recipes.")
 hook_app = create_app(name="hook", help="Manage hooks local to a standalone recipe.")
@@ -64,7 +64,8 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
 def show_command(name: Annotated[str, Parameter(help="Recipe id or path.")], /) -> None:
     """Print a recipe file."""
     with report_config_errors():
-        echo(RecipeLibrary(library_root()).resolve(name).read_text(), nl=False)
+        resolution = _resolve_recipe_command(name)
+        echo(resolution.path.read_text(), nl=False)
 
 
 @app.command(name="add")
@@ -90,7 +91,7 @@ def check_command(
     with report_config_errors():
         root = library_root()
         try:
-            resolution = RecipeLibrary(root).resolve_detail(name)
+            resolution = _resolve_recipe_command(name, root=root)
         except ValueError as exc:
             row = _check_error_row(name, exc)
         else:
@@ -140,7 +141,8 @@ def remove_command(
 def edit_command(name: Annotated[str, Parameter(help="Recipe id or path.")], /) -> None:
     """Open a recipe in $VISUAL or $EDITOR."""
     with report_config_errors():
-        edit_path(RecipeLibrary(library_root()).resolve(name))
+        resolution = _resolve_recipe_command(name)
+        edit_path(resolution.path)
 
 
 @hook_app.command(name="init")
@@ -204,6 +206,16 @@ def _check_error_row(name: str, exc: Exception) -> dict[str, object]:
         "path": display_path,
         "error": str(exc),
     }
+
+
+def _resolve_recipe_command(name: str, *, root: Path | None = None) -> RecipeResolution:
+    resolution = RecipeLibrary(root or library_root()).resolve_detail(name)
+    if resolution.kind == "pack":
+        raise ValueError(
+            "pack recipes are managed with pack recipe commands; use pack recipe show/edit "
+            "or pack check"
+        )
+    return resolution
 
 
 def _load_recipe(path: Path) -> Recipe:

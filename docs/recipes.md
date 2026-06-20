@@ -23,7 +23,8 @@ The library stores three uv-backed authoring artifacts:
 
 Installed standalone recipes and packs are always project directories with
 `pyproject.toml` and `uv.lock`. Recipe YAML is behavior-only; public identity
-comes from the top-level project metadata.
+comes from the top-level project metadata. Recipe YAML contains `version`,
+optional `description`, optional `inputs`, and `steps`; `name:` is rejected.
 
 A standalone recipe project exposes exactly one recipe:
 

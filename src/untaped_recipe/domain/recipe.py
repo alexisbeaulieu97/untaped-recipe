@@ -146,7 +146,6 @@ class Recipe(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: Literal[1]
-    name: str | None = None
     description: str = ""
     inputs: dict[str, InputSpec] = Field(default_factory=dict)
     steps: tuple[Step, ...] = ()

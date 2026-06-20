@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import uuid
+from collections.abc import MutableMapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
+
+import tomlkit
+from tomlkit.exceptions import ParseError
+from tomlkit.toml_document import TOMLDocument
 
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
@@ -17,7 +22,8 @@ from untaped_recipe.domain.hook_project import (
     read_hook_metadata,
     validate_hook_modules,
 )
-from untaped_recipe.domain.paths import safe_library_name
+from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
+from untaped_recipe.infrastructure.uv_project import lock_project
 
 
 @dataclass(frozen=True)
@@ -52,7 +58,7 @@ class HookLibrary:
         temp_root = self.hooks_dir / f".{project_name}.tmp-{uuid.uuid4().hex}"
         try:
             self._scaffold(public_name, project_name, temp_root, kind=kind)
-            _lock_project(temp_root)
+            lock_project(temp_root)
             temp_root.rename(project_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -113,11 +119,7 @@ class HookLibrary:
     def resolve(self, name: str) -> Path:
         """Resolve a reusable hook project name or explicit project path."""
         explicit = Path(name).expanduser()
-        if (
-            _is_explicit_path(name)
-            and explicit.is_dir()
-            and (explicit / "pyproject.toml").is_file()
-        ):
+        if is_explicit_path(name) and explicit.is_dir() and (explicit / "pyproject.toml").is_file():
             return explicit.resolve()
         hook_name = _library_project_name(name)
         path = self.hooks_dir / hook_name
@@ -183,20 +185,44 @@ def add_hook_to_project(
     module_leaf = public_name.rsplit(".", maxsplit=1)[-1]
     package = _local_package_name(project_root.name)
     module = f"{package}.hooks.{module_leaf}"
+    pyproject = project_root / "pyproject.toml"
+    before_pyproject = pyproject.read_text()
+    package_dir = project_root / "src" / package
+    hooks_dir = package_dir / "hooks"
     module_path = project_root / "src" / package / "hooks" / f"{module_leaf}.py"
     if module_path.exists():
         raise ValueError(f"hook module already exists: {module_path}")
-    module_path.parent.mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / package / "__init__.py").touch()
-    (project_root / "src" / package / "hooks" / "__init__.py").touch()
-    module_path.write_text(_hook_stub(kind))
-    _append_hook_metadata(project_root / "pyproject.toml", public_name, module)
-    _lock_project(project_root)
+    package_existed = package_dir.exists()
+    hooks_existed = hooks_dir.exists()
+    package_init = package_dir / "__init__.py"
+    hooks_init = hooks_dir / "__init__.py"
+    package_init_existed = package_init.exists()
+    hooks_init_existed = hooks_init.exists()
+    try:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        if not package_init_existed:
+            package_init.write_text("")
+        if not hooks_init_existed:
+            hooks_init.write_text("")
+        module_path.write_text(_hook_stub(kind))
+        _append_hook_metadata(pyproject, public_name, module)
+        lock_project(project_root)
+    except Exception:
+        _rollback_scoped_hook(
+            pyproject=pyproject,
+            before_pyproject=before_pyproject,
+            module_path=module_path,
+            package_init=package_init,
+            hooks_init=hooks_init,
+            package_init_existed=package_init_existed,
+            hooks_init_existed=hooks_init_existed,
+            package_dir=package_dir,
+            hooks_dir=hooks_dir,
+            package_existed=package_existed,
+            hooks_existed=hooks_existed,
+        )
+        raise
     return module_path
-
-
-def _is_explicit_path(name: str) -> bool:
-    return name.startswith(("/", "./", "../", "~")) or "/" in name
 
 
 def _library_project_name(name: str) -> str:
@@ -222,26 +248,65 @@ def _hook_stub(kind: Literal["transform", "validate"]) -> str:
 
 
 def _append_hook_metadata(path: Path, public_name: str, module: str) -> None:
-    current = path.read_text().rstrip()
-    path.write_text(
-        f'{current}\n\n[tool.untaped_recipe.hooks."{public_name}"]\nmodule = "{module}"\n'
-    )
+    doc = _read_toml_document(path)
+    tool = _toml_table(doc, "tool", "tool", create=True)
+    untaped = _toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
+    hooks = _toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
+    entry = tomlkit.inline_table()
+    entry["module"] = module
+    hooks[public_name] = entry
+    path.write_text(doc.as_string())
 
 
-def _lock_project(project_root: Path) -> None:
+def _read_toml_document(path: Path) -> TOMLDocument:
     try:
-        subprocess.run(
-            ["uv", "lock"],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise ValueError("uv executable not found for hook project initialization") from exc
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.strip() or exc.stdout.strip()
-        message = "failed to create hook project uv.lock"
-        if detail:
-            message = f"{message}: {detail}"
-        raise ValueError(message) from exc
+        return tomlkit.loads(path.read_text())
+    except ParseError as exc:
+        raise ValueError(f"invalid recipe project pyproject: {path}") from exc
+
+
+def _toml_table(
+    container: MutableMapping[str, Any],
+    key: str,
+    field: str,
+    *,
+    create: bool,
+) -> MutableMapping[str, Any]:
+    value = container.get(key)
+    if value is None:
+        if not create:
+            raise ValueError(f"[{field}] must be a table")
+        table = tomlkit.table()
+        container[key] = table
+        return cast(MutableMapping[str, Any], table)
+    if not isinstance(value, MutableMapping):
+        raise ValueError(f"[{field}] must be a table")
+    return cast(MutableMapping[str, Any], value)
+
+
+def _rollback_scoped_hook(
+    *,
+    pyproject: Path,
+    before_pyproject: str,
+    module_path: Path,
+    package_init: Path,
+    hooks_init: Path,
+    package_init_existed: bool,
+    hooks_init_existed: bool,
+    package_dir: Path,
+    hooks_dir: Path,
+    package_existed: bool,
+    hooks_existed: bool,
+) -> None:
+    pyproject.write_text(before_pyproject)
+    for path, existed in (
+        (module_path, False),
+        (hooks_init, hooks_init_existed),
+        (package_init, package_init_existed),
+    ):
+        if not existed and path.exists():
+            path.unlink()
+    for path, existed in ((hooks_dir, hooks_existed), (package_dir, package_existed)):
+        if not existed and path.exists():
+            with suppress(OSError):
+                path.rmdir()

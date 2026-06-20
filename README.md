@@ -41,6 +41,9 @@ top-level `pyproject.toml`, not from `recipe.yml`:
 "add-config" = { path = "recipe.yml" }
 ```
 
+Recipe YAML is behavior-only. It contains `version`, optional `description`,
+optional `inputs`, and `steps`; `name:` is rejected.
+
 Packs declare a pack id and recipe paths:
 
 ```toml

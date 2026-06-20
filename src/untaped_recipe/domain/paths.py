@@ -23,6 +23,11 @@ def safe_library_name(value: str, *, field: str = "name") -> str:
     return name
 
 
+def is_explicit_path(value: str) -> bool:
+    """Return whether a user-provided reference should be treated as a filesystem path."""
+    return value.startswith(("/", "./", "../", "~")) or "/" in value
+
+
 def confined_path(base: Path, relative: Path, *, field: str) -> Path:
     """Resolve a target-relative path without following nested symlinks."""
     relative = safe_relative_path(relative, field=field)

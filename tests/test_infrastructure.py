@@ -23,26 +23,29 @@ from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 from untaped_recipe.infrastructure.ruamel_io import dump_yaml, load_yaml
 
 
-def test_recipe_library_file_package_crud_and_errors(tmp_path: Path) -> None:
+def test_recipe_library_project_crud_and_errors(tmp_path: Path) -> None:
     root = tmp_path / "library"
-    file_source = tmp_path / "single.yml"
-    file_source.write_text("version: 1\nname: single\nsteps: []\n")
-    package_source = tmp_path / "package"
-    package_source.mkdir()
-    (package_source / "recipe.yml").write_text("version: 1\nname: package\nsteps: []\n")
+    single_source = tmp_path / "single-source"
+    _write_recipe_project(single_source, recipe_id="single")
+    package_source = tmp_path / "package-source"
+    _write_recipe_project(package_source, recipe_id="package")
     library = RecipeLibrary(root)
 
     assert library.list() == []
-    single = library.add(file_source, name="single")
-    package = library.add(package_source, name="package")
+    single = library.add(single_source)
+    package = library.add(package_source)
 
-    assert library.resolve("single") == single
-    assert library.resolve("package") == package
-    assert [entry.kind for entry in library.list()] == ["package", "file"]
+    assert library.resolve("single") == single / "recipe.yml"
+    assert library.resolve("package") == package / "recipe.yml"
+    assert [entry.kind for entry in library.list()] == ["recipe", "recipe"]
     with pytest.raises(ValueError, match="already exists"):
-        library.add(file_source, name="single")
+        library.add(single_source)
     with pytest.raises(ValueError, match="source not found"):
         library.add(tmp_path / "missing.yml")
+    file_source = tmp_path / "single.yml"
+    file_source.write_text("version: 1\nname: single\nsteps: []\n")
+    with pytest.raises(ValueError, match="uv recipe project directory"):
+        library.add(file_source)
 
     assert library.remove("single") == single
     assert library.remove("package") == root / "recipes" / "package"
@@ -50,6 +53,21 @@ def test_recipe_library_file_package_crud_and_errors(tmp_path: Path) -> None:
         library.resolve("single")
     with pytest.raises(ValueError, match="recipe not found"):
         library.remove("package")
+
+
+def _write_recipe_project(root: Path, *, recipe_id: str) -> None:
+    root.mkdir(parents=True)
+    (root / "recipe.yml").write_text("version: 1\nsteps: []\n")
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        f'name = "untaped-recipe-{recipe_id}"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.recipes]\n"
+        f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'
+    )
+    (root / "uv.lock").write_text("version = 1\n")
 
 
 def test_hook_library_crud_and_errors(tmp_path: Path) -> None:

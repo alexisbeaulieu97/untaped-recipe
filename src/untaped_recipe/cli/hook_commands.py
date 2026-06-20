@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from cyclopts import Parameter
 from untaped.api import (
@@ -37,12 +37,17 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
 
 @app.command(name="init")
 def init_command(
-    name: Annotated[str, Parameter(help="Hook name or namespaced hook name.")],
+    name: Annotated[str, Parameter(help="Global hook name.")],
     /,
+    *,
+    kind: Annotated[
+        Literal["transform", "validate"],
+        Parameter(name="--kind", help="Hook callable kind."),
+    ] = "transform",
 ) -> None:
     """Scaffold a uv hook project."""
     with report_config_errors():
-        path = HookLibrary(library_root()).init(name)
+        path = HookLibrary(library_root()).init(name, kind=kind)
         echo(str(path))
 
 

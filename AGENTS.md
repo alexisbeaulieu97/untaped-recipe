@@ -6,7 +6,7 @@ workflow changes, update this file and the packaged skill in the same change.
 
 ## Mission
 
-`untaped-recipe` applies trusted local recipe packages across one or more
+`untaped-recipe` applies trusted local recipe projects and packs across one or more
 plain directories. It is intentionally VCS-agnostic: no clone, branch, git
 diff, commit, push, or PR behavior belongs here. Workspace selection can come
 from another tool through stdin or pipe records, but this repo owns only
@@ -71,22 +71,53 @@ The directory layout is:
 
 ```text
 recipes/
+packs/
 hooks/
 backups/
 ```
 
-Recipes resolve in this order:
+Library entries are uv projects:
 
-1. `recipes/<name>/recipe.yml`
-2. `recipes/<name>.yml`
-3. explicit filesystem file or directory containing `recipe.yml`
+- `recipes/<recipe-id>/` is a standalone recipe project.
+- `packs/<pack-id>/` is a recipe pack project exposing zero or more recipes.
+- `hooks/<hook-id>/` is a reusable global hook project.
+
+Standalone recipe and pack identity comes from top-level `pyproject.toml`
+metadata, not from `recipe.yml`. A standalone recipe project declares exactly
+one recipe:
+
+```toml
+[tool.untaped_recipe.recipes]
+"add-config" = { path = "recipe.yml" }
+```
+
+A pack declares its pack id plus zero or more recipe paths:
+
+```toml
+[tool.untaped_recipe]
+pack = "ansible"
+
+[tool.untaped_recipe.recipes]
+"playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
+```
+
+Nested uv projects or uv workspaces inside a recipe or pack are opaque to this
+tool. Only the top-level project metadata and declared recipe paths are read.
+
+Recipes resolve as follows:
+
+1. bare `apply <recipe>` resolves only `recipes/<recipe>/`
+2. `apply <pack>:<recipe>` resolves `packs/<pack>/`
+3. explicit `apply ./recipe.yml` runs a path-only single-file recipe
+4. explicit `apply ./recipe-project` runs a local standalone recipe project
+5. explicit `apply ./pack-project --recipe <recipe>` runs a local pack recipe
 
 Hooks resolve in this order:
 
-1. recipe project `pyproject.toml` entries under `[tool.untaped_recipe.hooks]`
+1. standalone recipe or pack project `pyproject.toml` entries under
+   `[tool.untaped_recipe.hooks]`
 2. global hook projects under `hooks/<name>/`
-3. namespaced hook packs under `hooks/<namespace>/` for dotted names
-4. packaged built-ins registered in `src/untaped_recipe/builtins/registry.py`
+3. packaged built-ins registered in `src/untaped_recipe/builtins/registry.py`
 
 Hook names in recipes must be safe logical names, not filesystem paths.
 Recipes never declare hook runtimes. The resolver returns either a built-in
@@ -94,8 +125,10 @@ reference or a uv hook project reference.
 
 ## Recipe Schema
 
-V1 recipes use `version: 1`, `name`, optional `description`, optional
-`inputs`, and `steps`. Step types are:
+V1 recipe YAML is behavior-only. Public identity comes from uv project metadata
+or from the explicit file path stem for path-only files. Recipe YAML uses
+`version: 1`, optional `description`, optional `inputs`, and `steps`; do not
+make new behavior depend on `name`. Step types are:
 
 - `validate`: call a read-only hook.
 - `transform`: read one target file, call a transform hook, and plan new
@@ -117,7 +150,9 @@ belong in the shipped `yaml_edit` transform hook backed by `ruamel.yaml`.
 ## Hook Contracts
 
 External hook projects are uv-managed directories with `pyproject.toml`,
-`uv.lock`, package code under `src/`, and a hook metadata table:
+`uv.lock`, package code under `src/`, and a hook metadata table. The same hook
+table is used for global hook projects and for hooks local to a standalone
+recipe or pack project:
 
 ```toml
 [tool.untaped_recipe.hooks]

@@ -7,6 +7,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
@@ -39,7 +40,7 @@ class HookLibrary:
         """Directory containing reusable hook projects."""
         return self._root / "hooks"
 
-    def init(self, name: str) -> Path:
+    def init(self, name: str, *, kind: Literal["transform", "validate"] = "transform") -> Path:
         """Scaffold a uv hook project in the global hook library."""
         public_name = normalize_hook_name(name)
         project_name = project_name_for_hook(public_name)
@@ -50,7 +51,7 @@ class HookLibrary:
         self.hooks_dir.mkdir(parents=True, exist_ok=True)
         temp_root = self.hooks_dir / f".{project_name}.tmp-{uuid.uuid4().hex}"
         try:
-            self._scaffold(public_name, project_name, temp_root)
+            self._scaffold(public_name, project_name, temp_root, kind=kind)
             _lock_project(temp_root)
             temp_root.rename(project_root)
         except Exception:
@@ -58,7 +59,14 @@ class HookLibrary:
             raise
         return project_root
 
-    def _scaffold(self, public_name: str, project_name: str, project_root: Path) -> None:
+    def _scaffold(
+        self,
+        public_name: str,
+        project_name: str,
+        project_root: Path,
+        *,
+        kind: Literal["transform", "validate"],
+    ) -> None:
         """Write a hook project scaffold under ``project_root``."""
         module_leaf = public_name.rsplit(".", maxsplit=1)[-1]
         package = _package_name(project_name)
@@ -67,7 +75,7 @@ class HookLibrary:
         (project_root / "src" / package / "__init__.py").write_text("")
         (project_root / "src" / package / "hooks" / "__init__.py").write_text("")
         (project_root / "src" / package / "hooks" / f"{module_leaf}.py").write_text(
-            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+            _hook_stub(kind)
         )
         (project_root / "pyproject.toml").write_text(
             "[project]\n"
@@ -159,6 +167,34 @@ class HookLibrary:
         return entries
 
 
+def add_hook_to_project(
+    project_root: Path,
+    name: str,
+    *,
+    kind: Literal["transform", "validate"] = "transform",
+) -> Path:
+    """Scaffold a hook module inside an existing recipe or pack uv project."""
+    if not (project_root / "pyproject.toml").is_file():
+        raise ValueError(f"project must contain pyproject.toml: {project_root}")
+    public_name = normalize_hook_name(name)
+    metadata = read_hook_metadata(project_root)
+    if public_name in metadata.hooks:
+        raise ValueError(f"hook already exists: {public_name}")
+    module_leaf = public_name.rsplit(".", maxsplit=1)[-1]
+    package = _local_package_name(project_root.name)
+    module = f"{package}.hooks.{module_leaf}"
+    module_path = project_root / "src" / package / "hooks" / f"{module_leaf}.py"
+    if module_path.exists():
+        raise ValueError(f"hook module already exists: {module_path}")
+    module_path.parent.mkdir(parents=True, exist_ok=True)
+    (project_root / "src" / package / "__init__.py").touch()
+    (project_root / "src" / package / "hooks" / "__init__.py").touch()
+    module_path.write_text(_hook_stub(kind))
+    _append_hook_metadata(project_root / "pyproject.toml", public_name, module)
+    _lock_project(project_root)
+    return module_path
+
+
 def _is_explicit_path(name: str) -> bool:
     return name.startswith(("/", "./", "../", "~")) or "/" in name
 
@@ -173,6 +209,23 @@ def _library_project_name(name: str) -> str:
 
 def _package_name(project_name: str) -> str:
     return "untaped_recipe_hooks_" + project_name.replace("-", "_").replace(".", "_")
+
+
+def _local_package_name(project_name: str) -> str:
+    return project_name.replace("-", "_").replace(".", "_") + "_hooks"
+
+
+def _hook_stub(kind: Literal["transform", "validate"]) -> str:
+    if kind == "validate":
+        return "def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n"
+    return "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+
+
+def _append_hook_metadata(path: Path, public_name: str, module: str) -> None:
+    current = path.read_text().rstrip()
+    path.write_text(
+        f'{current}\n\n[tool.untaped_recipe.hooks."{public_name}"]\nmodule = "{module}"\n'
+    )
 
 
 def _lock_project(project_root: Path) -> None:

@@ -14,9 +14,9 @@ steps:
     hook: set_owner
 ```
 
-Recipes do not declare runtimes. The resolver decides whether the hook is a
-recipe-local uv project hook, a global uv project hook, a namespaced pack hook,
-or a built-in.
+Recipes do not declare runtimes. The resolver decides whether the hook is local
+to the standalone recipe or pack project, a reusable global uv hook project, or
+a built-in.
 
 ## Hook Project Layout
 
@@ -24,7 +24,6 @@ Create a global hook project with:
 
 ```bash
 untaped-recipe hook init set_owner
-untaped-recipe hook init ansible.add_play_collections
 ```
 
 The scaffolded project looks like:
@@ -46,24 +45,8 @@ Hook metadata lives in `pyproject.toml`:
 "set_owner" = { module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
 ```
 
-Namespaced packs live under the namespace directory and use dotted public hook
-names:
-
-```text
-hooks/ansible/
-├── pyproject.toml
-├── uv.lock
-└── src/ansible_hooks/hooks/add_play_collections.py
-```
-
-```toml
-[tool.untaped_recipe.hooks]
-"ansible.add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
-```
-
-Then recipes reference `hook: ansible.add_play_collections`.
-
-Recipe-local hooks use the same project shape in a recipe project directory:
+Recipe-local hooks use the same project shape inside a standalone recipe
+project:
 
 ```text
 recipes/add-config/
@@ -73,19 +56,34 @@ recipes/add-config/
 └── src/add_config_hooks/hooks/set_owner.py
 ```
 
-Single-file recipes cannot contain recipe-local hooks; they can still use
-global hook projects and built-ins.
+```bash
+untaped-recipe recipe hook init add-config set_owner --kind validate
+```
+
+Pack-local hooks use the same top-level pack project:
+
+```text
+packs/ansible/
+├── pyproject.toml
+├── uv.lock
+├── recipes/playbook-migration/recipe.yml
+└── src/ansible_hooks/hooks/add_play_collections.py
+```
+
+```bash
+untaped-recipe pack hook init ansible add_play_collections
+```
+
+Single-file recipes cannot contain local hooks; they can still use global hook
+projects and built-ins.
 
 ## Resolution Order
 
 For `hook: set_owner`, resolution checks:
 
-1. the recipe project's `pyproject.toml`
+1. the standalone recipe or pack project's `pyproject.toml`
 2. `<library_root>/hooks/set_owner/pyproject.toml`
 3. packaged built-ins such as `yaml_edit`
-
-For `hook: ansible.add_play_collections`, global resolution checks
-`<library_root>/hooks/ansible/pyproject.toml`.
 
 The hook key must exist in the project's `[tool.untaped_recipe.hooks]` table,
 and uv hook projects must have a `uv.lock`. Missing or stale lockfiles fail
@@ -187,6 +185,8 @@ Add hook-specific dependencies to the hook project's `pyproject.toml`, then run
 ```bash
 untaped-recipe hook list
 untaped-recipe hook init set_owner
+untaped-recipe recipe hook init add-config set_owner --kind validate
+untaped-recipe pack hook init ansible add_play_collections
 untaped-recipe hook add ./my-hook-project --name set_owner
 untaped-recipe hook show set_owner
 untaped-recipe hook edit set_owner
@@ -197,10 +197,9 @@ untaped-recipe hook remove set_owner --yes
 `hook edit` open the module file when the supplied name matches a declared
 hook; otherwise they show or edit `pyproject.toml`.
 
-When adding a project, the library directory is derived from the declared hook
-names. A project declaring `set_owner` installs under `hooks/set_owner/`; a
-project declaring `ansible.add_play_collections` installs under
-`hooks/ansible/`. If `--name` is passed, it must match that derived name.
+When adding a global hook project, the library directory is derived from the
+declared hook name. A project declaring `set_owner` installs under
+`hooks/set_owner/`. If `--name` is passed, it must match that derived name.
 Declared hook modules must resolve to files under the project's `src/`
 directory, matching the scaffolded layout. Use `./my-hook-project` or an
 absolute path when adding/showing/editing a project from the current directory;

@@ -31,12 +31,18 @@ def _write_hook_project(
     (root / "src" / package / "__init__.py").write_text("")
     (root / "src" / package / "hooks" / "__init__.py").write_text("")
     module_path.write_text(code)
+    recipe_metadata = (
+        '[tool.untaped_recipe.recipes]\n"demo" = { path = "recipe.yml" }\n\n'
+        if (root / "recipe.yml").is_file()
+        else ""
+    )
     (root / "pyproject.toml").write_text(
         "[project]\n"
         f'name = "{root.name}-hooks"\n'
         'version = "0.1.0"\n'
         'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
+        f"{recipe_metadata}"
         "[tool.untaped_recipe.hooks]\n"
         f'"{public_name}" = {{ module = "{package}.hooks.{module_name}" }}\n'
     )
@@ -118,7 +124,7 @@ def test_apply_preserves_backup_when_write_rollback_is_incomplete(
 
     result = CliInvoker().invoke(
         app,
-        ["apply", str(recipe_dir), str(target), "--yes", "--format", "json"],
+        ["apply", str(recipe_dir / "recipe.yml"), str(target), "--yes", "--format", "json"],
     )
 
     assert result.exit_code != 0, result.output
@@ -164,7 +170,7 @@ def test_apply_discards_backup_when_failed_write_rolls_back_cleanly(
 
     result = CliInvoker().invoke(
         app,
-        ["apply", str(recipe_dir), str(target), "--yes", "--format", "json"],
+        ["apply", str(recipe_dir / "recipe.yml"), str(target), "--yes", "--format", "json"],
     )
 
     assert result.exit_code != 0, result.output
@@ -335,7 +341,7 @@ def test_apply_stdin_without_yes_refuses_before_hooks_run(tmp_path: Path) -> Non
     ("recipe_content", "expected"),
     [
         ("version: [\n", "invalid recipe YAML"),
-        ("version: 1\nsteps: []\n", "name"),
+        ("version: 2\nsteps: []\n", "invalid recipe"),
     ],
 )
 def test_apply_recipe_load_errors_are_reported_cleanly(
@@ -640,25 +646,28 @@ def test_library_command_value_errors_are_reported_cleanly(args: list[str]) -> N
 
 
 def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    recipe = tmp_path / "recipe.yml"
-    recipe.write_text("version: 1\nname: demo\nsteps: []\n")
+    recipe = tmp_path / "demo"
     editor = tmp_path / "editor.sh"
     marker = tmp_path / "edited.txt"
     editor.write_text(f"#!/bin/sh\nprintf '%s' \"$1\" > {marker}\n")
     editor.chmod(0o755)
     monkeypatch.setenv("EDITOR", str(editor))
+    monkeypatch.chdir(tmp_path)
     invoker = CliInvoker()
 
-    added_recipe = invoker.invoke(app, ["recipe", "add", str(recipe), "--name", "demo"])
+    initialized_recipe = invoker.invoke(app, ["recipe", "init", "demo"])
+    assert initialized_recipe.exit_code == 0, initialized_recipe.output
+    assert Path(initialized_recipe.stdout.strip()) == recipe
+    added_recipe = invoker.invoke(app, ["recipe", "add", str(recipe)])
     assert added_recipe.exit_code == 0, added_recipe.output
     listed_recipes = invoker.invoke(app, ["recipe", "list", "--format", "json"])
     assert listed_recipes.exit_code == 0, listed_recipes.output
     assert json.loads(listed_recipes.stdout)[0]["name"] == "demo"
     shown_recipe = invoker.invoke(app, ["recipe", "show", "demo"])
-    assert "name: demo" in shown_recipe.stdout
+    assert "steps: []" in shown_recipe.stdout
     edited_recipe = invoker.invoke(app, ["recipe", "edit", "demo"])
     assert edited_recipe.exit_code == 0, edited_recipe.output
-    assert marker.read_text().endswith("demo.yml")
+    assert marker.read_text().endswith("recipe.yml")
     refused_recipe_remove = invoker.invoke(app, ["recipe", "remove", "demo"])
     assert refused_recipe_remove.exit_code != 0
     assert "requires --yes" in refused_recipe_remove.output
@@ -753,7 +762,7 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
     ("recipe_body", "expected"),
     [
         ("version: [\n", "invalid recipe YAML"),
-        ("version: 1\nsteps: []\n", "invalid recipe"),
+        ("version: 2\nsteps: []\n", "invalid recipe"),
         (
             "version: 1\n"
             "name: demo\n"
@@ -778,7 +787,10 @@ def test_recipe_check_reports_invalid_packages(
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(recipe_body)
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(
+        app,
+        ["recipe", "check", str(recipe_dir / "recipe.yml"), "--format", "json"],
+    )
 
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
@@ -877,15 +889,19 @@ def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path
     [
         (
             "[project]\nname = 'recipe-hooks'\nversion = '0.1.0'\n\n"
+            "[tool.untaped_recipe.recipes]\n"
+            '"demo" = { path = "recipe.yml" }\n\n'
             "[tool.untaped_recipe.hooks]\n"
             '"bad-name" = { module = "recipe_hooks.hooks.check" }\n',
             "invalid hook name",
         ),
         (
             "[project]\nname = 'recipe-hooks'\nversion = '0.1.0'\n\n"
+            "[tool.untaped_recipe.recipes]\n"
+            '"demo" = { path = "recipe.yml" }\n\n'
             "[tool.untaped_recipe.hooks]\n"
             '"check" = { module =',
-            "invalid hook project pyproject",
+            "invalid recipe project pyproject",
         ),
     ],
 )

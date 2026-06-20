@@ -11,6 +11,7 @@ from untaped_recipe.application.inputs import (
     InputResolutionResult,
     PromptFunc,
     prepare_input_resolution,
+    redact_sensitive_text,
     resolve_global_values,
     resolve_target_inputs,
 )
@@ -108,15 +109,39 @@ class RunBulkApply:
                 target=target.path,
                 inputs=resolved.values,
             )
-            return plan.model_copy(
-                update={
-                    "display_inputs": resolved.display_values,
-                }
+            return _redact_plan_diagnostics(
+                recipe,
+                plan.model_copy(
+                    update={
+                        "display_inputs": resolved.display_values,
+                    }
+                ),
+                resolved.values,
             )
         except Exception as exc:
+            error = str(exc)
+            display_inputs = {}
+            if resolved is not None:
+                error = redact_sensitive_text(recipe.inputs, resolved.values, error)
+                display_inputs = resolved.display_values
             return TargetPlan(
                 target=target.path,
                 status="error",
-                error=str(exc),
-                display_inputs={} if resolved is None else resolved.display_values,
+                error=error,
+                display_inputs=display_inputs,
             )
+
+
+def _redact_plan_diagnostics(
+    recipe: Recipe,
+    plan: TargetPlan,
+    values: dict[str, object],
+) -> TargetPlan:
+    return plan.model_copy(
+        update={
+            "error": redact_sensitive_text(recipe.inputs, values, plan.error),
+            "warnings": tuple(
+                redact_sensitive_text(recipe.inputs, values, warning) for warning in plan.warnings
+            ),
+        }
+    )

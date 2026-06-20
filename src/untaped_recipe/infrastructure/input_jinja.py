@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Protocol
+from typing import Any, Protocol
 
 MAX_DERIVED_VALUE_LENGTH = 8192
 UNRESOLVED = object()
@@ -19,6 +19,8 @@ class _RenderableTemplate(Protocol):
 
 class _JinjaEnvironment(Protocol):
     """Minimal Jinja environment protocol used by input derivation."""
+
+    def parse(self, source: str) -> Any: ...
 
     def from_string(self, source: str) -> _RenderableTemplate: ...
 
@@ -40,12 +42,14 @@ def compile_input_source(candidates: tuple[str, ...]) -> CompiledInputSource:
         return CompiledInputSource(
             templates=tuple(_compile_template(candidate) for candidate in candidates)
         )
+    except InputSourceError:
+        raise
     except Exception as exc:
         from jinja2.exceptions import TemplateSyntaxError  # noqa: PLC0415
 
         if isinstance(exc, TemplateSyntaxError):
             raise InputSourceError(_error_message(exc)) from exc
-        raise
+        raise InputSourceError(_error_message(exc)) from exc
 
 
 def derive_input_value(
@@ -74,7 +78,9 @@ def derive_input_value(
 
 @lru_cache(maxsize=1024)
 def _compile_template(expression: str) -> _RenderableTemplate:
-    return _jinja_env().from_string(expression)
+    env = _jinja_env()
+    _reject_control_blocks(env, expression)
+    return env.from_string(expression)
 
 
 @lru_cache(maxsize=1)
@@ -88,7 +94,7 @@ def _jinja_env() -> _JinjaEnvironment:
     class _NativeSandboxedEnvironment(SandboxedEnvironment):
         code_generator_class = NativeCodeGenerator
         concat = staticmethod(native_concat)  # type: ignore[assignment]
-        intercepted_binops = frozenset({"*"})
+        intercepted_binops = frozenset({"*", "**"})
 
         def call_binop(
             self,
@@ -99,9 +105,21 @@ def _jinja_env() -> _JinjaEnvironment:
         ) -> object:
             if operator == "*":
                 _ensure_repetition_within_bound(left, right, TemplateRuntimeError)
+            if operator == "**":
+                _ensure_power_within_bound(left, right, TemplateRuntimeError)
             return super().call_binop(context, operator, left, right)
 
-    return _NativeSandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
+    env = _NativeSandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
+    env.globals.clear()
+    return env
+
+
+def _reject_control_blocks(env: _JinjaEnvironment, expression: str) -> None:
+    from jinja2 import nodes  # noqa: PLC0415
+
+    parsed = env.parse(expression)
+    if any(not isinstance(node, nodes.Output) for node in parsed.body):
+        raise InputSourceError("input source expressions may not use control blocks")
 
 
 def _ensure_repetition_within_bound(
@@ -125,15 +143,59 @@ def _ensure_repetition_within_bound(
         )
 
 
-def _ensure_value_within_bound(value: object) -> None:
-    if isinstance(value, str | bytes | list | tuple | dict):
-        length = len(value)
-    else:
+def _ensure_power_within_bound(
+    left: object,
+    right: object,
+    error_type: type[Exception],
+) -> None:
+    if (
+        not isinstance(left, int)
+        or isinstance(left, bool)
+        or not isinstance(right, int)
+        or isinstance(right, bool)
+        or right <= 0
+    ):
         return
-    if length > MAX_DERIVED_VALUE_LENGTH:
+    base = abs(left)
+    if base <= 1:
+        return
+    if base.bit_length() * right > MAX_DERIVED_VALUE_LENGTH:
+        raise error_type(
+            f"derived input value exceeds maximum length of {MAX_DERIVED_VALUE_LENGTH}"
+        )
+
+
+def _ensure_value_within_bound(value: object) -> None:
+    if _value_size(value, seen=set()) > MAX_DERIVED_VALUE_LENGTH:
         raise InputSourceError(
             f"derived input value exceeds maximum length of {MAX_DERIVED_VALUE_LENGTH}"
         )
+
+
+def _value_size(value: object, *, seen: set[int]) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value.bit_length()
+    if isinstance(value, str | bytes):
+        return len(value)
+    if isinstance(value, Mapping):
+        value_id = id(value)
+        if value_id in seen:
+            return 0
+        seen.add(value_id)
+        total = len(value)
+        for key, item in value.items():
+            total += _value_size(key, seen=seen)
+            total += _value_size(item, seen=seen)
+        return total
+    if isinstance(value, list | tuple | set | frozenset):
+        value_id = id(value)
+        if value_id in seen:
+            return 0
+        seen.add(value_id)
+        return len(value) + sum(_value_size(item, seen=seen) for item in value)
+    return 0
 
 
 def _error_message(exc: Exception) -> str:

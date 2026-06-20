@@ -25,7 +25,7 @@ from untaped.errors import ConfigError, UntapedError
 
 from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
-from untaped_recipe.application.inputs import PromptFunc
+from untaped_recipe.application.inputs import PromptFunc, has_sensitive_inputs
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
@@ -159,7 +159,7 @@ def apply_command(
                 hook_timeout_seconds=_hook_timeout_seconds(hook_timeout),
                 recipe_id=recipe_id,
             )
-            _render_diffs(context.plans)
+            _render_diffs(context)
             outcome = _execute_plans(
                 context,
                 backup=backup and not check,
@@ -247,8 +247,12 @@ def _load_recipe(recipe_path: Path) -> Recipe:
         raise ConfigError(str(exc)) from exc
 
 
-def _render_diffs(plans: list[TargetPlan]) -> None:
-    for plan in plans:
+def _render_diffs(context: ApplyContext) -> None:
+    for plan in context.plans:
+        if plan.changes and has_sensitive_inputs(context.recipe.inputs, plan.display_inputs):
+            echo(f"# {plan.target}", err=True)
+            echo("diff suppressed for target with sensitive inputs", err=True)
+            continue
         for change in plan.changes:
             diff = unified_diff(change)
             if diff:

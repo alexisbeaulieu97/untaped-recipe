@@ -131,7 +131,8 @@ Recipe inputs may be invocation-global or per-target. Input specs support
 and `global` otherwise. Per-target `from` values are sandboxed strict native
 Jinja expressions evaluated only for input derivation, with `target.path`,
 `target.name`, `target.parent_path`, `target.parent_name`, and optional
-incoming pipe `record` in scope. Missing, undefined, or null candidates fall
+incoming pipe `record` in scope. There are no ambient Jinja globals and
+control blocks are rejected. Missing, undefined, or null candidates fall
 through; `false`, `0`, and empty strings are real values. Oversized derived
 values are rejected.
 
@@ -146,9 +147,10 @@ and prompts use the controlling terminal. `--stdin` writes still require
 `--yes` unless `--dry-run` or `--check` is used.
 
 Every `recipe.outcome` row includes resolved declared inputs. Inputs marked
-`sensitive: true` are redacted in rows and backup metadata; real values still
-reach templates and hooks. Backup file entries record redacted per-target
-inputs and never store the full incoming pipe record.
+`sensitive: true` are redacted in rows, warnings/errors, and backup metadata;
+diffs are suppressed for targets with sensitive inputs. Real values still reach
+templates and hooks. Backup file entries record redacted per-target inputs and
+never store the full incoming pipe record.
 
 ## Library Commands
 

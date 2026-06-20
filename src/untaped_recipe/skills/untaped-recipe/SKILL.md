@@ -60,12 +60,14 @@ plain directories.
   only to derive input values. They cannot change recipe structure, paths, hook
   names, or template rendering. The context is `target.path`, `target.name`,
   `target.parent_path`, `target.parent_name`, and optional incoming pipe
-  `record`. Missing, undefined, or null candidates fall through; `false`, `0`,
-  and `""` are real values. Oversized derived values are rejected.
-- Input precedence is fixed value/source override, recipe `from`, recipe
+  `record`, with no ambient globals. Control blocks are rejected. Missing,
+  undefined, or null candidates fall through; `false`, `0`, and `""` are real
+  values. Oversized derived values are rejected.
+- Input precedence is fixed value/source override, recipe `from`,
   `--interactive` prompt, recipe `default`, then required-input error. A fixed
   value and `--input-from` source override for the same input is a usage error.
-  Empty interactive answers accept the default when one exists.
+  Empty interactive answers accept the default when one exists; sensitive
+  defaults are not displayed to the prompt backend.
 - `apply foo` resolves only standalone library recipe `recipes/foo/`.
 - `apply pack:recipe` resolves an installed pack recipe from `packs/pack/`.
 - `apply ./recipe.yml` runs a path-only single-file recipe.
@@ -119,7 +121,9 @@ plain directories.
 - Apply rows and backup metadata use canonical recipe refs: `foo` for
   standalone recipes and `pack:recipe` for pack recipes.
 - `recipe.outcome` rows include resolved declared `inputs`. Sensitive inputs
-  render as `***`; real values still reach templates and hooks.
+  render as `***`, row warnings/errors are redacted, and diffs are suppressed
+  for targets with sensitive inputs; real values still reach templates and
+  hooks.
 - Backup file entries include redacted per-target inputs and never store the
   full incoming pipe record.
 - `--check` emits `recipe.outcome` rows with `status` set to `check`.

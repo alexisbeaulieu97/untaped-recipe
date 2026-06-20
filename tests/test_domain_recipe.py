@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import traceback
+
 import pytest
 from pydantic import ValidationError
 
@@ -153,6 +155,13 @@ def test_input_spec_coercion_errors_do_not_echo_values(input_type: str) -> None:
         InputSpec(type=input_type).coerce(secret)  # type: ignore[arg-type]
 
     assert secret not in str(excinfo.value)
+    assert secret not in "".join(
+        traceback.format_exception(
+            type(excinfo.value),
+            excinfo.value,
+            excinfo.value.__traceback__,
+        )
+    )
 
 
 def test_input_spec_supports_metadata_scope_and_from_fallbacks() -> None:

@@ -65,15 +65,15 @@ class InputSpec(BaseModel):
                 if isinstance(value, float):
                     return int(value)
                 return int(str(value))
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("cannot coerce value to int") from exc
+            except TypeError, ValueError, OverflowError:
+                raise ValueError("cannot coerce value to int") from None
         if self.type == "float":
             try:
                 if isinstance(value, int | float) and not isinstance(value, bool):
                     return float(value)
                 return float(str(value))
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("cannot coerce value to float") from exc
+            except TypeError, ValueError, OverflowError:
+                raise ValueError("cannot coerce value to float") from None
         if isinstance(value, bool):
             return value
         normalized = str(value).strip().lower()

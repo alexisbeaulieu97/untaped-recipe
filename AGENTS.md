@@ -160,9 +160,10 @@ Per-target input `from` values are Jinja expressions used only to derive input
 values. They must not affect recipe structure, paths, hook names, or the
 existing template renderer. The sandboxed strict native Jinja context contains
 `target.path`, `target.name`, `target.parent_path`, `target.parent_name`, and
-optional `record` from incoming pipe records. Missing, undefined, or null
-candidate values fall through to the next candidate; `false`, `0`, and `""`
-are real values.
+optional `record` from incoming pipe records, with no ambient globals. Control
+blocks are rejected; `from` is for value derivation only. Missing, undefined,
+or null candidate values fall through to the next candidate; `false`, `0`, and
+`""` are real values. Oversized derived values are rejected.
 
 Input precedence is fixed value/source override first, then recipe `from`,
 interactive prompt, recipe `default`, and required-input error. A fixed value
@@ -172,9 +173,10 @@ input is a usage error. `--interactive --check` is rejected.
 through a controlling terminal.
 
 `recipe.outcome` rows and backup file metadata include resolved declared
-inputs only. Sensitive input values are redacted in rows and backup metadata;
-real values still reach templates and hooks. Never copy the full incoming pipe
-record into rows or backups.
+inputs only. Sensitive input values are redacted in rows, warnings/errors, and
+backup metadata; diffs are suppressed for targets with sensitive inputs. Real
+values still reach templates and hooks. Never copy the full incoming pipe record
+into rows or backups.
 
 ## Hook Contracts
 

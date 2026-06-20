@@ -18,6 +18,7 @@ from untaped_recipe.application.inputs import (
 )
 from untaped_recipe.application.targets import Target
 from untaped_recipe.domain.recipe import Recipe
+from untaped_recipe.infrastructure import input_jinja
 
 
 class PromptRecorder:
@@ -298,6 +299,64 @@ def test_interactive_prompt_runs_before_default_and_empty_uses_default() -> None
     ]
 
 
+def test_interactive_prompts_optional_inputs_and_empty_optional_stays_unset() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "owner": {"type": "str"},
+                "label": {"type": "str", "scope": "target"},
+            },
+        }
+    )
+    prompt = PromptRecorder(
+        {
+            "owner": "platform",
+            "label for /work/acme/api": "",
+        }
+    )
+
+    result = _resolve(
+        recipe,
+        Target(path=Path("/work/acme/api")),
+        interactive=True,
+        prompt=prompt,
+    )
+
+    assert result.values == {"owner": "platform"}
+    assert prompt.messages == [
+        "owner|sensitive=False|default=None|required=False",
+        "label for /work/acme/api|sensitive=False|default=None|required=False",
+    ]
+
+
+def test_sensitive_default_is_not_shown_or_passed_to_prompt_backend() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "token": {
+                    "type": "str",
+                    "scope": "global",
+                    "sensitive": True,
+                    "default": "TOP-SECRET-9000",
+                },
+            },
+        }
+    )
+    prompt = PromptRecorder({"token": ""})
+
+    result = _resolve(
+        recipe,
+        Target(path=Path("/work/acme/api")),
+        interactive=True,
+        prompt=prompt,
+    )
+
+    assert result.values == {"token": "TOP-SECRET-9000"}
+    assert prompt.messages == ["token|sensitive=True|default=None|required=False"]
+
+
 def test_interactive_without_prompt_backend_fails_clearly() -> None:
     recipe = Recipe.model_validate(
         {"version": 1, "inputs": {"service": {"type": "str", "required": True}}}
@@ -325,6 +384,38 @@ def test_invalid_jinja_syntax_fails_during_input_preparation() -> None:
         _config(recipe)
 
 
+def test_jinja_control_blocks_fail_during_input_preparation() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {
+                    "type": "str",
+                    "from": "{% for item in [target.name] %}{{ item }}{% endfor %}",
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match="invalid input source expression for service"):
+        _config(recipe)
+
+
+@pytest.mark.parametrize("expression", ["{{ range(3) }}", "{{ dict(service=target.name) }}"])
+def test_jinja_has_no_ambient_globals(expression: str) -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "required": True, "from": expression},
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="missing required input: service"):
+        _resolve(recipe, Target(path=Path("/work/acme/api")))
+
+
 def test_derived_value_size_is_bounded() -> None:
     recipe = Recipe.model_validate(
         {
@@ -337,6 +428,47 @@ def test_derived_value_size_is_bounded() -> None:
 
     with pytest.raises(ValueError, match="maximum length"):
         _resolve(recipe, Target(path=Path("/work/acme/api")))
+
+
+def test_derived_large_integer_value_is_bounded() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "big": {"type": "int", "from": "{{ 2 ** 9000 }}"},
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="maximum length"):
+        _resolve(recipe, Target(path=Path("/work/acme/api")))
+
+
+def test_derived_nested_container_value_size_is_bounded() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "from": "{{ [record.blob] }}"},
+            },
+        }
+    )
+    target = Target(path=Path("/work/acme/api"), record={"blob": "x" * 9000})
+
+    with pytest.raises(ValueError, match="maximum length"):
+        _resolve(recipe, target)
+
+
+def test_jinja_compile_failures_are_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
+    input_jinja._compile_template.cache_clear()
+
+    def fail_compile(_expression: str) -> object:
+        raise RuntimeError("compile boom")
+
+    monkeypatch.setattr(input_jinja, "_compile_template", fail_compile)
+
+    with pytest.raises(input_jinja.InputSourceError, match="compile boom"):
+        input_jinja.compile_input_source(("{{ target.name }}",))
 
 
 def test_redact_inputs_only_redacts_sensitive_declared_inputs() -> None:

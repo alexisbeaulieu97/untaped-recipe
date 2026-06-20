@@ -540,10 +540,147 @@ def test_apply_sensitive_global_input_coercion_error_does_not_leak_secret(
     assert "cannot coerce value to int" in result.output
 
 
+def test_apply_sensitive_inputs_redact_warnings_and_suppress_diffs(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: str\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps:\n"
+        "  - type: validate\n"
+        "    hook: leak\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (recipe_dir / "template.txt").write_text("token={{ token }}\n")
+    _write_hook_project(
+        recipe_dir,
+        public_name="leak",
+        module_name="leak",
+        code=(
+            "def validate(*, inputs, target, args, helpers):\n"
+            "    return helpers.warn(f\"warning {inputs['token']}\")\n"
+        ),
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe_dir),
+            str(target),
+            "--var",
+            f"token={secret}",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert "diff suppressed for target with sensitive inputs" in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["warnings"] == "warning ***"
+    assert rows[0]["inputs"] == {"token": "***"}
+
+
+def test_apply_sensitive_inputs_redact_hook_failures(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: str\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps:\n"
+        "  - type: transform\n"
+        "    file: config.txt\n"
+        "    hook: leak\n"
+    )
+    _write_hook_project(
+        recipe_dir,
+        public_name="leak",
+        module_name="leak",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    raise RuntimeError(f\"failed {inputs['token']}\")\n"
+        ),
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    (target / "config.txt").write_text("before\n")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe_dir),
+            str(target),
+            "--var",
+            f"token={secret}",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert "failed ***" in rows[0]["error"]
+    assert rows[0]["inputs"] == {"token": "***"}
+
+
 def test_apply_invalid_jinja_source_fails_before_target_rows(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
         "version: 1\ninputs:\n  service:\n    type: str\n    from: '{{ target.name'\nsteps: []\n"
+    )
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(first), str(second), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "invalid input source expression for service" in result.stderr
+
+
+def test_apply_jinja_control_blocks_fail_before_target_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "    from: '{% for item in [target.name] %}{{ item }}{% endfor %}'\n"
+        "steps: []\n"
     )
     first = tmp_path / "first"
     second = tmp_path / "second"

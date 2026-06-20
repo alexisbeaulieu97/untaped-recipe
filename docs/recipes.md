@@ -204,7 +204,8 @@ Input specs support:
 - `default`: fallback value when no fixed value, source, or prompt resolves.
 - `required`: require a value after sources and defaults.
 - `description`: prompt/help text for humans.
-- `sensitive`: redact the value in output rows and backup metadata.
+- `sensitive`: redact the value in output rows, warnings/errors, and backup
+  metadata; diffs are suppressed for targets with sensitive inputs.
 - `scope`: `global` for one value per invocation or `target` for a value that
   may vary per target.
 - `from`: one Jinja expression or an ordered list of candidate expressions.
@@ -216,7 +217,8 @@ Omitted `scope` infers `target` when `from` is present and `global` otherwise.
 
 Per-target `from` expressions are sandboxed strict native Jinja. They are used
 only to derive input values, not to change recipe structure, paths, hook names,
-or template rendering. The context contains:
+or template rendering. Control blocks are rejected, and no ambient Jinja
+globals are available. The context contains:
 
 - `target.path`: target path as a string.
 - `target.name`: target basename.
@@ -240,6 +242,8 @@ Input precedence for each declared input is:
 A fixed value and source override for the same input is a usage error. Unknown
 input names in `--var`, `--vars`, or `--input-from` are rejected. When a
 default exists, interactive prompts show it and an empty answer accepts it.
+Sensitive defaults are not displayed to the prompt backend, but an empty answer
+still accepts the default.
 
 Examples:
 
@@ -253,6 +257,7 @@ inputs:
       - "{{ target.name }}"
   owner:
     type: str
+    scope: target
     default: platform
   api_token:
     type: str
@@ -263,7 +268,7 @@ inputs:
 
 ```bash
 untaped-recipe apply add-config ./services/api --var api_token=secret --yes
-untaped-recipe apply add-config --stdin --input-from owner='{{ record.team }}' --yes
+untaped-recipe apply add-config --stdin --input-from owner='{{ record.team }}' --var api_token=secret --yes
 untaped-recipe apply add-config ./services/api --interactive
 ```
 
@@ -333,7 +338,8 @@ untaped-recipe pack check ansible
 Important behavior:
 
 - Every target is planned before writes begin.
-- Diffs are written to stderr.
+- Diffs are written to stderr. Diffs are suppressed for targets with sensitive
+  inputs because the generated content may contain secret values.
 - Provide targets either as positional directories or with `--stdin`, not both.
 - Piped stdin requires `--yes` before planning unless `--dry-run` or `--check`
   is used.
@@ -355,7 +361,8 @@ Skipped optional transforms appear in the row's `warnings` field as a
 semicolon-delimited string.
 Check-mode output uses the same `recipe.outcome` rows with `status: check`.
 Every `recipe.outcome` row includes an `inputs` mapping containing resolved
-declared recipe inputs. Sensitive values are rendered as `***`.
+declared recipe inputs. Sensitive values are rendered as `***`, and sensitive
+values are also redacted from row warnings and errors.
 
 ## Ansible Playbook Migration Example
 

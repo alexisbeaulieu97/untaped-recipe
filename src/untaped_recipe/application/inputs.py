@@ -132,6 +132,35 @@ def redact_inputs(
     return redacted
 
 
+def redact_sensitive_text(
+    specs: Mapping[str, InputSpec],
+    values: Mapping[str, object],
+    text: str,
+) -> str:
+    """Redact sensitive resolved input values from a diagnostic string."""
+    redacted = text
+    sensitive_values = sorted(
+        {
+            str(value)
+            for name, value in values.items()
+            if (spec := specs.get(name)) is not None and spec.sensitive and str(value)
+        },
+        key=len,
+        reverse=True,
+    )
+    for value in sensitive_values:
+        redacted = redacted.replace(value, REDACTED)
+    return redacted
+
+
+def has_sensitive_inputs(
+    specs: Mapping[str, InputSpec],
+    display_values: Mapping[str, object],
+) -> bool:
+    """Return whether the display row contains any resolved sensitive input."""
+    return any((spec := specs.get(name)) is not None and spec.sensitive for name in display_values)
+
+
 def _resolve_one(
     name: str,
     spec: InputSpec,
@@ -148,9 +177,10 @@ def _resolve_one(
         rendered = _derive_source_value(source, target)
         if rendered is not UNRESOLVED:
             return spec.coerce(rendered)
-    if config.interactive and (spec.required or spec.default is not None):
+    if config.interactive:
         prompt_target = None if target is None else target.path
-        return spec.coerce(_prompt_value(name, spec, prompt_target, config))
+        prompted = _prompt_value(name, spec, prompt_target, config)
+        return _UNSET if prompted is _UNSET else spec.coerce(prompted)
     if spec.default is not None:
         return spec.coerce(spec.default)
     if spec.required:
@@ -217,16 +247,18 @@ def _prompt_value(
     details: list[str] = []
     if spec.description:
         details.append(spec.description)
-    if spec.default is not None:
+    if spec.default is not None and not spec.sensitive:
         details.append(f"default: {spec.default}")
     suffix = f" ({'; '.join(details)})" if details else ""
     message = f"{name}{suffix}" if target is None else f"{name} for {target}{suffix}"
     value = config.prompt(
         message,
         sensitive=spec.sensitive,
-        default=spec.default,
+        default=None if spec.sensitive else spec.default,
         required=spec.required and spec.default is None,
     )
     if value == "" and spec.default is not None:
         return spec.default
+    if value == "" and not spec.required:
+        return _UNSET
     return value

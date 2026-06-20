@@ -11,7 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.plan import FileChange
+from untaped_recipe.infrastructure.file_writer import flush_changes
 
 
 @dataclass(frozen=True)
@@ -135,22 +137,32 @@ class BackupStore:
         bundle_dir = bundle.path
         metadata_path = bundle_dir / "metadata.json"
         metadata = json.loads(metadata_path.read_text())
+        changes: list[FileChange] = []
         for entry in metadata["files"]:
-            path = Path(entry["target"]) / Path(entry["relative_path"])
-            current_hash = _hash_bytes(path.read_bytes()) if path.is_file() else None
+            target = Path(entry["target"])
+            relative_path = Path(entry["relative_path"])
+            path = confined_path(target, relative_path, field="relative_path")
+            current_hash = _current_hash(path)
             if not force and current_hash != entry["after_hash"]:
                 raise ValueError(
                     f"{path} changed since backup {backup_id}; pass --force to restore"
                 )
-        for entry in metadata["files"]:
-            path = Path(entry["target"]) / Path(entry["relative_path"])
             backup_file = entry["backup_file"]
-            if backup_file is None:
-                if path.exists():
-                    path.unlink()
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(bundle_dir / backup_file, path)
+            before = path.read_text() if path.is_file() else None
+            after = (
+                None
+                if backup_file is None
+                else confined_path(bundle_dir, Path(backup_file), field="backup_file").read_text()
+            )
+            changes.append(
+                FileChange(
+                    target=target,
+                    relative_path=relative_path,
+                    before=before,
+                    after=after,
+                )
+            )
+        flush_changes(tuple(changes))
 
     def metadata(self, backup_id: str) -> dict[str, object]:
         """Read raw metadata for a backup bundle."""
@@ -185,3 +197,11 @@ def _hash_text(content: str | None) -> str | None:
 
 def _hash_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _current_hash(path: Path) -> str | None:
+    if path.is_file():
+        return _hash_bytes(path.read_bytes())
+    if path.exists():
+        return "__untaped_recipe_non_file__"
+    return None

@@ -7,7 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Lock, Thread
+from threading import Condition, Lock, Thread
 from typing import Protocol, TextIO
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validator
@@ -52,8 +52,16 @@ class HookWorkerClient(Protocol):
 class UvHookWorkerPool:
     """Pool uv worker processes by hook project."""
 
-    def __init__(self, *, max_workers_per_project: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        max_workers_per_project: int = 1,
+        hook_timeout_seconds: float = 60,
+    ) -> None:
         self._max_workers_per_project = max(max_workers_per_project, 1)
+        if hook_timeout_seconds < 0:
+            raise ValueError("hook timeout must be greater than or equal to 0")
+        self._hook_timeout_seconds = hook_timeout_seconds
         self._groups: dict[Path, _UvHookWorkerGroup] = {}
         self._lock = Lock()
 
@@ -81,7 +89,11 @@ class UvHookWorkerPool:
         with self._lock:
             group = self._groups.get(resolved)
             if group is None:
-                group = _UvHookWorkerGroup(resolved, self._max_workers_per_project)
+                group = _UvHookWorkerGroup(
+                    resolved,
+                    self._max_workers_per_project,
+                    self._hook_timeout_seconds,
+                )
                 self._groups[resolved] = group
             return group
 
@@ -89,12 +101,14 @@ class UvHookWorkerPool:
 class _UvHookWorkerGroup:
     """Lazy bounded worker group for one hook project."""
 
-    def __init__(self, project_root: Path, max_workers: int) -> None:
+    def __init__(self, project_root: Path, max_workers: int, hook_timeout_seconds: float) -> None:
         self._project_root = project_root
         self._max_workers = max(max_workers, 1)
+        self._hook_timeout_seconds = hook_timeout_seconds
         self._workers: list[UvHookWorker] = []
-        self._idle: Queue[UvHookWorker] = Queue()
-        self._lock = Lock()
+        self._idle: list[UvHookWorker] = []
+        self._condition = Condition()
+        self._closed = False
 
     def request(self, payload: dict[str, object]) -> object:
         """Lease one serialized worker for a request."""
@@ -105,50 +119,76 @@ class _UvHookWorkerGroup:
             self._retire(worker)
             raise
         finally:
-            if worker in self._workers:
-                self._idle.put(worker)
+            self._release(worker)
 
     def close(self) -> None:
         """Close every worker in the group."""
-        with self._lock:
+        with self._condition:
+            self._closed = True
             workers = tuple(self._workers)
             self._workers.clear()
-            while True:
-                try:
-                    self._idle.get_nowait()
-                except Empty:
-                    break
+            self._idle.clear()
+            self._condition.notify_all()
         for worker in workers:
             worker.close()
 
     def _retire(self, worker: UvHookWorker) -> None:
-        with self._lock:
+        with self._condition:
             if worker in self._workers:
                 self._workers.remove(worker)
+            if worker in self._idle:
+                self._idle.remove(worker)
+            self._condition.notify_all()
         worker.close()
 
     def _lease(self) -> UvHookWorker:
-        try:
-            return self._idle.get_nowait()
-        except Empty:
-            pass
-        with self._lock:
-            if len(self._workers) < self._max_workers:
-                worker = UvHookWorker(self._project_root)
-                self._workers.append(worker)
-                return worker
-        return self._idle.get()
+        with self._condition:
+            while not self._closed:
+                if self._idle:
+                    return self._idle.pop()
+                if len(self._workers) < self._max_workers:
+                    break
+                self._condition.wait()
+            if self._closed:
+                raise FatalHookWorkerError("hook worker pool is closed")
+            try:
+                worker = UvHookWorker(
+                    self._project_root,
+                    hook_timeout_seconds=self._hook_timeout_seconds,
+                )
+            except Exception:
+                self._condition.notify_all()
+                raise
+            self._workers.append(worker)
+            return worker
+
+    def _release(self, worker: UvHookWorker) -> None:
+        with self._condition:
+            if worker in self._workers and not self._closed:
+                self._idle.append(worker)
+            self._condition.notify()
 
 
 class UvHookWorker:
     """Long-lived worker process for one uv hook project."""
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+        if hook_timeout_seconds < 0:
+            raise ValueError("hook timeout must be greater than or equal to 0")
         self._project_root = project_root
+        self._hook_timeout_seconds = hook_timeout_seconds
         self._lock = Lock()
         self._next_id = 0
         self._stderr: Queue[str] = Queue()
+        self._stdout: Queue[str | None] = Queue()
         self._process = self._start()
+        if self._process.stdout is not None:
+            self._stdout_thread = Thread(
+                target=_drain_stdout,
+                args=(self._process.stdout, self._stdout),
+                daemon=True,
+            )
+            self._stdout_thread.start()
         if self._process.stderr is not None:
             self._stderr_thread = Thread(
                 target=_drain_stderr,
@@ -177,7 +217,7 @@ class UvHookWorker:
             except BrokenPipeError as exc:
                 message = self._failure_message("hook worker exited before request")
                 raise FatalHookWorkerError(message) from exc
-            response_line = stdout.readline()
+            response_line = self._read_response_line()
             if not response_line:
                 raise FatalHookWorkerError(
                     self._failure_message("hook worker exited before response")
@@ -199,6 +239,18 @@ class UvHookWorker:
                 raise ValueError(self._failure_message(response.error or "hook worker failed"))
             self._discard_diagnostics()
             return response.result
+
+    def _read_response_line(self) -> str | None:
+        try:
+            if self._hook_timeout_seconds == 0:
+                return self._stdout.get()
+            return self._stdout.get(timeout=self._hook_timeout_seconds)
+        except Empty as exc:
+            message = self._failure_message(
+                f"hook worker timed out after {self._hook_timeout_seconds:g}s"
+            )
+            self.close()
+            raise FatalHookWorkerError(message) from exc
 
     def close(self) -> None:
         """Terminate the worker process."""
@@ -271,4 +323,13 @@ class UvHookWorker:
 
 def _drain_stderr(stream: TextIO, queue: Queue[str]) -> None:
     for line in stream:
+        queue.put(str(line))
+
+
+def _drain_stdout(stream: TextIO, queue: Queue[str | None]) -> None:
+    while True:
+        line = stream.readline()
+        if line == "":
+            queue.put(None)
+            return
         queue.put(str(line))

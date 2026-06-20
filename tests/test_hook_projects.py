@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from io import StringIO
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 from pydantic import ValidationError
@@ -208,6 +210,22 @@ def test_uv_hook_worker_rejects_response_id_mismatch(
         worker.request({"kind": "transform", "module": "hooks.sample"})
 
 
+def test_uv_hook_worker_times_out_and_closes_hung_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _SlowProcess(delay=0.2)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path, hook_timeout_seconds=0.01)
+
+    start = time.monotonic()
+    with pytest.raises(worker_client.FatalHookWorkerError, match="timed out"):
+        worker.request({"kind": "transform", "module": "hooks.sample"})
+
+    assert time.monotonic() - start < 0.15
+    assert fake.killed
+
+
 def test_uv_hook_worker_serializes_request_dates_as_strings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -265,7 +283,7 @@ def test_uv_hook_worker_pool_leases_parallel_workers(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path) -> None:
+        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -299,7 +317,7 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path) -> None:
+        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -322,6 +340,33 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
     assert all(worker.closed for worker in workers)
 
 
+def test_uv_hook_worker_pool_passes_timeout_to_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeouts: list[float] = []
+
+    class FakeWorker:
+        def __init__(self, project_root: Path, *, hook_timeout_seconds: float) -> None:
+            self.project_root = project_root
+            self.closed = False
+            timeouts.append(hook_timeout_seconds)
+
+        def request(self, payload: dict[str, object]) -> str:
+            return "ok"
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
+    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+
+    with UvHookWorkerPool(max_workers_per_project=1, hook_timeout_seconds=12) as pool:
+        assert pool.request(ref, {"kind": "transform"}) == "ok"
+
+    assert timeouts == [12]
+
+
 def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -329,7 +374,7 @@ def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path) -> None:
+        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -356,6 +401,58 @@ def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
     assert workers[1].closed
 
 
+def test_uv_hook_worker_pool_wakes_waiters_after_fatal_retirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_request_started = Event()
+    fail_first_request = Event()
+    workers: list[object] = []
+
+    class FakeWorker:
+        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+            self.project_root = project_root
+            self.closed = False
+            self.worker_id = len(workers) + 1
+            workers.append(self)
+
+        def request(self, payload: dict[str, object]) -> int:
+            if self.worker_id == 1:
+                first_request_started.set()
+                assert fail_first_request.wait(timeout=5)
+                raise worker_client.FatalHookWorkerError("hook worker timed out")
+            return self.worker_id
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
+    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+
+    with (
+        UvHookWorkerPool(max_workers_per_project=1) as pool,
+        ThreadPoolExecutor(max_workers=2) as executor,
+    ):
+        first = executor.submit(pool.request, ref, {"kind": "transform"})
+        assert first_request_started.wait(timeout=5)
+        second = executor.submit(pool.request, ref, {"kind": "transform"})
+        time.sleep(0.05)
+
+        fail_first_request.set()
+
+        with pytest.raises(worker_client.FatalHookWorkerError, match="timed out"):
+            first.result(timeout=5)
+        try:
+            assert second.result(timeout=1) == 2
+        except FutureTimeoutError as exc:
+            msg = "waiting request was not woken after fatal retirement"
+            raise AssertionError(msg) from exc
+
+    assert len(workers) == 2
+    assert workers[0].closed
+    assert workers[1].closed
+
+
 def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -363,7 +460,7 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path) -> None:
+        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -580,3 +677,31 @@ class _FakeProcess:
 
     def kill(self) -> None:
         return None
+
+
+class _SlowStdout:
+    def __init__(self, delay: float) -> None:
+        self._delay = delay
+
+    def readline(self) -> str:
+        time.sleep(self._delay)
+        return ""
+
+
+class _SlowProcess:
+    def __init__(self, *, delay: float) -> None:
+        self.stdin = StringIO()
+        self.stdout = _SlowStdout(delay)
+        self.stderr = StringIO()
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.killed:
+            return 0
+        raise subprocess.TimeoutExpired("slow", timeout)
+
+    def terminate(self) -> None:
+        self.killed = True
+
+    def kill(self) -> None:
+        self.killed = True

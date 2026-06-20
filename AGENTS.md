@@ -37,7 +37,9 @@ recipe execution, previews, backups, and restore.
    importlib file loading for arbitrary `.py` hooks, pluggy, or PEP 723 hooks
    without a new design review.
 9. Backups are on by default for applies. Restore refuses to overwrite edits
-   made after the backup unless `--force` is passed.
+   made after the backup unless `--force` is passed and uses the same
+   transactional, symlink-confined write path as apply. Backups store text
+   content for engine-managed files and do not preserve mode or mtime.
 10. Finish changes with the development workflow below.
 
 ## Architecture
@@ -63,6 +65,8 @@ created for the invocation.
 
 `RecipeSettings.library_root` defaults to `~/.untaped/untaped-recipes` and
 can be configured in the shared untaped profile under `recipe.library_root`.
+`RecipeSettings.hook_timeout_seconds` defaults to `60`; `0` disables per-hook
+request timeouts.
 The directory layout is:
 
 ```text
@@ -125,7 +129,8 @@ stdout is protocol-only; hook `print()` output is redirected to stderr. The
 worker uses stdlib wire parsing, and the engine validates worker responses
 before using them. A bounded worker pool is created per hook project per apply
 invocation, up to the clamped `--parallel` value; each worker serializes its own
-requests.
+requests. Hook request timeouts kill and retire the affected worker and must
+surface as per-target planning failures rather than hanging the full batch.
 
 Built-ins use the direct registry and run in-process. Keep built-ins reserved
 for engine-owned code such as `yaml_edit`.

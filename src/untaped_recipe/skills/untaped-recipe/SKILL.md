@@ -16,11 +16,18 @@ plain directories.
 - Pass `--yes` for non-interactive applies.
 - Use `--dry-run` to preview without writing, `--vars file.yml` or repeated
   `--var KEY=VALUE` for inputs, and `--parallel N` for planning workers.
+- Use `--check` for compliance/drift checks. It previews without writing,
+  creates no backups, prompts for nothing, and exits non-zero when changes
+  would be made or a target fails.
+- Use `--hook-timeout SECONDS` to override the configured hook request timeout;
+  `0` disables timeout for trusted long-running hooks.
 - Backups are created by default; use `--no-backup` only when the target tree is already protected.
 - `untaped-recipe backup list|show|restore` manages backup bundles; `show` and
   `restore` accept full ids, unambiguous prefixes, or `latest`.
-- `untaped-recipe recipe list|show|add|remove|edit` manages local recipes;
-  `remove` is destructive and requires confirmation or `--yes`.
+- `untaped-recipe recipe list|show|add|check|remove|edit` manages local
+  recipes; `check` is static preflight that validates schema, assets, and hook
+  metadata without targets, inputs, or hook execution. `remove` is destructive
+  and requires confirmation or `--yes`.
 - `untaped-recipe hook init|list|show|add|remove|edit` manages uv hook
   project directories; `remove` is destructive and requires confirmation or
   `--yes`. `hook add` derives the library directory from the declared hook
@@ -61,7 +68,9 @@ plain directories.
 - Built-ins are direct engine imports and do not start uv workers. External
   hooks run through pooled uv workers, up to the clamped `--parallel` value per
   hook project; hook stdout must not be used for data because stdout is reserved
-  for the worker protocol and `print()` is redirected to stderr.
+  for the worker protocol and `print()` is redirected to stderr. Timed-out hook
+  requests kill and retire the worker and are reported as per-target planning
+  failures.
 - Hook projects use the scaffolded `src/` layout. Declared hook modules must
   resolve to files under `src/`; use explicit paths like `./my-hook-project`
   when managing a project in the current directory.
@@ -75,6 +84,7 @@ plain directories.
   `recipe.backup`.
 - Optional transform skips appear in the `warnings` field of `recipe.outcome`
   rows as a semicolon-delimited string.
+- `--check` emits `recipe.outcome` rows with `status` set to `check`.
 - `apply --stdin` consumes bare paths plus `workspace.workspace` and
   `workspace.repo` records.
 - The SDK provides `--quiet`/`-q`, `config doctor`, and `config edit`.
@@ -90,5 +100,9 @@ before running recipes from another person.
 `apply` plans every target before writing. A failed target plan or write does
 not block successful targets, and a failed target writes nothing for that
 target. Piped stdin without `--yes` is refused before planning unless
-`--dry-run` is used. Engine-mediated recipe-local and target-relative paths
-reject absolute paths, `..` segments, and nested symlink traversal.
+`--dry-run` or `--check` is used. Engine-mediated recipe-local and
+target-relative paths reject absolute paths, `..` segments, and nested symlink
+traversal. Backup restore uses the same transactional, symlink-confined write
+path as apply and preserves later-edit hash guards unless `--force` is passed.
+Backups store text content for engine-managed files and do not preserve file
+mode or mtime.

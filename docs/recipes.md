@@ -155,6 +155,8 @@ engine-mediated reads or writes.
 ```bash
 untaped-recipe apply add-config ./repo-a ./repo-b --var service=api
 untaped-recipe apply add-config --stdin --yes --parallel 8 --format pipe
+untaped-recipe apply add-config ./repo-a --check
+untaped-recipe recipe check add-config
 ```
 
 Important behavior:
@@ -162,17 +164,24 @@ Important behavior:
 - Every target is planned before writes begin.
 - Diffs are written to stderr.
 - Provide targets either as positional directories or with `--stdin`, not both.
-- Piped stdin requires `--yes` before planning unless `--dry-run` is used.
+- Piped stdin requires `--yes` before planning unless `--dry-run` or `--check`
+  is used.
 - `--dry-run` previews and reports without writing.
+- `--check` previews without writing, creates no backups, prompts for nothing,
+  and exits non-zero if any target would change or fail.
 - A planning failure for one target does not block successful targets.
 - Within one target, planning and write failures leave the target unchanged;
   write failures are reported as per-target errors.
 - Backups are created by default; pass `--no-backup` only when the target tree
   is already protected another way.
+- `recipe check` is a static preflight that validates recipe schema,
+  recipe-local assets, and hook project metadata without targets, inputs, or
+  hook execution.
 
 Structured output rows use kind `recipe.outcome`.
 Skipped optional transforms appear in the row's `warnings` field as a
 semicolon-delimited string.
+Check-mode output uses the same `recipe.outcome` rows with `status: check`.
 
 ## Ansible Playbook Migration Example
 
@@ -204,7 +213,9 @@ part of a namespaced pack such as `hooks/ansible/` and referenced as
 ## Backups
 
 Backup bundles record target paths, touched files, before and after hashes,
-recipe name, inputs, and creation time.
+recipe name, inputs, and creation time. Backups store text content for the
+engine-managed files that recipes edit; restores do not preserve file mode or
+mtime.
 
 ```bash
 untaped-recipe backup list
@@ -216,4 +227,6 @@ untaped-recipe backup restore latest
 Backup ids use `YYYYMMDDTHHMMSSffffffZ-8hex`. `show` and `restore` accept full
 ids, unambiguous id prefixes, or `latest`.
 Restore refuses to overwrite files that changed after the backup was created.
-Use `--force` only after inspecting those later edits.
+Use `--force` only after inspecting those later edits. Restore uses the same
+symlink-confined, staged, rollback-aware write path as apply, so a failed
+multi-file restore reports any incomplete rollback details.

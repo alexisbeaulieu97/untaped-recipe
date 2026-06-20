@@ -15,7 +15,9 @@ from untaped.api import (
     ui_context,
 )
 from untaped.batch import batch_apply
+from untaped.errors import ConfigError
 
+from untaped_recipe.application.inputs import validate_recipe_input_sources
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
 from untaped_recipe.domain.hook_project import read_hook_metadata, validate_hook_modules
 from untaped_recipe.domain.paths import confined_path, is_explicit_path
@@ -177,11 +179,12 @@ def _check_recipe(
 ) -> dict[str, object]:
     try:
         recipe = _load_recipe(recipe_path)
+        validate_recipe_input_sources(recipe)
         _check_project_lock(local_hook_project)
         _check_assets(recipe, recipe_path.parent)
         _check_local_hook_project(local_hook_project)
         _check_hooks(recipe, root, local_hook_project)
-    except (ValueError, OSError) as exc:
+    except (ConfigError, ValueError, OSError) as exc:
         return {
             "recipe": recipe_ref,
             "status": "error",

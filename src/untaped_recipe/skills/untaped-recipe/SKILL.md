@@ -29,8 +29,8 @@ plain directories.
   `restore` accept full ids, unambiguous prefixes, or `latest`.
 - `untaped-recipe recipe init|list|show|add|check|remove|edit` manages
   standalone recipe projects; `check` is static preflight that validates schema,
-  assets, and hook metadata without targets, inputs, or hook execution. `remove`
-  is destructive and requires confirmation or `--yes`.
+  input source expressions, assets, and hook metadata without targets or hook
+  execution. `remove` is destructive and requires confirmation or `--yes`.
 - `untaped-recipe pack init|list|show|add|check|remove|edit` manages recipe pack
   projects. `untaped-recipe pack recipe init|list|show|edit|remove` manages
   recipes inside a pack; pack recipe removal is destructive and requires
@@ -56,13 +56,15 @@ plain directories.
   Omitted `scope` infers `target` when `from` is present and `global`
   otherwise. `scope: global` rejects recipe `from` and CLI `--input-from`, but
   accepts fixed values from `--var` and `--vars`.
-- Per-target `from` values are sandboxed strict native Jinja expressions used
-  only to derive input values. They cannot change recipe structure, paths, hook
-  names, or template rendering. The context is `target.path`, `target.name`,
+- Per-target `from` values are sandboxed strict native Jinja strings used only
+  to derive scalar input values. They can combine literal text, scalar
+  literals, and field access on `target.path`, `target.name`,
   `target.parent_path`, `target.parent_name`, and optional incoming pipe
-  `record`, with no ambient globals. Control blocks are rejected. Missing,
+  `record`. They cannot change recipe structure, paths, hook names, or
+  template rendering. There are no ambient globals; control blocks, filters,
+  tests, calls, operators, and collection literals are rejected. Missing,
   undefined, or null candidates fall through; `false`, `0`, and `""` are real
-  values. Oversized derived values are rejected.
+  values. Oversized or non-scalar derived values are rejected.
 - Input precedence is fixed value/source override, recipe `from`,
   `--interactive` prompt, recipe `default`, then required-input error. A fixed
   value and `--input-from` source override for the same input is a usage error.

@@ -129,12 +129,13 @@ Recipe inputs may be invocation-global or per-target. Input specs support
 `description`, `sensitive`, `scope`, and `from` in addition to `type`,
 `default`, and `required`. Omitted scope infers `target` when `from` is present
 and `global` otherwise. Per-target `from` values are sandboxed strict native
-Jinja expressions evaluated only for input derivation, with `target.path`,
-`target.name`, `target.parent_path`, `target.parent_name`, and optional
-incoming pipe `record` in scope. There are no ambient Jinja globals and
-control blocks are rejected. Missing, undefined, or null candidates fall
-through; `false`, `0`, and empty strings are real values. Oversized derived
-values are rejected.
+Jinja strings evaluated only for scalar input derivation. They may combine
+literal text, scalar literals, and field access on `target.path`,
+`target.name`, `target.parent_path`, `target.parent_name`, or optional
+incoming pipe `record`. There are no ambient Jinja globals; control blocks,
+filters, tests, calls, operators, and collection literals are rejected.
+Missing, undefined, or null candidates fall through; `false`, `0`, and empty
+strings are real values. Oversized or non-scalar derived values are rejected.
 
 Use `--input-from NAME=JINJA` to override a per-target source, `--var` or
 `--vars` to provide fixed values, and `--interactive` to prompt for unresolved
@@ -170,11 +171,11 @@ modules must live under the project's `src/` layout. Use explicit paths such as
 `./my-hook-project` when referring to a project in the current directory; bare
 hook names resolve through the library. `recipe remove`, `pack remove`,
 `pack recipe remove`, and `hook remove` require confirmation or `--yes`.
-`recipe check` and `pack check` are static preflight commands; they do not
-execute hooks against targets. `backup show` and `backup restore` accept full
-ids, unambiguous prefixes, or `latest`; restore uses the same transactional
-write path and symlink confinement as apply. Backups store text content and do
-not preserve file mode or mtime.
+`recipe check` and `pack check` are static preflight commands; they validate
+input source expressions but do not execute hooks against targets. `backup show`
+and `backup restore` accept full ids, unambiguous prefixes, or `latest`;
+restore uses the same transactional write path and symlink confinement as
+apply. Backups store text content and do not preserve file mode or mtime.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

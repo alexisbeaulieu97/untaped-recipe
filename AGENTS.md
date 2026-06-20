@@ -156,14 +156,17 @@ Input specs accept `type`, `default`, `required`, `description`, `sensitive`,
 `global` otherwise. `scope: global` may use `--var`/`--vars`, but must reject
 recipe `from` and CLI `--input-from`.
 
-Per-target input `from` values are Jinja expressions used only to derive input
-values. They must not affect recipe structure, paths, hook names, or the
-existing template renderer. The sandboxed strict native Jinja context contains
-`target.path`, `target.name`, `target.parent_path`, `target.parent_name`, and
-optional `record` from incoming pipe records, with no ambient globals. Control
-blocks are rejected; `from` is for value derivation only. Missing, undefined,
-or null candidate values fall through to the next candidate; `false`, `0`, and
-`""` are real values. Oversized derived values are rejected.
+Per-target input `from` values are Jinja strings used only to derive scalar
+input values. They may combine literal text, scalar literals, and field access
+on `target` or optional incoming pipe `record`. They must not affect recipe
+structure, paths, hook names, or the existing template renderer. The sandboxed
+strict native Jinja context contains `target.path`, `target.name`,
+`target.parent_path`, `target.parent_name`, and optional `record`, with no
+ambient globals. Control blocks, filters, tests, calls, operators, and
+collection literals are rejected; `from` is for value derivation only. Missing,
+undefined, or null candidate values fall through to the next candidate;
+`false`, `0`, and `""` are real values. Oversized or non-scalar derived values
+are rejected.
 
 Input precedence is fixed value/source override first, then recipe `from`,
 interactive prompt, recipe `default`, and required-input error. A fixed value

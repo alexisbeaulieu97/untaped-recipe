@@ -17,6 +17,7 @@ from untaped_recipe.infrastructure.input_jinja import (
     InputSourceError,
     compile_input_source,
     derive_input_value,
+    ensure_derived_value_within_bound,
 )
 
 REDACTED = "***"
@@ -69,6 +70,7 @@ def prepare_input_resolution(
 ) -> InputResolutionConfig:
     """Validate and compile invocation-level input resolution settings."""
     _validate_config(recipe, fixed_values=fixed_values, input_from=input_from)
+    typed_fixed_values = _coerce_fixed_values(recipe, fixed_values)
     cli_sources = {
         name: _compile_named_source(name, (expression,)) for name, expression in input_from.items()
     }
@@ -78,12 +80,19 @@ def prepare_input_resolution(
         if spec.from_
     }
     return InputResolutionConfig(
-        fixed_values=fixed_values,
+        fixed_values=typed_fixed_values,
         cli_sources=cli_sources,
         recipe_sources=recipe_sources,
         interactive=interactive,
         prompt=prompt,
     )
+
+
+def validate_recipe_input_sources(recipe: Recipe) -> None:
+    """Validate recipe-owned input source expressions without resolving targets."""
+    for name, spec in recipe.inputs.items():
+        if spec.from_:
+            _compile_named_source(name, spec.from_)
 
 
 def resolve_global_values(recipe: Recipe, config: InputResolutionConfig) -> dict[str, object]:
@@ -132,27 +141,6 @@ def redact_inputs(
     return redacted
 
 
-def redact_sensitive_text(
-    specs: Mapping[str, InputSpec],
-    values: Mapping[str, object],
-    text: str,
-) -> str:
-    """Redact sensitive resolved input values from a diagnostic string."""
-    redacted = text
-    sensitive_values = sorted(
-        {
-            str(value)
-            for name, value in values.items()
-            if (spec := specs.get(name)) is not None and spec.sensitive and str(value)
-        },
-        key=len,
-        reverse=True,
-    )
-    for value in sensitive_values:
-        redacted = redacted.replace(value, REDACTED)
-    return redacted
-
-
 def has_sensitive_inputs(
     specs: Mapping[str, InputSpec],
     display_values: Mapping[str, object],
@@ -169,14 +157,14 @@ def _resolve_one(
     config: InputResolutionConfig,
 ) -> object:
     if name in config.fixed_values:
-        return spec.coerce(config.fixed_values[name])
+        return config.fixed_values[name]
     source = config.cli_sources.get(name)
     if source is None and target is not None:
         source = config.recipe_sources.get(name)
     if source is not None and target is not None:
         rendered = _derive_source_value(source, target)
         if rendered is not UNRESOLVED:
-            return spec.coerce(rendered)
+            return _coerce_derived_value(spec, rendered)
     if config.interactive:
         prompt_target = None if target is None else target.path
         prompted = _prompt_value(name, spec, prompt_target, config)
@@ -208,6 +196,19 @@ def _validate_config(
         raise ConfigError(f"cannot combine --var/--vars and --input-from for {conflicts[0]}")
 
 
+def _coerce_fixed_values(
+    recipe: Recipe,
+    fixed_values: Mapping[str, object],
+) -> dict[str, object]:
+    typed: dict[str, object] = {}
+    for name, value in fixed_values.items():
+        try:
+            typed[name] = recipe.inputs[name].coerce(value)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+    return typed
+
+
 def _compile_named_source(name: str, candidates: tuple[str, ...]) -> CompiledInputSource:
     try:
         return compile_input_source(candidates)
@@ -220,6 +221,16 @@ def _derive_source_value(source: CompiledInputSource, target: Target) -> object:
         return derive_input_value(source, context=_target_context(target))
     except InputSourceError as exc:
         raise ValueError(str(exc)) from exc
+
+
+def _coerce_derived_value(spec: InputSpec, value: object) -> object:
+    try:
+        ensure_derived_value_within_bound(value)
+        coerced = spec.coerce(value)
+        ensure_derived_value_within_bound(coerced)
+    except InputSourceError as exc:
+        raise ValueError(str(exc)) from exc
+    return coerced
 
 
 def _target_context(target: Target) -> dict[str, object]:

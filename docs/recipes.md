@@ -215,10 +215,12 @@ Omitted `scope` infers `target` when `from` is present and `global` otherwise.
 `scope: global` rejects recipe `from` and CLI `--input-from`; use
 `--var`/`--vars` for fixed global values.
 
-Per-target `from` expressions are sandboxed strict native Jinja. They are used
-only to derive input values, not to change recipe structure, paths, hook names,
-or template rendering. Control blocks are rejected, and no ambient Jinja
-globals are available. The context contains:
+Per-target `from` values are sandboxed strict native Jinja strings. They are
+used only to derive scalar input values, not to change recipe structure, paths,
+hook names, or template rendering. They may combine literal text, scalar
+literals, and field access on `target` or optional `record`. Control blocks,
+filters, tests, calls, operators, and collection literals are rejected, and no
+ambient Jinja globals are available. The context contains:
 
 - `target.path`: target path as a string.
 - `target.name`: target basename.
@@ -228,8 +230,9 @@ globals are available. The context contains:
   records.
 
 Missing, undefined, or null candidate values fall through to the next
-candidate. `false`, `0`, and `""` are real values. Derived values are bounded
-to small scalar-sized results; oversized rendered values are rejected.
+candidate. `false`, `0`, and `""` are real values. Derived values must be
+scalar and bounded to small results; oversized or non-scalar rendered values
+are rejected.
 
 Input precedence for each declared input is:
 
@@ -352,9 +355,9 @@ Important behavior:
 - Backups are created by default; pass `--no-backup` only when the target tree
   is already protected another way.
 - `recipe check` validates standalone recipe projects or explicit path-only
-  recipe files.
+  recipe files, including input source expressions.
 - `pack check` validates pack metadata, all declared recipe files and assets,
-  pack-local hooks, and lockfile state.
+  recipe input source expressions, pack-local hooks, and lockfile state.
 
 Structured output rows use kind `recipe.outcome`.
 Skipped optional transforms appear in the row's `warnings` field as a

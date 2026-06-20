@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Protocol
 
 MAX_DERIVED_VALUE_LENGTH = 8192
+MAX_DERIVED_VALUE_DEPTH = 64
 UNRESOLVED = object()
 
 
@@ -45,10 +46,6 @@ def compile_input_source(candidates: tuple[str, ...]) -> CompiledInputSource:
     except InputSourceError:
         raise
     except Exception as exc:
-        from jinja2.exceptions import TemplateSyntaxError  # noqa: PLC0415
-
-        if isinstance(exc, TemplateSyntaxError):
-            raise InputSourceError(_error_message(exc)) from exc
         raise InputSourceError(_error_message(exc)) from exc
 
 
@@ -66,12 +63,12 @@ def derive_input_value(
             value = template.render(**context)
         except UndefinedError:
             continue
-        except TemplateError as exc:
+        except (TemplateError, ArithmeticError) as exc:
             message = _error_message(exc)
             raise InputSourceError(f"invalid input source expression: {message}") from exc
         if value is None or isinstance(value, Undefined):
             continue
-        _ensure_value_within_bound(value)
+        ensure_derived_value_within_bound(value)
         return value
     return UNRESOLVED
 
@@ -79,7 +76,7 @@ def derive_input_value(
 @lru_cache(maxsize=1024)
 def _compile_template(expression: str) -> _RenderableTemplate:
     env = _jinja_env()
-    _reject_control_blocks(env, expression)
+    _validate_template_ast(env, expression)
     return env.from_string(expression)
 
 
@@ -114,12 +111,42 @@ def _jinja_env() -> _JinjaEnvironment:
     return env
 
 
-def _reject_control_blocks(env: _JinjaEnvironment, expression: str) -> None:
+def _validate_template_ast(env: _JinjaEnvironment, expression: str) -> None:
     from jinja2 import nodes  # noqa: PLC0415
 
     parsed = env.parse(expression)
     if any(not isinstance(node, nodes.Output) for node in parsed.body):
         raise InputSourceError("input source expressions may not use control blocks")
+    for node in _walk_nodes(parsed):
+        if isinstance(node, nodes.Name) and node.name not in {"target", "record"}:
+            raise InputSourceError(_SOURCE_CONTRACT_MESSAGE)
+        if not isinstance(
+            node,
+            (
+                nodes.Template,
+                nodes.Output,
+                nodes.TemplateData,
+                nodes.Const,
+                nodes.Name,
+                nodes.Getattr,
+                nodes.Getitem,
+            ),
+        ):
+            raise InputSourceError(_SOURCE_CONTRACT_MESSAGE)
+
+
+_SOURCE_CONTRACT_MESSAGE = (
+    "input source expressions may only use scalar literals and target/record field access"
+)
+
+
+def _walk_nodes(node: object) -> Iterator[object]:
+    yield node
+    iter_child_nodes = getattr(node, "iter_child_nodes", None)
+    if iter_child_nodes is None:
+        return
+    for child in iter_child_nodes():
+        yield from _walk_nodes(child)
 
 
 def _ensure_repetition_within_bound(
@@ -165,18 +192,25 @@ def _ensure_power_within_bound(
         )
 
 
-def _ensure_value_within_bound(value: object) -> None:
-    if _value_size(value, seen=set()) > MAX_DERIVED_VALUE_LENGTH:
+def ensure_derived_value_within_bound(value: object) -> None:
+    """Reject non-scalar or oversized derived input values."""
+    if not isinstance(value, str | int | float | bool):
+        raise InputSourceError("derived input value must be a scalar")
+    if _value_size(value, seen=set(), depth=0) > MAX_DERIVED_VALUE_LENGTH:
         raise InputSourceError(
             f"derived input value exceeds maximum length of {MAX_DERIVED_VALUE_LENGTH}"
         )
 
 
-def _value_size(value: object, *, seen: set[int]) -> int:
+def _value_size(value: object, *, seen: set[int], depth: int) -> int:
+    if depth > MAX_DERIVED_VALUE_DEPTH:
+        return MAX_DERIVED_VALUE_LENGTH + 1
     if value is None or isinstance(value, bool):
         return 0
     if isinstance(value, int):
         return value.bit_length()
+    if isinstance(value, float):
+        return len(str(value))
     if isinstance(value, str | bytes):
         return len(value)
     if isinstance(value, Mapping):
@@ -186,15 +220,15 @@ def _value_size(value: object, *, seen: set[int]) -> int:
         seen.add(value_id)
         total = len(value)
         for key, item in value.items():
-            total += _value_size(key, seen=seen)
-            total += _value_size(item, seen=seen)
+            total += _value_size(key, seen=seen, depth=depth + 1)
+            total += _value_size(item, seen=seen, depth=depth + 1)
         return total
     if isinstance(value, list | tuple | set | frozenset):
         value_id = id(value)
         if value_id in seen:
             return 0
         seen.add(value_id)
-        return len(value) + sum(_value_size(item, seen=seen) for item in value)
+        return len(value) + sum(_value_size(item, seen=seen, depth=depth + 1) for item in value)
     return 0
 
 

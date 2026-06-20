@@ -543,7 +543,7 @@ def test_apply_sensitive_global_input_coercion_error_does_not_leak_secret(
 def test_apply_sensitive_inputs_redact_warnings_and_suppress_diffs(
     tmp_path: Path,
 ) -> None:
-    secret = "TOP-SECRET-9000"
+    secret = 'TOP-SECRET-9000"\\tail'
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
@@ -567,8 +567,9 @@ def test_apply_sensitive_inputs_redact_warnings_and_suppress_diffs(
         public_name="leak",
         module_name="leak",
         code=(
+            "import json\n"
             "def validate(*, inputs, target, args, helpers):\n"
-            "    return helpers.warn(f\"warning {inputs['token']}\")\n"
+            "    return helpers.warn(json.dumps({'warning': inputs['token']}))\n"
         ),
     )
     target = tmp_path / "api"
@@ -593,14 +594,14 @@ def test_apply_sensitive_inputs_redact_warnings_and_suppress_diffs(
     assert secret not in result.stderr
     assert "diff suppressed for target with sensitive inputs" in result.stderr
     rows = json.loads(result.stdout)
-    assert rows[0]["warnings"] == "warning ***"
+    assert rows[0]["warnings"] == "diagnostic suppressed for target with sensitive inputs"
     assert rows[0]["inputs"] == {"token": "***"}
 
 
 def test_apply_sensitive_inputs_redact_hook_failures(
     tmp_path: Path,
 ) -> None:
-    secret = "TOP-SECRET-9000"
+    secret = 'TOP-SECRET-9000"\\tail'
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
@@ -622,7 +623,7 @@ def test_apply_sensitive_inputs_redact_hook_failures(
         module_name="leak",
         code=(
             "def transform(content, *, inputs, target, file, args, helpers):\n"
-            "    raise RuntimeError(f\"failed {inputs['token']}\")\n"
+            "    raise RuntimeError(f\"failed {inputs['token']!r}\")\n"
         ),
     )
     target = tmp_path / "api"
@@ -648,8 +649,38 @@ def test_apply_sensitive_inputs_redact_hook_failures(
     assert secret not in result.stderr
     rows = json.loads(result.stdout)
     assert rows[0]["status"] == "error"
-    assert "failed ***" in rows[0]["error"]
+    assert rows[0]["error"] == (
+        "target planning failed; diagnostic suppressed for target with sensitive inputs"
+    )
     assert rows[0]["inputs"] == {"token": "***"}
+
+
+def test_apply_invalid_fixed_target_input_fails_before_target_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: 1\ninputs:\n  replicas: {type: int, scope: target}\nsteps: []\n")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(first),
+            str(second),
+            "--var",
+            "replicas=not-an-int",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "cannot coerce value to int" in result.stderr
 
 
 def test_apply_invalid_jinja_source_fails_before_target_rows(tmp_path: Path) -> None:
@@ -695,6 +726,38 @@ def test_apply_jinja_control_blocks_fail_before_target_rows(tmp_path: Path) -> N
     assert result.exit_code != 0
     assert result.stdout == ""
     assert "invalid input source expression for service" in result.stderr
+
+
+def test_apply_record_valued_source_fails_without_copying_record_contents(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  debug: {type: str, from: '{{ record }}'}\nsteps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "recipe.target",
+            "record": {"path": str(target), "token": secret},
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--dry-run", "--format", "json"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 1, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == "derived input value must be a scalar"
 
 
 def test_apply_outcome_inputs_render_in_yaml_and_table(tmp_path: Path) -> None:
@@ -1192,6 +1255,13 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
         (
             "version: 1\nsteps:\n  - type: validate\n    hook: missing\n",
             "hook not found",
+        ),
+        (
+            "version: 1\n"
+            "inputs:\n"
+            "  service: {type: str, from: '{{ target.name | upper }}'}\n"
+            "steps: []\n",
+            "invalid input source expression for service",
         ),
     ],
 )

@@ -10,8 +10,8 @@ from untaped_recipe.application.inputs import (
     InputResolutionConfig,
     InputResolutionResult,
     PromptFunc,
+    has_sensitive_inputs,
     prepare_input_resolution,
-    redact_sensitive_text,
     resolve_global_values,
     resolve_target_inputs,
 )
@@ -22,6 +22,11 @@ from untaped_recipe.infrastructure.file_writer import ApplyWriteError as ApplyWr
 from untaped_recipe.infrastructure.file_writer import flush_changes as flush_changes
 
 __all__ = ["ApplyWriteError", "RunBulkApply", "flush_changes"]
+
+SENSITIVE_DIAGNOSTIC_SUPPRESSED = "diagnostic suppressed for target with sensitive inputs"
+SENSITIVE_ERROR_SUPPRESSED = (
+    "target planning failed; diagnostic suppressed for target with sensitive inputs"
+)
 
 
 class RunBulkApply:
@@ -109,21 +114,21 @@ class RunBulkApply:
                 target=target.path,
                 inputs=resolved.values,
             )
-            return _redact_plan_diagnostics(
+            return _suppress_sensitive_diagnostics(
                 recipe,
                 plan.model_copy(
                     update={
                         "display_inputs": resolved.display_values,
                     }
                 ),
-                resolved.values,
             )
         except Exception as exc:
             error = str(exc)
             display_inputs = {}
             if resolved is not None:
-                error = redact_sensitive_text(recipe.inputs, resolved.values, error)
                 display_inputs = resolved.display_values
+                if has_sensitive_inputs(recipe.inputs, display_inputs):
+                    error = SENSITIVE_ERROR_SUPPRESSED
             return TargetPlan(
                 target=target.path,
                 status="error",
@@ -132,16 +137,15 @@ class RunBulkApply:
             )
 
 
-def _redact_plan_diagnostics(
+def _suppress_sensitive_diagnostics(
     recipe: Recipe,
     plan: TargetPlan,
-    values: dict[str, object],
 ) -> TargetPlan:
+    if not has_sensitive_inputs(recipe.inputs, plan.display_inputs):
+        return plan
     return plan.model_copy(
         update={
-            "error": redact_sensitive_text(recipe.inputs, values, plan.error),
-            "warnings": tuple(
-                redact_sensitive_text(recipe.inputs, values, warning) for warning in plan.warnings
-            ),
+            "error": SENSITIVE_ERROR_SUPPRESSED if plan.error else "",
+            "warnings": ((SENSITIVE_DIAGNOSTIC_SUPPRESSED,) if plan.warnings else ()),
         }
     )

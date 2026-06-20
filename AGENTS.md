@@ -59,7 +59,9 @@ src/untaped_recipe/
 The `application` layer plans all target changes in memory. The CLI renders
 diff previews first, then calls the SDK batch confirmation helper. Successful
 target plans are flushed only after confirmation and one backup bundle has been
-created for the invocation.
+created for the invocation. Target parsing preserves optional untaped pipe
+record context for per-target input derivation; `ApplyRecipe` still receives
+only a concrete target path plus resolved plain inputs.
 
 ## Settings And Library Layout
 
@@ -147,6 +149,32 @@ to the engine; recipes must list known candidate paths explicitly.
 
 Do not add a general YAML selector DSL to the core engine. Common YAML edits
 belong in the shipped `yaml_edit` transform hook backed by `ruamel.yaml`.
+
+Input specs accept `type`, `default`, `required`, `description`, `sensitive`,
+`scope`, and `from`; unknown input-spec keys are validation errors. `scope` is
+`global` or `target`. Omitted scope infers `target` when `from` is present and
+`global` otherwise. `scope: global` may use `--var`/`--vars`, but must reject
+recipe `from` and CLI `--input-from`.
+
+Per-target input `from` values are Jinja expressions used only to derive input
+values. They must not affect recipe structure, paths, hook names, or the
+existing template renderer. The sandboxed strict native Jinja context contains
+`target.path`, `target.name`, `target.parent_path`, `target.parent_name`, and
+optional `record` from incoming pipe records. Missing, undefined, or null
+candidate values fall through to the next candidate; `false`, `0`, and `""`
+are real values.
+
+Input precedence is fixed value/source override first, then recipe `from`,
+recipe `default`, interactive prompt, and required-input error. A fixed value
+from `--var`/`--vars` and a source override from `--input-from` for the same
+input is a usage error. `--interactive --check` is rejected.
+`--stdin --interactive` must read target data from stdin and prompt only
+through a controlling terminal.
+
+`recipe.outcome` rows and backup file metadata include resolved declared
+inputs only. Sensitive input values are redacted in rows and backup metadata;
+real values still reach templates and hooks. Never copy the full incoming pipe
+record into rows or backups.
 
 ## Hook Contracts
 

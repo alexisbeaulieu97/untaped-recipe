@@ -156,9 +156,18 @@ inputs:
   service:
     type: str
     required: true
+    description: Service identifier.
+    from:
+      - "{{ record.repo }}"
+      - "{{ target.name }}"
   replicas:
     type: int
     default: 2
+  api_token:
+    type: str
+    scope: global
+    sensitive: true
+    required: true
 steps:
   - type: validate
     hook: has_pyproject
@@ -185,9 +194,81 @@ steps:
       - ansible.cfg
 ```
 
-Supported input types are `str`, `int`, `bool`, and `float`. Unknown input
-overrides are rejected so typoed `--var` names do not silently fall back to
-defaults.
+Supported input types are `str`, `int`, `bool`, and `float`.
+
+## Inputs
+
+Input specs support:
+
+- `type`: one of `str`, `int`, `bool`, or `float`.
+- `default`: fallback value when no source or fixed value resolves.
+- `required`: require a value after sources and defaults.
+- `description`: prompt/help text for humans.
+- `sensitive`: redact the value in output rows and backup metadata.
+- `scope`: `global` for one value per invocation or `target` for a value that
+  may vary per target.
+- `from`: one Jinja expression or an ordered list of candidate expressions.
+
+Unknown input-spec fields are rejected so typos fail at recipe load time.
+Omitted `scope` infers `target` when `from` is present and `global` otherwise.
+`scope: global` rejects recipe `from` and CLI `--input-from`; use
+`--var`/`--vars` for fixed global values.
+
+Per-target `from` expressions are sandboxed strict native Jinja. They are used
+only to derive input values, not to change recipe structure, paths, hook names,
+or template rendering. The context contains:
+
+- `target.path`: target path as a string.
+- `target.name`: target basename.
+- `target.parent_path`: target parent path as a string.
+- `target.parent_name`: target parent basename.
+- `record`: the incoming untaped pipe record, only for targets read from pipe
+  records.
+
+Missing, undefined, or null candidate values fall through to the next
+candidate. `false`, `0`, and `""` are real values.
+
+Input precedence for each declared input is:
+
+1. fixed value from `--var`/`--vars` or source override from `--input-from`
+2. recipe `from`
+3. recipe `default`
+4. `--interactive` prompt
+5. required-input error
+
+A fixed value and source override for the same input is a usage error. Unknown
+input names in `--var`, `--vars`, or `--input-from` are rejected.
+
+Examples:
+
+```yaml
+inputs:
+  service:
+    type: str
+    required: true
+    from:
+      - "{{ record.repo }}"
+      - "{{ target.name }}"
+  owner:
+    type: str
+    default: platform
+  api_token:
+    type: str
+    scope: global
+    sensitive: true
+    required: true
+```
+
+```bash
+untaped-recipe apply add-config ./services/api --var api_token=secret --yes
+untaped-recipe apply add-config --stdin --input-from owner='{{ record.team }}' --yes
+untaped-recipe apply add-config ./services/api --interactive
+```
+
+`--interactive --check` is rejected. With `--stdin --interactive`, target data
+still comes from stdin and prompts are read from the controlling terminal; the
+command fails clearly when no terminal is available. `--stdin` writes require
+`--yes` unless `--dry-run` or `--check` is used.
 
 ## Step Types
 
@@ -241,6 +322,7 @@ untaped-recipe apply add-config ./repo-a ./repo-b --var service=api
 untaped-recipe apply ansible:playbook-migration ./repo-a --yes
 untaped-recipe apply ./pack-project ./repo-a --recipe playbook-migration --yes
 untaped-recipe apply add-config --stdin --yes --parallel 8 --format pipe
+untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
 untaped-recipe apply add-config ./repo-a --check
 untaped-recipe recipe check add-config
 untaped-recipe pack check ansible
@@ -270,6 +352,8 @@ Structured output rows use kind `recipe.outcome`.
 Skipped optional transforms appear in the row's `warnings` field as a
 semicolon-delimited string.
 Check-mode output uses the same `recipe.outcome` rows with `status: check`.
+Every `recipe.outcome` row includes an `inputs` mapping containing resolved
+declared recipe inputs. Sensitive values are rendered as `***`.
 
 ## Ansible Playbook Migration Example
 
@@ -299,9 +383,10 @@ engine ships one.
 ## Backups
 
 Backup bundles record target paths, touched files, before and after hashes,
-canonical recipe ref, inputs, and creation time. Backups store text content for the
-engine-managed files that recipes edit; restores do not preserve file mode or
-mtime.
+canonical recipe ref, redacted per-target inputs on each file entry, and
+creation time. Backups store text content for the engine-managed files that
+recipes edit; restores do not preserve file mode or mtime. Backup metadata
+never stores the full incoming pipe record.
 
 ```bash
 untaped-recipe backup list

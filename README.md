@@ -102,6 +102,7 @@ untaped-recipe apply ./recipe-project ./service-a --yes
 untaped-recipe apply ./pack-project ./service-a --recipe playbook-migration --yes
 untaped-recipe apply ./recipe.yml ./service-a --yes
 untaped-recipe apply add-config --stdin --yes --format json
+untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
 untaped-recipe apply add-config ./service-a --dry-run
 untaped-recipe apply add-config ./service-a --check
 ```
@@ -123,6 +124,29 @@ name the candidate paths they intend to touch.
 Piped stdin accepts bare paths and untaped pipe records. For
 `workspace.workspace` records it uses `record.path`; for `workspace.repo`
 records it uses `Path(record.path) / record.repo`.
+
+Recipe inputs may be invocation-global or per-target. Input specs support
+`description`, `sensitive`, `scope`, and `from` in addition to `type`,
+`default`, and `required`. Omitted scope infers `target` when `from` is present
+and `global` otherwise. Per-target `from` values are sandboxed strict native
+Jinja expressions evaluated only for input derivation, with `target.path`,
+`target.name`, `target.parent_path`, `target.parent_name`, and optional
+incoming pipe `record` in scope. Missing, undefined, or null candidates fall
+through; `false`, `0`, and empty strings are real values.
+
+Use `--input-from NAME=JINJA` to override a per-target source, `--var` or
+`--vars` to provide fixed values, and `--interactive` to prompt for unresolved
+inputs. A fixed value and source override for the same input is rejected.
+`scope: global` rejects recipe `from` and `--input-from`, but accepts
+`--var`/`--vars`. `--interactive --check` is rejected. With
+`--stdin --interactive`, target records still come from stdin and prompts use
+the controlling terminal. `--stdin` writes still require `--yes` unless
+`--dry-run` or `--check` is used.
+
+Every `recipe.outcome` row includes resolved declared inputs. Inputs marked
+`sensitive: true` are redacted in rows and backup metadata; real values still
+reach templates and hooks. Backup file entries record redacted per-target
+inputs and never store the full incoming pipe record.
 
 ## Library Commands
 

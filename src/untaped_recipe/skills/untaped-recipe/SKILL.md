@@ -16,6 +16,9 @@ plain directories.
 - Pass `--yes` for non-interactive applies.
 - Use `--dry-run` to preview without writing, `--vars file.yml` or repeated
   `--var KEY=VALUE` for inputs, and `--parallel N` for planning workers.
+- Use `--input-from KEY=JINJA` to override a per-target input source and
+  `--interactive` to prompt for unresolved inputs. Do not combine
+  `--interactive` with `--check`.
 - Use `--check` for compliance/drift checks. It previews without writing,
   creates no backups, prompts for nothing, and exits non-zero when changes
   would be made or a target fails.
@@ -48,6 +51,20 @@ plain directories.
   metadata, not from `recipe.yml`.
 - Recipe YAML is behavior-only: `version`, optional `description`, optional
   `inputs`, and `steps`. `name:` is rejected.
+- Input specs support `type`, `default`, `required`, `description`,
+  `sensitive`, `scope`, and `from`; unknown input-spec fields are rejected.
+  Omitted `scope` infers `target` when `from` is present and `global`
+  otherwise. `scope: global` rejects recipe `from` and CLI `--input-from`, but
+  accepts fixed values from `--var` and `--vars`.
+- Per-target `from` values are sandboxed strict native Jinja expressions used
+  only to derive input values. They cannot change recipe structure, paths, hook
+  names, or template rendering. The context is `target.path`, `target.name`,
+  `target.parent_path`, `target.parent_name`, and optional incoming pipe
+  `record`. Missing, undefined, or null candidates fall through; `false`, `0`,
+  and `""` are real values.
+- Input precedence is fixed value/source override, recipe `from`, recipe
+  `default`, `--interactive` prompt, then required-input error. A fixed value
+  and `--input-from` source override for the same input is a usage error.
 - `apply foo` resolves only standalone library recipe `recipes/foo/`.
 - `apply pack:recipe` resolves an installed pack recipe from `packs/pack/`.
 - `apply ./recipe.yml` runs a path-only single-file recipe.
@@ -100,9 +117,16 @@ plain directories.
   rows as a semicolon-delimited string.
 - Apply rows and backup metadata use canonical recipe refs: `foo` for
   standalone recipes and `pack:recipe` for pack recipes.
+- `recipe.outcome` rows include resolved declared `inputs`. Sensitive inputs
+  render as `***`; real values still reach templates and hooks.
+- Backup file entries include redacted per-target inputs and never store the
+  full incoming pipe record.
 - `--check` emits `recipe.outcome` rows with `status` set to `check`.
 - `apply --stdin` consumes bare paths plus `workspace.workspace` and
-  `workspace.repo` records.
+  `workspace.repo` records. `--stdin --interactive` reads target data from
+  stdin and prompts only through the controlling terminal; it fails clearly if
+  no terminal is available. `--stdin` writes still require `--yes` unless
+  `--dry-run` or `--check` is used.
 - The SDK provides `--quiet`/`-q`, `config doctor`, and `config edit`.
 - Run `untaped-recipe skills install` to install this packaged skill for agent
   workflows.

@@ -160,6 +160,35 @@ def test_input_spec_coerces_supported_types_and_requires_missing_values() -> Non
         InputSpec.resolve_all(specs, overrides={"name": "api", "extra": "nope"})
 
 
+def test_input_spec_supports_metadata_scope_and_from_fallbacks() -> None:
+    spec = InputSpec.model_validate(
+        {
+            "type": "str",
+            "description": "Service name.",
+            "required": True,
+            "from": ["{{ record.repo }}", "{{ target.name }}"],
+            "sensitive": True,
+        }
+    )
+
+    assert spec.description == "Service name."
+    assert spec.scope == "target"
+    assert spec.from_ == ("{{ record.repo }}", "{{ target.name }}")
+    assert spec.sensitive is True
+
+
+def test_input_spec_infers_global_scope_without_from() -> None:
+    assert InputSpec.model_validate({"type": "str"}).scope == "global"
+
+
+def test_input_spec_rejects_from_on_global_scope_and_unknown_fields() -> None:
+    with pytest.raises(ValidationError, match=r"scope.*global.*from"):
+        InputSpec.model_validate({"scope": "global", "from": "{{ target.name }}"})
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        InputSpec.model_validate({"type": "str", "form": "{{ target.name }}"})
+
+
 @pytest.mark.parametrize(
     "step",
     [

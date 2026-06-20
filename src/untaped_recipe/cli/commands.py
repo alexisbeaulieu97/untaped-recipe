@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -24,8 +25,9 @@ from untaped.errors import ConfigError, UntapedError
 
 from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
+from untaped_recipe.application.inputs import PromptFunc
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
-from untaped_recipe.application.targets import resolve_target_lines
+from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import library_root, report_config_errors, settings
 from untaped_recipe.cli.hook_commands import app as hook_app
@@ -54,7 +56,6 @@ class ApplyContext:
     root: Path
     recipe: Recipe
     recipe_ref: str
-    inputs: dict[str, object]
     plans: list[TargetPlan]
 
 
@@ -92,6 +93,18 @@ def apply_command(
         Path | None,
         Parameter(name="--vars", help="YAML file containing input overrides."),
     ] = None,
+    input_from: Annotated[
+        list[str] | None,
+        Parameter(
+            name="--input-from",
+            help="Derive one input from a per-target Jinja expression as key=template.",
+            consume_multiple=False,
+        ),
+    ] = None,
+    interactive: Annotated[
+        bool,
+        Parameter(name="--interactive", negative="", help="Prompt for unresolved inputs."),
+    ] = False,
     dry_run: Annotated[
         bool,
         Parameter(name="--dry-run", negative="", help="Preview without writing."),
@@ -125,25 +138,32 @@ def apply_command(
 ) -> None:
     """Apply a recipe to target directories."""
     with report_config_errors():
+        if interactive and check:
+            raise ConfigError("--interactive cannot be used with --check")
         if stdin and not yes and not dry_run and not check:
             raise ConfigError("apply requires --yes when stdin is not interactive")
-        context = _apply_context(
-            recipe_ref,
-            dirs=list(dirs or []),
-            stdin=stdin,
-            raw_vars=var or [],
-            vars_file=vars_file,
-            parallel=parallel,
-            hook_timeout_seconds=_hook_timeout_seconds(hook_timeout),
-            recipe_id=recipe_id,
-        )
-        _render_diffs(context.plans)
-        outcome = _execute_plans(
-            context,
-            backup=backup and not check,
-            yes=yes or check,
-            dry_run=dry_run or check,
-        )
+        with ExitStack() as stack:
+            prompt = _interactive_prompt(stdin=stdin, interactive=interactive, stack=stack)
+            context = _apply_context(
+                recipe_ref,
+                dirs=list(dirs or []),
+                stdin=stdin,
+                raw_vars=var or [],
+                vars_file=vars_file,
+                raw_input_from=input_from or [],
+                interactive=interactive,
+                prompt=prompt,
+                parallel=parallel,
+                hook_timeout_seconds=_hook_timeout_seconds(hook_timeout),
+                recipe_id=recipe_id,
+            )
+            _render_diffs(context.plans)
+            outcome = _execute_plans(
+                context,
+                backup=backup and not check,
+                yes=yes or check,
+                dry_run=dry_run or check,
+            )
         rows = _outcome_rows(
             context.plans,
             outcome,
@@ -166,6 +186,9 @@ def _apply_context(
     stdin: bool,
     raw_vars: list[str],
     vars_file: Path | None,
+    raw_input_from: list[str],
+    interactive: bool,
+    prompt: PromptFunc | None,
     parallel: int,
     hook_timeout_seconds: float,
     recipe_id: str | None = None,
@@ -178,6 +201,7 @@ def _apply_context(
     if not targets:
         raise ConfigError("at least one target directory is required (or use --stdin)")
     inputs = _input_values(raw_vars, vars_file)
+    input_from = _input_sources(raw_input_from)
     workers = clamp_parallel(max(parallel, 1), cap=32, policy="recipe planning cap")
     with UvHookWorkerPool(
         max_workers_per_project=workers,
@@ -199,6 +223,9 @@ def _apply_context(
                 local_hook_project=recipe_resolution.local_hook_project,
                 targets=targets,
                 inputs=inputs,
+                input_from=input_from,
+                interactive=interactive,
+                prompt=prompt,
                 parallel=workers,
             )
         except ValueError as exc:
@@ -207,7 +234,6 @@ def _apply_context(
         root=root,
         recipe=loaded,
         recipe_ref=recipe_resolution.ref,
-        inputs=inputs,
         plans=plans,
     )
 
@@ -249,9 +275,9 @@ def _execute_plans(
                 if draft is None:
                     draft = store.start(
                         recipe_name=context.recipe_ref,
-                        inputs=context.inputs,
+                        inputs={},
                     )
-                reservation = draft.stage(plan.changes)
+                reservation = draft.stage(plan.changes, inputs=plan.display_inputs)
             flush_changes(plan.changes)
             if reservation is not None and draft is not None:
                 draft.commit(reservation)
@@ -311,11 +337,11 @@ def _outcome_rows(
     return rendered
 
 
-def _targets(positional: list[Path], *, stdin: bool) -> list[Path]:
+def _targets(positional: list[Path], *, stdin: bool) -> list[Target]:
     if stdin and positional:
         raise ConfigError("provide targets as positional args or via --stdin, not both")
     if not stdin:
-        return positional
+        return [Target(path=path) for path in positional]
     pairs: list[tuple[int, str]] = []
     for lineno, line in enumerate(sys.stdin, start=1):
         stripped = line.strip()
@@ -340,6 +366,36 @@ def _input_values(raw_vars: list[str], vars_file: Path | None) -> dict[str, obje
     return values
 
 
+def _input_sources(raw_sources: list[str]) -> dict[str, str]:
+    parsed = parse_kv_pairs(raw_sources, flag="--input-from")
+    return {name: str(template) for name, template in parsed.items()}
+
+
+def _interactive_prompt(
+    *,
+    stdin: bool,
+    interactive: bool,
+    stack: ExitStack,
+) -> PromptFunc | None:
+    if not interactive:
+        return None
+    if stdin:
+        try:
+            tty = stack.enter_context(Path("/dev/tty").open("r+"))  # noqa: SIM115
+        except OSError as exc:
+            raise ConfigError("interactive input requires a terminal") from exc
+        ui = ui_context(stdin=tty, stderr=tty, strict=True)
+    else:
+        ui = ui_context(strict=True)
+
+    def ask(message: str, *, sensitive: bool) -> str:
+        if sensitive:
+            return ui.secret(message)
+        return ui.text(message)
+
+    return ask
+
+
 def _hook_timeout_seconds(override: float | None) -> float:
     timeout = settings().hook_timeout_seconds if override is None else override
     if timeout < 0:
@@ -362,4 +418,5 @@ def _row(plan: TargetPlan) -> dict[str, object]:
         "files_changed": plan.files_changed,
         "warnings": "; ".join(plan.warnings),
         "error": plan.error,
+        "inputs": plan.display_inputs,
     }

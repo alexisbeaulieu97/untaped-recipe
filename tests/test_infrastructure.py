@@ -11,6 +11,7 @@ import untaped_recipe.infrastructure.file_writer as file_writer_module
 import untaped_recipe.infrastructure.hook_library as hook_library_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
+from untaped_recipe.application.targets import Target
 from untaped_recipe.builtins.hooks import yaml_edit
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.domain.recipe import Recipe
@@ -372,7 +373,7 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
         recipe=recipe,
         recipe_dir=recipe_dir,
         local_hook_project=None,
-        targets=[good, missing],
+        targets=[Target(path=good), Target(path=missing)],
         inputs={},
         parallel=2,
     )
@@ -395,6 +396,147 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
         )
     )
     assert not removable.exists()
+
+
+def test_bulk_plan_resolves_per_target_inputs_and_preserves_duplicate_order(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("service={{ service }}\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {
+                    "type": "str",
+                    "required": True,
+                    "from": ["{{ record.repo }}", "{{ target.name }}"],
+                },
+                "token": {
+                    "type": "str",
+                    "scope": "global",
+                    "sensitive": True,
+                    "required": True,
+                },
+            },
+            "steps": [{"type": "template", "template": "template.txt", "dest": "out.txt"}],
+        }
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    other = tmp_path / "worker"
+    other.mkdir()
+    runner = RunBulkApply(
+        ApplyRecipe(
+            HookExecutor(
+                HookResolver(global_hooks=tmp_path / "global"),
+                workers=UvHookWorkerPool(),
+                helpers=HookHelpers(),
+            )
+        )
+    )
+
+    plans = runner.plan(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        local_hook_project=None,
+        targets=[
+            Target(path=target, record={"repo": "first"}),
+            Target(path=other, record={"repo": "second"}),
+            Target(path=target, record={"repo": "third"}),
+        ],
+        inputs={"token": "secret"},
+        parallel=3,
+    )
+
+    assert [plan.target for plan in plans] == [target, other, target]
+    assert [plan.inputs["service"] for plan in plans] == ["first", "second", "third"]
+    assert [plan.display_inputs["token"] for plan in plans] == ["***", "***", "***"]
+    assert [plan.changes[0].after for plan in plans] == [
+        "service=first\n",
+        "service=second\n",
+        "service=third\n",
+    ]
+
+
+def test_bulk_plan_error_rows_preserve_resolved_input_display(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("service={{ service }} token={{ token }}\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "required": True, "from": "{{ target.name }}"},
+                "token": {
+                    "type": "str",
+                    "scope": "global",
+                    "sensitive": True,
+                    "required": True,
+                },
+            },
+            "steps": [{"type": "template", "template": "template.txt", "dest": "out.txt"}],
+        }
+    )
+    missing = tmp_path / "missing"
+    runner = RunBulkApply(
+        ApplyRecipe(
+            HookExecutor(
+                HookResolver(global_hooks=tmp_path / "global"),
+                workers=UvHookWorkerPool(),
+                helpers=HookHelpers(),
+            )
+        )
+    )
+
+    plans = runner.plan(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        local_hook_project=None,
+        targets=[Target(path=missing)],
+        inputs={"token": "secret"},
+    )
+
+    assert plans[0].status == "error"
+    assert plans[0].display_inputs == {"service": "missing", "token": "***"}
+
+
+def test_bulk_plan_input_resolution_errors_have_empty_inputs(tmp_path: Path) -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "required": True, "from": "{{ record.repo }}"},
+            },
+            "steps": [],
+        }
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    runner = RunBulkApply(
+        ApplyRecipe(
+            HookExecutor(
+                HookResolver(global_hooks=tmp_path / "global"),
+                workers=UvHookWorkerPool(),
+                helpers=HookHelpers(),
+            )
+        )
+    )
+
+    plans = runner.plan(
+        recipe=recipe,
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        targets=[Target(path=target)],
+        inputs={},
+    )
+
+    assert plans[0].status == "error"
+    assert plans[0].inputs == {}
+    assert plans[0].display_inputs == {}
 
 
 def test_flush_changes_reports_rollback_failures(

@@ -427,6 +427,241 @@ def test_apply_var_values_keep_equals_and_unknown_vars_are_rejected(tmp_path: Pa
     assert "unknown input" in rejected.output
 
 
+def test_apply_derives_target_inputs_and_redacts_outcome_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "    required: true\n"
+        "    from: '{{ target.name }}'\n"
+        "  token:\n"
+        "    type: str\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("{{ service }} {{ token }}\n")
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "token=secret",
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (target / "out.txt").read_text() == "api secret\n"
+    rows = json.loads(result.stdout)
+    assert rows[0]["inputs"] == {"service": "api", "token": "***"}
+    assert "secret" not in result.stdout
+
+
+def test_apply_outcome_inputs_render_in_yaml_and_table(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, required: true, from: '{{ target.name }}'}\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    yaml_result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run", "--format", "yaml"],
+    )
+    assert yaml_result.exit_code == 0, yaml_result.output
+    assert "inputs:" in yaml_result.stdout
+    assert "service: api" in yaml_result.stdout
+
+    table_result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+    assert table_result.exit_code == 0, table_result.output
+    assert "inputs" in table_result.stdout
+    assert "service" in table_result.stdout
+
+
+def test_apply_derives_inputs_from_pipe_record_and_input_from_override(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "    required: true\n"
+        "    from:\n"
+        "      - '{{ record.repo }}'\n"
+        "      - '{{ target.name }}'\n"
+        "  owner:\n"
+        "    type: str\n"
+        "    from: '{{ record.team }}'\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("{{ service }} {{ owner }}\n")
+    workspace = tmp_path / "workspace"
+    target = workspace / "api"
+    target.mkdir(parents=True)
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "workspace.repo",
+            "record": {"path": str(workspace), "repo": "api", "team": "platform"},
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            "--stdin",
+            "--yes",
+            "--input-from",
+            "owner={{ target.parent_name }}",
+            "--format",
+            "pipe",
+        ],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (target / "out.txt").read_text() == "api workspace\n"
+    row = json.loads(result.stdout)
+    assert row["kind"] == "recipe.outcome"
+    assert row["record"]["inputs"] == {"service": "api", "owner": "workspace"}
+
+
+def test_apply_rejects_input_from_conflicts_global_scope_and_interactive_check(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, required: true, from: '{{ target.name }}'}\n"
+        "  owner: {type: str, scope: global, required: true}\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    conflict = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "service=fixed",
+            "--input-from",
+            "service={{ target.name }}",
+            "--var",
+            "owner=platform",
+            "--dry-run",
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "cannot combine --var/--vars and --input-from for service" in conflict.output
+
+    global_source = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--input-from",
+            "owner={{ target.name }}",
+            "--dry-run",
+        ],
+    )
+    assert global_source.exit_code != 0
+    assert "scope global" in global_source.output
+
+    interactive_check = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--interactive", "--check"],
+    )
+    assert interactive_check.exit_code != 0
+    assert "--interactive cannot be used with --check" in interactive_check.output
+
+
+def test_apply_stdin_interactive_without_tty_fails_before_prompting(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  service: {type: str, scope: target, required: true}\nsteps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--interactive", "--dry-run"],
+        input=str(target) + "\n",
+    )
+
+    assert result.exit_code != 0
+    assert "interactive input requires a terminal" in result.output
+
+
+def test_apply_backup_metadata_records_redacted_per_target_inputs(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, required: true, from: '{{ target.name }}'}\n"
+        "  token: {type: str, scope: global, sensitive: true, required: true}\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("{{ service }} {{ token }}\n")
+    target = tmp_path / "api"
+    target.mkdir()
+    (target / "out.txt").write_text("before\n")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "token=secret",
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = BackupStore(library_root() / "backups").metadata("latest")
+    assert metadata["files"][0]["inputs"] == {"service": "api", "token": "***"}
+    assert "secret" not in json.dumps(metadata)
+
+
 def test_apply_outcome_includes_optional_transform_warnings(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(

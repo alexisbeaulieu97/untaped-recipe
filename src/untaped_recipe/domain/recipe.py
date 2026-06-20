@@ -11,16 +11,48 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from untaped_recipe.domain.paths import safe_relative_path
 
 InputType = Literal["str", "int", "bool", "float"]
+InputScope = Literal["target", "global"]
 
 
 class InputSpec(BaseModel):
     """One declared recipe input."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     type: InputType = "str"
     default: object | None = None
     required: bool = False
+    description: str = ""
+    sensitive: bool = False
+    scope: InputScope = "global"
+    from_: tuple[str, ...] = Field(default=(), alias="from")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_input_metadata(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        raw_from = data.get("from", data.get("from_", ()))
+        if raw_from is None:
+            from_values: tuple[str, ...] = ()
+        elif isinstance(raw_from, str):
+            from_values = (raw_from,)
+        elif isinstance(raw_from, Sequence) and not isinstance(raw_from, bytes):
+            from_values = tuple(raw_from)
+        else:
+            data["from"] = raw_from
+            return data
+        data["from"] = from_values
+        if data.get("scope") is None:
+            data["scope"] = "target" if from_values else "global"
+        return data
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> InputSpec:
+        if self.scope == "global" and self.from_:
+            raise ValueError("input with scope global cannot declare from")
+        return self
 
     def coerce(self, value: object) -> object:
         """Coerce a CLI/YAML-supplied value to this input's declared type."""

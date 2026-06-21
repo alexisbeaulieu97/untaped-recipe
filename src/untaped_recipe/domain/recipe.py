@@ -11,31 +11,69 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from untaped_recipe.domain.paths import safe_relative_path
 
 InputType = Literal["str", "int", "bool", "float"]
+InputScope = Literal["target", "global"]
 
 
 class InputSpec(BaseModel):
     """One declared recipe input."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: InputType = "str"
     default: object | None = None
     required: bool = False
+    description: str = ""
+    sensitive: bool = False
+    scope: InputScope = "global"
+    from_: tuple[str, ...] = Field(default=(), alias="from")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_input_metadata(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        raw_from = data.get("from", ())
+        if raw_from is None:
+            from_values: tuple[str, ...] = ()
+        elif isinstance(raw_from, str):
+            from_values = (raw_from,)
+        elif isinstance(raw_from, Sequence) and not isinstance(raw_from, bytes):
+            from_values = tuple(raw_from)
+        else:
+            data["from"] = raw_from
+            return data
+        data["from"] = from_values
+        if data.get("scope") is None:
+            data["scope"] = "target" if from_values else "global"
+        return data
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> InputSpec:
+        if self.scope == "global" and self.from_:
+            raise ValueError("input with scope global cannot declare from")
+        return self
 
     def coerce(self, value: object) -> object:
         """Coerce a CLI/YAML-supplied value to this input's declared type."""
         if self.type == "str":
             return str(value)
         if self.type == "int":
-            if isinstance(value, int) and not isinstance(value, bool):
-                return value
-            if isinstance(value, float):
-                return int(value)
-            return int(str(value))
+            try:
+                if isinstance(value, int) and not isinstance(value, bool):
+                    return value
+                if isinstance(value, float):
+                    return int(value)
+                return int(str(value))
+            except TypeError, ValueError, OverflowError:
+                raise ValueError("cannot coerce value to int") from None
         if self.type == "float":
-            if isinstance(value, int | float) and not isinstance(value, bool):
-                return float(value)
-            return float(str(value))
+            try:
+                if isinstance(value, int | float) and not isinstance(value, bool):
+                    return float(value)
+                return float(str(value))
+            except TypeError, ValueError, OverflowError:
+                raise ValueError("cannot coerce value to float") from None
         if isinstance(value, bool):
             return value
         normalized = str(value).strip().lower()
@@ -43,27 +81,7 @@ class InputSpec(BaseModel):
             return True
         if normalized in {"0", "false", "no", "off"}:
             return False
-        raise ValueError(f"cannot coerce {value!r} to bool")
-
-    @staticmethod
-    def resolve_all(
-        specs: dict[str, InputSpec],
-        *,
-        overrides: dict[str, object],
-    ) -> dict[str, object]:
-        """Resolve all declared inputs from overrides and defaults."""
-        unknown = sorted(set(overrides) - set(specs))
-        if unknown:
-            raise ValueError(f"unknown input: {unknown[0]}")
-        values: dict[str, object] = {}
-        for name, spec in specs.items():
-            if name in overrides:
-                values[name] = spec.coerce(overrides[name])
-            elif spec.default is not None:
-                values[name] = spec.coerce(spec.default)
-            elif spec.required:
-                raise ValueError(f"missing required input: {name}")
-        return values
+        raise ValueError("cannot coerce value to bool")
 
 
 class BaseStep(BaseModel):

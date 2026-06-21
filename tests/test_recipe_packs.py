@@ -484,6 +484,39 @@ def test_cli_recipe_and_pack_authoring_workflows(
     assert marker.read_text().endswith("recipe.yml")
 
 
+def test_pack_check_reports_invalid_recipe_input_sources(tmp_path: Path) -> None:
+    pack_project = tmp_path / "ansible"
+    recipe_dir = pack_project / "recipes" / "playbook"
+    recipe_dir.mkdir(parents=True)
+    (pack_project / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-pack-ansible"\n'
+        'version = "0.1.0"\n\n'
+        "[tool.untaped_recipe]\n"
+        'pack = "ansible"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        '"playbook" = { path = "recipes/playbook/recipe.yml" }\n'
+    )
+    (pack_project / "uv.lock").write_text("version = 1\n")
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, from: '{{ target.name | upper }}'}\n"
+        "steps: []\n"
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["pack", "check", str(pack_project), "--format", "json"],
+    )
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert "playbook: invalid input source expression for service" in rows[0]["error"]
+    assert "Traceback" not in result.output
+
+
 def test_apply_supports_pack_refs_local_pack_recipe_selector_and_backup_refs(
     tmp_path: Path,
 ) -> None:

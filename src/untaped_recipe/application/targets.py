@@ -3,27 +3,46 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from untaped.pipe import is_envelope_line, parse_envelope_line
 
 
-def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Path]:
+@dataclass(frozen=True)
+class Target:
+    """One target directory plus optional pipe-record context."""
+
+    path: Path
+    record: Mapping[str, object] | None = None
+    kind: str | None = None
+    lineno: int | None = None
+
+
+def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Target]:
     """Resolve raw non-blank stdin lines to target paths."""
-    targets: list[Path] = []
+    targets: list[Target] = []
     for lineno, text in lines:
         try:
             obj = json.loads(text)
         except json.JSONDecodeError as exc:
             if text.lstrip().startswith("{"):
                 raise ValueError(f"line {lineno}: invalid JSON: {exc.msg}") from exc
-            targets.append(Path(text))
+            targets.append(Target(path=Path(text), lineno=lineno))
             continue
         if not is_envelope_line(obj):
-            targets.append(Path(text))
+            targets.append(Target(path=Path(text), lineno=lineno))
             continue
         env = parse_envelope_line(lineno, text)
-        targets.append(_target_from_record(env.kind, env.record, lineno))
+        targets.append(
+            Target(
+                path=_target_from_record(env.kind, env.record, lineno),
+                record=dict(env.record),
+                kind=env.kind,
+                lineno=lineno,
+            )
+        )
     return targets
 
 

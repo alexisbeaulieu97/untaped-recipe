@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,9 +48,15 @@ class BackupDraft:
         """Directory containing saved before-content files."""
         return self.path / "files"
 
-    def stage(self, changes: tuple[FileChange, ...] | list[FileChange]) -> BackupReservation:
+    def stage(
+        self,
+        changes: tuple[FileChange, ...] | list[FileChange],
+        *,
+        inputs: Mapping[str, object] | None = None,
+    ) -> BackupReservation:
         """Save before-content for changes without publishing metadata yet."""
         entries: list[dict[str, Any]] = []
+        display_inputs = dict(inputs or {})
         for change in changes:
             entry: dict[str, Any] = {
                 "target": str(change.target),
@@ -57,6 +64,7 @@ class BackupDraft:
                 "before_hash": _hash_text(change.before),
                 "after_hash": _hash_text(change.after),
                 "backup_file": None,
+                "inputs": display_inputs,
             }
             if change.before is not None:
                 backup_file = self.files_dir / f"{self._next_file_index}"
@@ -103,7 +111,7 @@ class BackupStore:
     ) -> BackupBundle:
         """Create a backup for touched files."""
         draft = self.start(recipe_name=recipe_name, inputs=inputs)
-        draft.commit(draft.stage(changes))
+        draft.commit(draft.stage(changes, inputs=inputs))
         return BackupBundle(id=draft.id, path=draft.path)
 
     def start(self, *, recipe_name: str, inputs: dict[str, object]) -> BackupDraft:

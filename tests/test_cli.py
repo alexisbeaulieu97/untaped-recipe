@@ -427,6 +427,530 @@ def test_apply_var_values_keep_equals_and_unknown_vars_are_rejected(tmp_path: Pa
     assert "unknown input" in rejected.output
 
 
+def test_apply_derives_target_inputs_and_redacts_outcome_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "    required: true\n"
+        "    from: '{{ target.name }}'\n"
+        "  token:\n"
+        "    type: str\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("{{ service }} {{ token }}\n")
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "token=secret",
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (target / "out.txt").read_text() == "api secret\n"
+    rows = json.loads(result.stdout)
+    assert rows[0]["inputs"] == {"service": "api", "token": "***"}
+    assert "secret" not in result.stdout
+
+
+def test_apply_sensitive_target_input_coercion_error_does_not_leak_secret(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: int\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "    from: '{{ record.token }}'\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "recipe.target",
+            "record": {"path": str(target), "token": secret},
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--dry-run", "--format", "json"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 1, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == "cannot coerce value to int"
+    assert rows[0]["inputs"] == {}
+
+
+def test_apply_sensitive_global_input_coercion_error_does_not_leak_secret(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: int\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--var", f"token={secret}", "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert "cannot coerce value to int" in result.output
+
+
+def test_apply_sensitive_inputs_redact_warnings_and_suppress_diffs(
+    tmp_path: Path,
+) -> None:
+    secret = 'TOP-SECRET-9000"\\tail'
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: str\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps:\n"
+        "  - type: validate\n"
+        "    hook: leak\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (recipe_dir / "template.txt").write_text("token={{ token }}\n")
+    _write_hook_project(
+        recipe_dir,
+        public_name="leak",
+        module_name="leak",
+        code=(
+            "import json\n"
+            "def validate(*, inputs, target, args, helpers):\n"
+            "    return helpers.warn(json.dumps({'warning': inputs['token']}))\n"
+        ),
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe_dir),
+            str(target),
+            "--var",
+            f"token={secret}",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert "diff suppressed for target with sensitive inputs" in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["warnings"] == "diagnostic suppressed for target with sensitive inputs"
+    assert rows[0]["inputs"] == {"token": "***"}
+
+
+def test_apply_sensitive_inputs_redact_hook_failures(
+    tmp_path: Path,
+) -> None:
+    secret = 'TOP-SECRET-9000"\\tail'
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token:\n"
+        "    type: str\n"
+        "    scope: global\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps:\n"
+        "  - type: transform\n"
+        "    file: config.txt\n"
+        "    hook: leak\n"
+    )
+    _write_hook_project(
+        recipe_dir,
+        public_name="leak",
+        module_name="leak",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    raise RuntimeError(f\"failed {inputs['token']!r}\")\n"
+        ),
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    (target / "config.txt").write_text("before\n")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe_dir),
+            str(target),
+            "--var",
+            f"token={secret}",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == (
+        "target planning failed; diagnostic suppressed for target with sensitive inputs"
+    )
+    assert rows[0]["inputs"] == {"token": "***"}
+
+
+def test_apply_invalid_fixed_target_input_fails_before_target_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: 1\ninputs:\n  replicas: {type: int, scope: target}\nsteps: []\n")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(first),
+            str(second),
+            "--var",
+            "replicas=not-an-int",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "cannot coerce value to int" in result.stderr
+
+
+def test_apply_invalid_jinja_source_fails_before_target_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  service:\n    type: str\n    from: '{{ target.name'\nsteps: []\n"
+    )
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(first), str(second), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "invalid input source expression for service" in result.stderr
+
+
+def test_apply_jinja_control_blocks_fail_before_target_rows(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "    from: '{% for item in [target.name] %}{{ item }}{% endfor %}'\n"
+        "steps: []\n"
+    )
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(first), str(second), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "invalid input source expression for service" in result.stderr
+
+
+def test_apply_record_valued_source_fails_without_copying_record_contents(
+    tmp_path: Path,
+) -> None:
+    secret = "TOP-SECRET-9000"
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  debug: {type: str, from: '{{ record }}'}\nsteps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "recipe.target",
+            "record": {"path": str(target), "token": secret},
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--dry-run", "--format", "json"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 1, result.output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == "derived input value must be a scalar"
+
+
+def test_apply_outcome_inputs_render_in_yaml_and_table(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, required: true, from: '{{ target.name }}'}\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    yaml_result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run", "--format", "yaml"],
+    )
+    assert yaml_result.exit_code == 0, yaml_result.output
+    assert "inputs:" in yaml_result.stdout
+    assert "service: api" in yaml_result.stdout
+
+    table_result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+    assert table_result.exit_code == 0, table_result.output
+    assert "inputs" in table_result.stdout
+    assert "service" in table_result.stdout
+
+
+def test_apply_derives_inputs_from_pipe_record_and_input_from_override(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "    required: true\n"
+        "    from:\n"
+        "      - '{{ record.repo }}'\n"
+        "      - '{{ target.name }}'\n"
+        "  owner:\n"
+        "    type: str\n"
+        "    from: '{{ record.team }}'\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("{{ service }} {{ owner }}\n")
+    workspace = tmp_path / "workspace"
+    target = workspace / "api"
+    target.mkdir(parents=True)
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "workspace.repo",
+            "record": {"path": str(workspace), "repo": "api", "team": "platform"},
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            "--stdin",
+            "--yes",
+            "--input-from",
+            "owner={{ target.parent_name }}",
+            "--format",
+            "pipe",
+        ],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (target / "out.txt").read_text() == "api workspace\n"
+    row = json.loads(result.stdout)
+    assert row["kind"] == "recipe.outcome"
+    assert row["record"]["inputs"] == {"service": "api", "owner": "workspace"}
+
+
+def test_apply_rejects_input_from_conflicts_global_scope_and_interactive_check(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, required: true, from: '{{ target.name }}'}\n"
+        "  owner: {type: str, scope: global, required: true}\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    conflict = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "service=fixed",
+            "--input-from",
+            "service={{ target.name }}",
+            "--var",
+            "owner=platform",
+            "--dry-run",
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "cannot combine --var/--vars and --input-from for service" in conflict.output
+
+    global_source = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--input-from",
+            "owner={{ target.name }}",
+            "--dry-run",
+        ],
+    )
+    assert global_source.exit_code != 0
+    assert "scope global" in global_source.output
+
+    interactive_check = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--interactive", "--check"],
+    )
+    assert interactive_check.exit_code != 0
+    assert "--interactive cannot be used with --check" in interactive_check.output
+
+
+def test_apply_stdin_interactive_without_tty_fails_before_prompting(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  service: {type: str, scope: target, required: true}\nsteps: []\n"
+    )
+    target = tmp_path / "api"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--interactive", "--dry-run"],
+        input=str(target) + "\n",
+    )
+
+    assert result.exit_code != 0
+    assert "interactive input requires a terminal" in result.output
+
+
+def test_apply_backup_metadata_records_redacted_per_target_inputs(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, required: true, from: '{{ target.name }}'}\n"
+        "  token: {type: str, scope: global, sensitive: true, required: true}\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("{{ service }} {{ token }}\n")
+    target = tmp_path / "api"
+    target.mkdir()
+    (target / "out.txt").write_text("before\n")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "token=secret",
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = BackupStore(library_root() / "backups").metadata("latest")
+    assert metadata["files"][0]["inputs"] == {"service": "api", "token": "***"}
+    assert "secret" not in json.dumps(metadata)
+
+
 def test_apply_outcome_includes_optional_transform_warnings(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
@@ -731,6 +1255,13 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
         (
             "version: 1\nsteps:\n  - type: validate\n    hook: missing\n",
             "hook not found",
+        ),
+        (
+            "version: 1\n"
+            "inputs:\n"
+            "  service: {type: str, from: '{{ target.name | upper }}'}\n"
+            "steps: []\n",
+            "invalid input source expression for service",
         ),
     ],
 )

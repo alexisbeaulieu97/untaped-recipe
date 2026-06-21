@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import traceback
+
 import pytest
 from pydantic import ValidationError
 
@@ -138,26 +140,60 @@ def test_recipe_rejects_unknown_version_and_step_type() -> None:
         )
 
 
-def test_input_spec_coerces_supported_types_and_requires_missing_values() -> None:
-    specs = {
-        "name": InputSpec(type="str", required=True),
-        "count": InputSpec(type="int", default=1),
-        "enabled": InputSpec(type="bool", default=True),
-        "ratio": InputSpec(type="float", default=1.5),
-    }
+def test_input_spec_coerces_supported_types() -> None:
+    assert InputSpec(type="str").coerce("api") == "api"
+    assert InputSpec(type="int").coerce("3") == 3
+    assert InputSpec(type="bool").coerce("false") is False
+    assert InputSpec(type="float").coerce("2.25") == 2.25
 
-    values = InputSpec.resolve_all(
-        specs,
-        overrides={"name": "api", "count": "3", "enabled": "false", "ratio": "2.25"},
+
+@pytest.mark.parametrize("input_type", ["int", "float", "bool"])
+def test_input_spec_coercion_errors_do_not_echo_values(input_type: str) -> None:
+    secret = "TOP-SECRET-9000"
+
+    with pytest.raises(ValueError, match=f"cannot coerce value to {input_type}") as excinfo:
+        InputSpec(type=input_type).coerce(secret)  # type: ignore[arg-type]
+
+    assert secret not in str(excinfo.value)
+    assert secret not in "".join(
+        traceback.format_exception(
+            type(excinfo.value),
+            excinfo.value,
+            excinfo.value.__traceback__,
+        )
     )
 
-    assert values == {"name": "api", "count": 3, "enabled": False, "ratio": 2.25}
 
-    with pytest.raises(ValueError, match="missing required input: name"):
-        InputSpec.resolve_all(specs, overrides={})
+def test_input_spec_supports_metadata_scope_and_from_fallbacks() -> None:
+    spec = InputSpec.model_validate(
+        {
+            "type": "str",
+            "description": "Service name.",
+            "required": True,
+            "from": ["{{ record.repo }}", "{{ target.name }}"],
+            "sensitive": True,
+        }
+    )
 
-    with pytest.raises(ValueError, match="unknown input"):
-        InputSpec.resolve_all(specs, overrides={"name": "api", "extra": "nope"})
+    assert spec.description == "Service name."
+    assert spec.scope == "target"
+    assert spec.from_ == ("{{ record.repo }}", "{{ target.name }}")
+    assert spec.sensitive is True
+
+
+def test_input_spec_infers_global_scope_without_from() -> None:
+    assert InputSpec.model_validate({"type": "str"}).scope == "global"
+
+
+def test_input_spec_rejects_from_on_global_scope_and_unknown_fields() -> None:
+    with pytest.raises(ValidationError, match=r"scope.*global.*from"):
+        InputSpec.model_validate({"scope": "global", "from": "{{ target.name }}"})
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        InputSpec.model_validate({"type": "str", "form": "{{ target.name }}"})
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        InputSpec.model_validate({"type": "str", "from_": "{{ target.name }}"})
 
 
 @pytest.mark.parametrize(

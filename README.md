@@ -102,6 +102,7 @@ untaped-recipe apply ./recipe-project ./service-a --yes
 untaped-recipe apply ./pack-project ./service-a --recipe playbook-migration --yes
 untaped-recipe apply ./recipe.yml ./service-a --yes
 untaped-recipe apply add-config --stdin --yes --format json
+untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
 untaped-recipe apply add-config ./service-a --dry-run
 untaped-recipe apply add-config ./service-a --check
 ```
@@ -124,6 +125,36 @@ Piped stdin accepts bare paths and untaped pipe records. For
 `workspace.workspace` records it uses `record.path`; for `workspace.repo`
 records it uses `Path(record.path) / record.repo`.
 
+Recipe inputs may be invocation-global or per-target. Input specs support
+`description`, `sensitive`, `scope`, and `from` in addition to `type`,
+`default`, and `required`. Omitted scope infers `target` when `from` is present
+and `global` otherwise. Per-target `from` values are sandboxed strict native
+Jinja strings evaluated only for scalar input derivation. They may combine
+literal text, string/number/boolean/null constants that Jinja parses without
+operators, and field access on `target.path`, `target.name`,
+`target.parent_path`, `target.parent_name`, or optional incoming pipe `record`.
+There are no ambient Jinja globals; control blocks, filters, tests, calls,
+operators, and collection literals are rejected, so negative numeric
+expressions like `{{ -1 }}` are not valid V1 sources. Missing, undefined, or
+null candidates fall through; `false`, `0`, and empty strings are real values.
+Oversized or non-scalar derived values are rejected.
+
+Use `--input-from NAME=JINJA` to override a per-target source, `--var` or
+`--vars` to provide fixed values, and `--interactive` to prompt for unresolved
+inputs. A fixed value and source override for the same input is rejected.
+`scope: global` rejects recipe `from` and `--input-from`, but accepts
+`--var`/`--vars`. Interactive prompts run before recipe defaults; an empty
+answer accepts the default when one exists. `--interactive --check` is
+rejected. With `--stdin --interactive`, target records still come from stdin
+and prompts use the controlling terminal. `--stdin` writes still require
+`--yes` unless `--dry-run` or `--check` is used.
+
+Every `recipe.outcome` row includes resolved declared inputs. Inputs marked
+`sensitive: true` are redacted in rows, warnings/errors, and backup metadata;
+diffs are suppressed for targets with sensitive inputs. Real values still reach
+templates and hooks. Backup file entries record redacted per-target inputs and
+never store the full incoming pipe record.
+
 ## Library Commands
 
 ```text
@@ -142,11 +173,11 @@ modules must live under the project's `src/` layout. Use explicit paths such as
 `./my-hook-project` when referring to a project in the current directory; bare
 hook names resolve through the library. `recipe remove`, `pack remove`,
 `pack recipe remove`, and `hook remove` require confirmation or `--yes`.
-`recipe check` and `pack check` are static preflight commands; they do not
-execute hooks against targets. `backup show` and `backup restore` accept full
-ids, unambiguous prefixes, or `latest`; restore uses the same transactional
-write path and symlink confinement as apply. Backups store text content and do
-not preserve file mode or mtime.
+`recipe check` and `pack check` are static preflight commands; they validate
+input source expressions but do not execute hooks against targets. `backup show`
+and `backup restore` accept full ids, unambiguous prefixes, or `latest`;
+restore uses the same transactional write path and symlink confinement as
+apply. Backups store text content and do not preserve file mode or mtime.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

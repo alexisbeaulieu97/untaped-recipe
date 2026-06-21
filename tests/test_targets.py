@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from untaped_recipe.application.targets import resolve_target_lines
+from untaped_recipe.application.targets import Target, resolve_target_lines
 
 
 def _env(kind: str | None, record: dict[str, object]) -> str:
@@ -16,8 +16,8 @@ def _env(kind: str | None, record: dict[str, object]) -> str:
 
 def test_resolves_bare_paths() -> None:
     assert resolve_target_lines([(1, "/tmp/a"), (2, "relative")]) == [
-        Path("/tmp/a"),
-        Path("relative"),
+        Target(path=Path("/tmp/a"), lineno=1),
+        Target(path=Path("relative"), lineno=2),
     ]
 
 
@@ -29,9 +29,24 @@ def test_resolves_workspace_pipe_kinds() -> None:
     ]
 
     assert resolve_target_lines(lines) == [
-        Path("/tmp/ws"),
-        Path("/tmp/ws/api"),
-        Path("/tmp/explicit"),
+        Target(
+            path=Path("/tmp/ws"),
+            record={"path": "/tmp/ws"},
+            kind="workspace.workspace",
+            lineno=1,
+        ),
+        Target(
+            path=Path("/tmp/ws/api"),
+            record={"path": "/tmp/ws", "repo": "api"},
+            kind="workspace.repo",
+            lineno=2,
+        ),
+        Target(
+            path=Path("/tmp/explicit"),
+            record={"path": "/tmp/explicit"},
+            kind="other.kind",
+            lineno=3,
+        ),
     ]
 
 

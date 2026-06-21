@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from untaped_recipe.domain.paths import safe_relative_path
 
@@ -66,6 +66,7 @@ class TargetPlan(BaseModel):
     changes: tuple[FileChange, ...] = ()
     warnings: tuple[str, ...] = ()
     error: str = ""
+    display_inputs: dict[str, object] = Field(default_factory=dict)
 
     @property
     def files_changed(self) -> int:

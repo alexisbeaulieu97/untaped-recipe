@@ -130,12 +130,14 @@ Recipe inputs may be invocation-global or per-target. Input specs support
 `default`, and `required`. Omitted scope infers `target` when `from` is present
 and `global` otherwise. Per-target `from` values are sandboxed strict native
 Jinja strings evaluated only for scalar input derivation. They may combine
-literal text, scalar literals, and field access on `target.path`,
-`target.name`, `target.parent_path`, `target.parent_name`, or optional
-incoming pipe `record`. There are no ambient Jinja globals; control blocks,
-filters, tests, calls, operators, and collection literals are rejected.
-Missing, undefined, or null candidates fall through; `false`, `0`, and empty
-strings are real values. Oversized or non-scalar derived values are rejected.
+literal text, string/number/boolean/null constants that Jinja parses without
+operators, and field access on `target.path`, `target.name`,
+`target.parent_path`, `target.parent_name`, or optional incoming pipe `record`.
+There are no ambient Jinja globals; control blocks, filters, tests, calls,
+operators, and collection literals are rejected, so negative numeric
+expressions like `{{ -1 }}` are not valid V1 sources. Missing, undefined, or
+null candidates fall through; `false`, `0`, and empty strings are real values.
+Oversized or non-scalar derived values are rejected.
 
 Use `--input-from NAME=JINJA` to override a per-target source, `--var` or
 `--vars` to provide fixed values, and `--interactive` to prompt for unresolved

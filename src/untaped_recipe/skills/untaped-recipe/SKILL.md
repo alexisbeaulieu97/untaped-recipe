@@ -57,14 +57,16 @@ plain directories.
   otherwise. `scope: global` rejects recipe `from` and CLI `--input-from`, but
   accepts fixed values from `--var` and `--vars`.
 - Per-target `from` values are sandboxed strict native Jinja strings used only
-  to derive scalar input values. They can combine literal text, scalar
-  literals, and field access on `target.path`, `target.name`,
-  `target.parent_path`, `target.parent_name`, and optional incoming pipe
-  `record`. They cannot change recipe structure, paths, hook names, or
-  template rendering. There are no ambient globals; control blocks, filters,
-  tests, calls, operators, and collection literals are rejected. Missing,
-  undefined, or null candidates fall through; `false`, `0`, and `""` are real
-  values. Oversized or non-scalar derived values are rejected.
+  to derive scalar input values. They can combine literal text,
+  string/number/boolean/null constants that Jinja parses without operators,
+  and field access on `target.path`, `target.name`, `target.parent_path`,
+  `target.parent_name`, and optional incoming pipe `record`. They cannot change
+  recipe structure, paths, hook names, or template rendering. There are no
+  ambient globals; control blocks, filters, tests, calls, operators, and
+  collection literals are rejected, so negative numeric expressions like
+  `{{ -1 }}` are not valid V1 sources. Missing, undefined, or null candidates
+  fall through; `false`, `0`, and `""` are real values. Oversized or non-scalar
+  derived values are rejected.
 - Input precedence is fixed value/source override, recipe `from`,
   `--interactive` prompt, recipe `default`, then required-input error. A fixed
   value and `--input-from` source override for the same input is a usage error.

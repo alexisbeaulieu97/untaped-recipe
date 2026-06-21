@@ -217,10 +217,12 @@ Omitted `scope` infers `target` when `from` is present and `global` otherwise.
 
 Per-target `from` values are sandboxed strict native Jinja strings. They are
 used only to derive scalar input values, not to change recipe structure, paths,
-hook names, or template rendering. They may combine literal text, scalar
-literals, and field access on `target` or optional `record`. Control blocks,
-filters, tests, calls, operators, and collection literals are rejected, and no
-ambient Jinja globals are available. The context contains:
+hook names, or template rendering. They may combine literal text,
+string/number/boolean/null constants that Jinja parses without operators, and
+field access on `target` or optional `record`. Control blocks, filters, tests,
+calls, operators, and collection literals are rejected, and no ambient Jinja
+globals are available. Negative numeric expressions like `{{ -1 }}` are not
+valid V1 sources. The context contains:
 
 - `target.path`: target path as a string.
 - `target.name`: target basename.

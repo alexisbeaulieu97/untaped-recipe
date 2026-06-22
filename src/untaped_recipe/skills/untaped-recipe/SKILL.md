@@ -16,10 +16,12 @@ plain directories.
 - Pass `--yes` for non-interactive applies.
 - Use `--dry-run` to preview without writing, `--vars file.yml` or repeated
   `--var KEY=VALUE` for inputs, and `--parallel N` for planning workers.
-- Preview output goes to stderr. The default `--preview table` renders changed
-  files with absolute paths, change kind, and line counts. Use `--preview diff`
-  for patch-compatible unified diffs, or `--preview none` for summary-only
-  preview output.
+- Preview output goes to stderr. Normal apply and `--dry-run` default to
+  `--preview table`, which renders changed files with absolute paths, change
+  kind, and line counts. `--check` defaults to summary-only preview output for
+  CI; pass `--preview table` when you want the same file table in check mode.
+  Use `--preview diff` for patch-compatible unified diffs, or `--preview none`
+  for summary-only preview output.
 - Use `--input-from KEY=JINJA` to override a per-target input source and
   `--interactive` to prompt for unresolved inputs. Do not combine
   `--interactive` with `--check`.

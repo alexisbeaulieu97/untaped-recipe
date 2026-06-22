@@ -4,20 +4,42 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
-from untaped.api import build_tool_app
+from untaped.api import build_tool_app, invalidate_settings_cache
 from untaped.testing import CliInvoker
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe import app
 from untaped_recipe.__main__ import SPEC
 from untaped_recipe.cli.common import library_root
+from untaped_recipe.cli.preview import _change_counts
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.infrastructure.backup import BackupStore
 
 pytestmark = pytest.mark.usefixtures("isolate_config")
+
+
+class _DeclineUi:
+    def confirm(self, message: str, *, default: bool = False) -> bool:
+        return False
+
+    def progress(self, message: str) -> _DeclineUi:
+        return self
+
+    def update(self, label: str, *, fraction: float | None = None) -> None:
+        pass
+
+    def message(self, kind: str, message: str) -> None:
+        print(message, file=sys.stderr)
+
+    def __enter__(self) -> _DeclineUi:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        return False
 
 
 def _write_hook_project(
@@ -127,6 +149,79 @@ def test_apply_dry_run_defaults_to_table_preview(
     assert "+++ b/out.txt" not in result.stderr
 
 
+def test_apply_table_preview_counts_prefix_like_diff_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "steps:\n"
+        "  - type: remove\n"
+        "    file: doc.yml\n"
+        "  - type: template\n"
+        "    template: plus.txt\n"
+        "    dest: plus.txt\n"
+    )
+    (tmp_path / "plus.txt").write_text("++same\n++same\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "doc.yml").write_text("---\nold\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert str(target / "doc.yml") in result.stderr
+    assert "+0 -2" in result.stderr
+    assert str(target / "plus.txt") in result.stderr
+    assert "+2 -0" in result.stderr
+
+
+def test_change_counts_handles_diff_header_like_lines_and_duplicates(tmp_path: Path) -> None:
+    removed = FileChange(
+        target=tmp_path,
+        relative_path=Path("doc.yml"),
+        before="---\nold\n",
+        after=None,
+    )
+    added = FileChange(
+        target=tmp_path,
+        relative_path=Path("plus.txt"),
+        before=None,
+        after="++same\n++same\n",
+    )
+
+    assert _change_counts(removed) == "+0 -2"
+    assert _change_counts(added) == "+2 -0"
+
+
+def test_apply_table_preview_renders_relative_target_as_absolute_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    monkeypatch.chdir(tmp_path)
+    recipe = Path("recipe.yml")
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    Path("template.txt").write_text("hello\n")
+    target = Path("target")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", "./recipe.yml", str(target), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert str(tmp_path / "target" / "out.txt") in result.stderr
+
+
 def test_apply_preview_diff_preserves_patch_headers(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
@@ -147,6 +242,31 @@ def test_apply_preview_diff_preserves_patch_headers(tmp_path: Path) -> None:
     assert "--- a/out.txt" in result.stderr
     assert "+++ b/out.txt" in result.stderr
     assert str(target / "out.txt") not in result.stderr
+
+
+def test_apply_diff_preview_renders_relative_target_context_as_absolute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    recipe = Path("recipe.yml")
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    Path("template.txt").write_text("hello\n")
+    target = Path("target")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", "./recipe.yml", str(target), "--dry-run", "--preview", "diff"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f"# {tmp_path / 'target'}" in result.stderr
+    assert "# target" not in result.stderr
+    assert "--- a/out.txt" in result.stderr
+    assert "+++ b/out.txt" in result.stderr
 
 
 def test_apply_preview_none_keeps_summary_without_table_or_hunks(tmp_path: Path) -> None:
@@ -226,6 +346,59 @@ def test_apply_table_preview_reports_planning_failures(
     assert "noop" in result.stderr
 
 
+def test_apply_table_preview_renders_relative_error_target_as_absolute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    monkeypatch.chdir(tmp_path)
+    recipe = Path("recipe.yml")
+    recipe.write_text("version: 1\nsteps:\n  - type: validate\n    hook: noop\n")
+    target = Path("target")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", "./recipe.yml", str(target), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert str(tmp_path / "target") in result.stderr
+    assert "noop" in result.stderr
+
+
+def test_apply_table_preview_renders_relative_sensitive_target_as_absolute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    monkeypatch.chdir(tmp_path)
+    recipe = Path("recipe.yml")
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token: {type: str, sensitive: true, required: true}\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    Path("template.txt").write_text("token={{ token }}\n")
+    target = Path("target")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", "./recipe.yml", str(target), "--var", "token=secret", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert str(tmp_path / "target") in result.stderr
+    assert "files_changed" in result.stderr
+    assert "out.txt" not in result.stderr
+    assert "secret" not in result.stderr
+
+
 def test_apply_quiet_mutes_post_run_info_but_not_preview(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
@@ -244,6 +417,58 @@ def test_apply_quiet_mutes_post_run_info_but_not_preview(tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
     assert "Recipe preview:" in result.stderr
     assert "Recipe dry run:" not in result.stderr
+
+
+def test_apply_table_preview_stays_table_when_collection_view_is_list(
+    tmp_path: Path,
+    isolate_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    isolate_config.write_text("profiles:\n  default:\n    ui:\n      collection_view: list\n")
+    invalidate_settings_cache()
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "path:" not in result.stderr
+    assert "│" in result.stderr
+    assert str(target / "out.txt") in result.stderr
+
+
+def test_apply_decline_renders_cancelled_summary_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    monkeypatch.setattr("untaped.batch._stdin_is_interactive", lambda: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--preview", "none"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (target / "out.txt").exists()
+    assert "Recipe apply cancelled:" in result.stderr
+    assert "1 changing target not applied" in result.stderr
 
 
 def test_apply_preserves_backup_when_write_rollback_is_incomplete(
@@ -379,9 +604,9 @@ def test_apply_check_reports_drift_without_writing_or_backing_up(
     assert rows[0]["status"] == "check"
     assert rows[0]["files_changed"] == 1
     assert "Recipe preview:" in drift.stderr
-    assert str(target / "out.txt") in drift.stderr
-    assert "action" in drift.stderr
-    assert "changes" in drift.stderr
+    assert str(target / "out.txt") not in drift.stderr
+    assert "action" not in drift.stderr
+    assert "changes" not in drift.stderr
 
     (target / "out.txt").write_text("hello\n")
     clean = CliInvoker().invoke(
@@ -395,6 +620,31 @@ def test_apply_check_reports_drift_without_writing_or_backing_up(
     assert rows[0]["files_changed"] == 0
     assert "Recipe preview:" in clean.stderr
     assert str(target / "out.txt") not in clean.stderr
+
+
+def test_apply_check_explicit_table_preview_reports_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--check", "--preview", "table"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Recipe preview:" in result.stderr
+    assert str(target / "out.txt") in result.stderr
+    assert "action" in result.stderr
+    assert "changes" in result.stderr
 
 
 def test_apply_stdin_requires_yes_and_resolves_workspace_repo_pipe(tmp_path: Path) -> None:

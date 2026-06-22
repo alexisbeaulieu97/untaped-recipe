@@ -205,7 +205,8 @@ Input specs support:
 - `required`: require a value after sources and defaults.
 - `description`: prompt/help text for humans.
 - `sensitive`: redact the value in output rows, warnings/errors, and backup
-  metadata; diffs are suppressed for targets with sensitive inputs.
+  metadata; file-level previews and diffs are suppressed for targets with
+  sensitive inputs.
 - `scope`: `global` for one value per invocation or `target` for a value that
   may vary per target.
 - `from`: one Jinja expression or an ordered list of candidate expressions.
@@ -344,10 +345,12 @@ untaped-recipe pack check ansible
 Important behavior:
 
 - Every target is planned before writes begin.
-- Preview output is written to stderr. The default `--preview table` shows
-  changed files with absolute paths, change kind, and line counts. Use
-  `--preview diff` for patch-compatible unified diffs or `--preview none` for
-  summary-only preview output.
+- Preview output is written to stderr. Normal apply and `--dry-run` default to
+  `--preview table`, which shows changed files with absolute paths, change
+  kind, and line counts. `--check` defaults to summary-only preview output for
+  CI; pass `--preview table` when you want the same file table in check mode.
+  Use `--preview diff` for patch-compatible unified diffs or `--preview none`
+  for summary-only preview output.
 - File-level preview details and diffs are suppressed for targets with
   sensitive inputs because the generated content may contain secret values.
 - Provide targets either as positional directories or with `--stdin`, not both.

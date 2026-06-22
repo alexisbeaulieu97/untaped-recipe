@@ -42,36 +42,57 @@ def preview_summary(plans: list[TargetPlan]) -> str:
     files_changed = sum(plan.files_changed for plan in plans if plan.status != "error")
     return (
         "Recipe preview: "
-        f"{plural(total, 'target')}, "
+        f"{_plural(total, 'target')}, "
         f"{changing} changing, "
         f"{unchanged} unchanged, "
         f"{failed} failed, "
-        f"{plural(files_changed, 'file')} changed"
+        f"{_plural(files_changed, 'file')} changed"
     )
 
 
-def plural(count: int, noun: str) -> str:
+def _plural(count: int, noun: str) -> str:
     """Render a simple English count."""
     suffix = "" if count == 1 else "s"
     return f"{count} {noun}{suffix}"
 
 
 def _render_diff_preview(recipe: Recipe, plans: list[TargetPlan]) -> None:
-    for plan in plans:
+    diffable_plans, suppressed_rows, error_rows = _preview_groups(recipe, plans)
+    for plan in diffable_plans:
         target = _display_target(plan)
-        if plan.changes and has_sensitive_inputs(recipe.inputs, plan.display_inputs):
-            echo(f"# {target}", err=True)
-            echo("diff suppressed for target with sensitive inputs", err=True)
-            continue
         for change in plan.changes:
             diff = unified_diff(change)
             if diff:
                 echo(f"# {target}", err=True)
                 echo(diff, err=True, nl=False)
+    _render_stderr_table(suppressed_rows, columns=["target", "files_changed"])
+    _render_stderr_table(error_rows, columns=["target", "error"])
 
 
 def _render_table_preview(recipe: Recipe, plans: list[TargetPlan]) -> None:
+    diffable_plans, suppressed_rows, error_rows = _preview_groups(recipe, plans)
     normal_rows: list[dict[str, object]] = []
+    for plan in diffable_plans:
+        if not plan.changes:
+            continue
+        normal_rows.extend(
+            {
+                "path": str(_display_change_path(change)),
+                "action": change.kind,
+                "changes": _change_counts(change),
+            }
+            for change in plan.changes
+        )
+    _render_stderr_table(normal_rows, columns=["path", "action", "changes"])
+    _render_stderr_table(suppressed_rows, columns=["target", "files_changed"])
+    _render_stderr_table(error_rows, columns=["target", "error"])
+
+
+def _preview_groups(
+    recipe: Recipe,
+    plans: list[TargetPlan],
+) -> tuple[list[TargetPlan], list[dict[str, object]], list[dict[str, object]]]:
+    diffable_plans: list[TargetPlan] = []
     suppressed_rows: list[dict[str, object]] = []
     error_rows: list[dict[str, object]] = []
     for plan in plans:
@@ -88,17 +109,8 @@ def _render_table_preview(recipe: Recipe, plans: list[TargetPlan]) -> None:
                 }
             )
             continue
-        normal_rows.extend(
-            {
-                "path": str(_display_change_path(change)),
-                "action": change.kind,
-                "changes": _change_counts(change),
-            }
-            for change in plan.changes
-        )
-    _render_stderr_table(normal_rows, columns=["path", "action", "changes"])
-    _render_stderr_table(suppressed_rows, columns=["target", "files_changed"])
-    _render_stderr_table(error_rows, columns=["target", "error"])
+        diffable_plans.append(plan)
+    return diffable_plans, suppressed_rows, error_rows
 
 
 def _render_stderr_table(rows: list[dict[str, object]], *, columns: list[str]) -> None:

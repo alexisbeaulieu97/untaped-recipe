@@ -34,7 +34,7 @@ from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import library_root, report_config_errors, settings
 from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.pack_commands import app as pack_app
-from untaped_recipe.cli.preview import PreviewMode, plural, render_preview
+from untaped_recipe.cli.preview import PreviewMode, render_preview
 from untaped_recipe.cli.recipe_commands import app as recipe_app
 from untaped_recipe.domain.plan import TargetPlan
 from untaped_recipe.domain.recipe import Recipe
@@ -476,7 +476,7 @@ def _render_result_summary(
         ui.message(
             "warning",
             "Recipe apply cancelled: "
-            f"{plural(changed, 'changing target')} not applied, "
+            f"{_plural(changed, 'changing target')} not applied, "
             f"{unchanged} unchanged, {failed} failed",
         )
         return
@@ -486,6 +486,11 @@ def _render_result_summary(
         kind,
         f"Recipe apply: {applied} applied, {unchanged} unchanged, {failed} failed{backup}",
     )
+
+
+def _plural(count: int, noun: str) -> str:
+    suffix = "" if count == 1 else "s"
+    return f"{count} {noun}{suffix}"
 
 
 def _row(plan: TargetPlan) -> dict[str, object]:

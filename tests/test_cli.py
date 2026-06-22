@@ -269,6 +269,74 @@ def test_apply_diff_preview_renders_relative_target_context_as_absolute(
     assert "+++ b/out.txt" in result.stderr
 
 
+def test_apply_diff_preview_renders_sensitive_target_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    monkeypatch.chdir(tmp_path)
+    recipe = Path("recipe.yml")
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  token: {type: str, sensitive: true, required: true}\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    Path("template.txt").write_text("token={{ token }}\n")
+    target = Path("target")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            "./recipe.yml",
+            str(target),
+            "--var",
+            "token=secret",
+            "--dry-run",
+            "--preview",
+            "diff",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert str(tmp_path / "target") in result.stderr
+    assert "files_changed" in result.stderr
+    assert "out.txt" not in result.stderr
+    assert "secret" not in result.stderr
+    assert "diff suppressed for target with sensitive inputs" not in result.stderr
+    assert "--- a/out.txt" not in result.stderr
+    assert "+++ b/out.txt" not in result.stderr
+
+
+def test_apply_diff_preview_renders_planning_failure_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "240")
+    monkeypatch.chdir(tmp_path)
+    recipe = Path("recipe.yml")
+    recipe.write_text("version: 1\nsteps:\n  - type: validate\n    hook: noop\n")
+    target = Path("target")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", "./recipe.yml", str(target), "--dry-run", "--preview", "diff"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert str(tmp_path / "target") in result.stderr
+    assert "error" in result.stderr
+    assert "noop" in result.stderr
+    assert "--- a/" not in result.stderr
+    assert "+++ b/" not in result.stderr
+
+
 def test_apply_preview_none_keeps_summary_without_table_or_hunks(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(

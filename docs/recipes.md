@@ -336,6 +336,7 @@ untaped-recipe apply ./pack-project ./repo-a --recipe playbook-migration --yes
 untaped-recipe apply add-config --stdin --yes --parallel 8 --format pipe
 untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
 untaped-recipe apply add-config ./repo-a --check
+untaped-recipe apply add-config ./repo-a --preview diff
 untaped-recipe recipe check add-config
 untaped-recipe pack check ansible
 ```
@@ -343,8 +344,12 @@ untaped-recipe pack check ansible
 Important behavior:
 
 - Every target is planned before writes begin.
-- Diffs are written to stderr. Diffs are suppressed for targets with sensitive
-  inputs because the generated content may contain secret values.
+- Preview output is written to stderr. The default `--preview table` shows
+  changed files with absolute paths, change kind, and line counts. Use
+  `--preview diff` for patch-compatible unified diffs or `--preview none` for
+  summary-only preview output.
+- File-level preview details and diffs are suppressed for targets with
+  sensitive inputs because the generated content may contain secret values.
 - Provide targets either as positional directories or with `--stdin`, not both.
 - Piped stdin requires `--yes` before planning unless `--dry-run` or `--check`
   is used.
@@ -368,6 +373,10 @@ Check-mode output uses the same `recipe.outcome` rows with `status: check`.
 Every `recipe.outcome` row includes an `inputs` mapping containing resolved
 declared recipe inputs. Sensitive values are rendered as `***`, and sensitive
 values are also redacted from row warnings and errors.
+`--format` and `--columns` affect stdout `recipe.outcome` rows only; they do
+not change the fixed-column stderr preview table. `--quiet` mutes post-run
+success chatter but does not mute selected preview detail, warnings, errors, or
+destructive confirmation prompts.
 
 ## Ansible Playbook Migration Example
 

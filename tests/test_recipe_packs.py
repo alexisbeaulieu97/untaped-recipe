@@ -515,6 +515,7 @@ def test_pack_check_reports_invalid_recipe_input_sources(tmp_path: Path) -> None
     assert rows[0]["status"] == "error"
     assert "playbook: invalid input source expression for service" in rows[0]["error"]
     assert "Traceback" not in result.output
+    assert "Recipe preview:" not in result.stderr
 
 
 def test_apply_supports_pack_refs_local_pack_recipe_selector_and_backup_refs(

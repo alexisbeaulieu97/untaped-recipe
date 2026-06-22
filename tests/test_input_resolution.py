@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from untaped.errors import ConfigError
+from untaped.api import ConfigError
 
 from untaped_recipe.application.inputs import (
     InputResolutionConfig,

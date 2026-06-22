@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Iterable
 from pathlib import Path
 
-from untaped.errors import UntapedError
+from untaped.api import UntapedError
 
 from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.plan import FileChange

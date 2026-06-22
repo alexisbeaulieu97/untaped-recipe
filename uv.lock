@@ -724,8 +724,8 @@ wheels = [
 
 [[package]]
 name = "untaped"
-version = "2.2.0"
-source = { git = "https://github.com/alexisbeaulieu97/untaped.git?rev=v2.2.0#ae573b76736ab5e62246415a0910ffb409e003fb" }
+version = "2.3.0"
+source = { git = "https://github.com/alexisbeaulieu97/untaped.git?rev=v2.3.0#f47e23c5e3f50e21049860845a46bdda4c4dd8a8" }
 dependencies = [
     { name = "cyclopts" },
     { name = "filelock" },
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "untaped-recipe"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "cyclopts" },
@@ -770,7 +770,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruamel-yaml", specifier = ">=0.18.16" },
     { name = "tomlkit", specifier = ">=0.13,<1" },
-    { name = "untaped", git = "https://github.com/alexisbeaulieu97/untaped.git?rev=v2.2.0" },
+    { name = "untaped", git = "https://github.com/alexisbeaulieu97/untaped.git?rev=v2.3.0" },
 ]
 
 [package.metadata.requires-dev]

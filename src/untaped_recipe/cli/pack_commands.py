@@ -11,12 +11,12 @@ from pydantic import ValidationError
 from untaped.api import (
     ColumnsOption,
     FormatOption,
+    batch_apply,
     create_app,
     echo,
     render_rows,
     ui_context,
 )
-from untaped.batch import batch_apply
 
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
 from untaped_recipe.cli.recipe_commands import (

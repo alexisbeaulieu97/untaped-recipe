@@ -430,6 +430,9 @@ def test_cli_recipe_and_pack_authoring_workflows(
     assert (
         "def validate" in (recipe_project / "src" / "demo_hooks" / "hooks" / "check.py").read_text()
     )
+    recipe_pyproject = (recipe_project / "pyproject.toml").read_text()
+    assert 'kind = "validate"' in recipe_pyproject
+    assert 'module = "demo_hooks.hooks.check"' in recipe_pyproject
 
     added_recipe = invoker.invoke(app, ["recipe", "add", str(recipe_project)])
     assert added_recipe.exit_code == 0, added_recipe.output
@@ -451,6 +454,9 @@ def test_cli_recipe_and_pack_authoring_workflows(
         ["pack", "hook", "init", str(pack_project), "check", "--kind", "validate"],
     )
     assert pack_hook.exit_code == 0, pack_hook.output
+    pack_pyproject = (pack_project / "pyproject.toml").read_text()
+    assert 'kind = "validate"' in pack_pyproject
+    assert 'module = "ansible_hooks.hooks.check"' in pack_pyproject
 
     added_pack = invoker.invoke(app, ["pack", "add", str(pack_project)])
     assert added_pack.exit_code == 0, added_pack.output

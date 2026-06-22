@@ -70,8 +70,12 @@ External hooks live in uv-managed hook projects with a
 
 ```toml
 [tool.untaped_recipe.hooks]
-"ansible.add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
+"ansible.add_play_collections" = { kind = "transform", module = "ansible_hooks.hooks.add_play_collections" }
 ```
+
+Every hook row must declare `kind = "transform"` or `kind = "validate"`.
+Older rows that only declare `module` must be updated before the hook project
+can be used.
 
 Supported hook forms are:
 
@@ -182,8 +186,9 @@ modules must live under the project's `src/` layout. Use explicit paths such as
 hook names resolve through the library. `recipe remove`, `pack remove`,
 `pack recipe remove`, and `hook remove` require confirmation or `--yes`.
 `recipe check` and `pack check` are static preflight commands; they validate
-input source expressions but do not execute hooks against targets. `backup show`
-and `backup restore` accept full ids, unambiguous prefixes, or `latest`;
+input source expressions and reject recipe steps whose type does not match the
+resolved hook kind, but do not execute hooks against targets. `backup show` and
+`backup restore` accept full ids, unambiguous prefixes, or `latest`;
 restore uses the same transactional write path and symlink confinement as
 apply. Backups store text content and do not preserve file mode or mtime.
 

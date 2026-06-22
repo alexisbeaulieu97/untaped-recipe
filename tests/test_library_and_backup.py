@@ -118,7 +118,7 @@ def _write_hook_project(
         'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n"
-        f'"{hook_name}" = {{ module = "{package}.hooks.{hook_name}" }}\n'
+        f'"{hook_name}" = {{ kind = "transform", module = "{package}.hooks.{hook_name}" }}\n'
     )
     (root / "uv.lock").write_text("version = 1\n")
 

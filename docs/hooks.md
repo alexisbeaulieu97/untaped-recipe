@@ -42,7 +42,20 @@ Hook metadata lives in `pyproject.toml`:
 
 ```toml
 [tool.untaped_recipe.hooks]
+"set_owner" = { kind = "transform", module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
+```
+
+The hook `kind` is required and must be either `transform` or `validate`.
+Older manifests such as:
+
+```toml
 "set_owner" = { module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
+```
+
+must be migrated by adding the matching kind:
+
+```toml
+"set_owner" = { kind = "transform", module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
 ```
 
 Recipe-local hooks use the same project shape inside a standalone recipe
@@ -86,8 +99,11 @@ For `hook: set_owner`, resolution checks:
 3. packaged built-ins such as `yaml_edit`
 
 The hook key must exist in the project's `[tool.untaped_recipe.hooks]` table,
-and uv hook projects must have a `uv.lock`. Missing or stale lockfiles fail
-planning for the affected target.
+the hook row must declare a matching `kind`, and uv hook projects must have a
+`uv.lock`. Missing or stale lockfiles fail planning for the affected target.
+`recipe check` and `pack check` reject validate steps wired to transform hooks,
+and transform steps wired to validate hooks, without importing or executing the
+hook body.
 
 ## Execution Model
 

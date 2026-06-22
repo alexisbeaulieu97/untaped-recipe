@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
-from untaped_recipe.builtins.registry import BUILTIN_HOOKS
+from untaped_recipe.builtins.registry import BUILTIN_HOOKS, BuiltinHook
 from untaped_recipe.domain.hook_project import (
+    HookKind,
     HookProjectMetadata,
     is_valid_dotted_name,
     project_name_for_hook,
@@ -20,6 +21,8 @@ from untaped_recipe.domain.hook_project import (
 class BuiltinHookRef:
     """Reference to an engine-owned built-in hook module."""
 
+    name: str
+    kind: HookKind
     module: ModuleType
 
 
@@ -27,6 +30,8 @@ class BuiltinHookRef:
 class UvHookRef:
     """Reference to an external uv-managed hook project."""
 
+    name: str
+    kind: HookKind
     project_root: Path
     module: str
 
@@ -41,7 +46,7 @@ class HookResolver:
         self,
         *,
         global_hooks: Path,
-        builtins: dict[str, ModuleType] | None = None,
+        builtins: dict[str, BuiltinHook] | None = None,
     ) -> None:
         self._global_hooks = global_hooks
         self._builtins = builtins if builtins is not None else BUILTIN_HOOKS
@@ -60,7 +65,7 @@ class HookResolver:
             return global_ref
         builtin = self._builtins.get(name)
         if builtin is not None:
-            return BuiltinHookRef(module=builtin)
+            return BuiltinHookRef(name=name, kind=builtin.kind, module=builtin.module)
         raise ValueError(f"hook not found: {name}")
 
     def _global_project_root(self, name: str) -> Path:
@@ -78,6 +83,8 @@ class HookResolver:
             raise ValueError(f"hook project is missing uv.lock: {project_root}")
         validate_hook_modules(project_root, metadata)
         return UvHookRef(
+            name=public_name,
+            kind=definition.kind,
             project_root=project_root,
             module=definition.module,
         )

@@ -67,7 +67,8 @@ def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:
     hook_rows: list[str] = []
     for name, code in hooks.items():
         (recipe_dir / "src" / package / "hooks" / f"{name}.py").write_text(code)
-        hook_rows.append(f'"{name}" = {{ module = "{package}.hooks.{name}" }}')
+        kind = "validate" if "def validate" in code else "transform"
+        hook_rows.append(f'"{name}" = {{ kind = "{kind}", module = "{package}.hooks.{name}" }}')
     (recipe_dir / "pyproject.toml").write_text(
         "[project]\n"
         'name = "recipe-hooks"\n'
@@ -163,6 +164,31 @@ def test_apply_recipe_failing_validate_aborts_target_without_changes(tmp_path: P
         )
 
     assert list(target.iterdir()) == []
+
+
+def test_apply_recipe_rejects_step_hook_kind_mismatch_before_worker_call(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    _write_hook_project(
+        recipe_dir,
+        {
+            "check": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content\n"
+            )
+        },
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [{"type": "validate", "hook": "check"}],
+        }
+    )
+
+    with pytest.raises(ValueError, match="validate step hook 'check' resolves to transform hook"):
+        _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
 
 
 def test_optional_transform_skips_missing_disk_files_with_warning(tmp_path: Path) -> None:

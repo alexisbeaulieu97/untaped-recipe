@@ -19,7 +19,7 @@ from untaped.api import (
 
 from untaped_recipe.application.inputs import validate_recipe_input_sources
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
-from untaped_recipe.domain.hook_project import read_hook_metadata, validate_hook_modules
+from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata, validate_hook_modules
 from untaped_recipe.domain.paths import confined_path, is_explicit_path
 from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
 from untaped_recipe.infrastructure.hook_library import add_hook_to_project
@@ -260,5 +260,19 @@ def _check_local_hook_project(local_hook_project: Path | None) -> None:
 def _check_hooks(recipe: Recipe, root: Path, local_hook_project: Path | None) -> None:
     resolver = HookResolver(global_hooks=root / "hooks")
     for step in recipe.steps:
-        if isinstance(step, TransformStep | ValidateStep):
-            resolver.resolve(step.hook, local_hook_project)
+        if isinstance(step, TransformStep):
+            _check_hook_kind(resolver, step.hook, local_hook_project, expected="transform")
+        elif isinstance(step, ValidateStep):
+            _check_hook_kind(resolver, step.hook, local_hook_project, expected="validate")
+
+
+def _check_hook_kind(
+    resolver: HookResolver,
+    hook: str,
+    local_hook_project: Path | None,
+    *,
+    expected: HookKind,
+) -> None:
+    ref = resolver.resolve(hook, local_hook_project)
+    if ref.kind != expected:
+        raise ValueError(f"{expected} step hook {hook!r} resolves to {ref.kind} hook")

@@ -129,7 +129,7 @@ Hooks resolve in this order:
 
 Hook names in recipes must be safe logical names, not filesystem paths.
 Recipes never declare hook runtimes. The resolver returns either a built-in
-reference or a uv hook project reference.
+reference or a uv hook project reference with a declared hook kind.
 
 ## Recipe Schema
 
@@ -197,8 +197,13 @@ recipe or pack project:
 
 ```toml
 [tool.untaped_recipe.hooks]
-"ansible.add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
+"ansible.add_play_collections" = { kind = "transform", module = "ansible_hooks.hooks.add_play_collections" }
 ```
+
+`kind` is required and must be `transform` or `validate`; old hook rows that
+only declare `module` are invalid and must be migrated. `recipe check` and
+`pack check` reject recipe steps whose type does not match the resolved hook
+kind.
 
 External hooks run out-of-process through NDJSON stdin/stdout workers. Worker
 stdout is protocol-only; hook `print()` output is redirected to stderr. The

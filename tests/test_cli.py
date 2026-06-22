@@ -59,6 +59,7 @@ def _write_hook_project(
         if (root / "recipe.yml").is_file()
         else ""
     )
+    kind = "validate" if "def validate" in code else "transform"
     (root / "pyproject.toml").write_text(
         "[project]\n"
         f'name = "{root.name}-hooks"\n'
@@ -67,7 +68,7 @@ def _write_hook_project(
         "dependencies = []\n\n"
         f"{recipe_metadata}"
         "[tool.untaped_recipe.hooks]\n"
-        f'"{public_name}" = {{ module = "{package}.hooks.{module_name}" }}\n'
+        f'"{public_name}" = {{ kind = "{kind}", module = "{package}.hooks.{module_name}" }}\n'
     )
     subprocess.run(["uv", "lock"], cwd=root, check=True)
 
@@ -1681,6 +1682,10 @@ def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.Mo
     initialized_path = Path(initialized_hook.stdout.strip())
     assert (initialized_path / "pyproject.toml").is_file()
     assert (initialized_path / "uv.lock").is_file()
+    assert (
+        '"check" = { kind = "transform", module = "untaped_recipe_hooks_check.hooks.check" }'
+        in (initialized_path / "pyproject.toml").read_text()
+    )
 
     listed_initialized_hooks = invoker.invoke(app, ["hook", "list", "--format", "json"])
     assert listed_initialized_hooks.exit_code == 0, listed_initialized_hooks.output
@@ -1758,6 +1763,40 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
         }
     ]
     assert "Recipe preview:" not in result.stderr
+
+
+def test_recipe_check_rejects_step_hook_kind_mismatch(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\nsteps:\n  - type: validate\n    hook: check\n"
+    )
+    package = recipe_dir / "src" / "recipe_hooks" / "hooks"
+    package.mkdir(parents=True)
+    (recipe_dir / "src" / "recipe_hooks" / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "check.py").write_text(
+        "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+    )
+    (recipe_dir / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "recipe-hooks"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.recipes]\n"
+        '"demo" = { path = "recipe.yml" }\n\n'
+        "[tool.untaped_recipe.hooks]\n"
+        '"check" = { kind = "transform", module = "recipe_hooks.hooks.check" }\n'
+    )
+    (recipe_dir / "uv.lock").write_text("version = 1\n")
+
+    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert "validate step hook 'check' resolves to transform hook" in rows[0]["error"]
 
 
 @pytest.mark.parametrize(
@@ -1899,7 +1938,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path
             "[tool.untaped_recipe.recipes]\n"
             '"demo" = { path = "recipe.yml" }\n\n'
             "[tool.untaped_recipe.hooks]\n"
-            '"bad-name" = { module = "recipe_hooks.hooks.check" }\n',
+            '"bad-name" = { kind = "validate", module = "recipe_hooks.hooks.check" }\n',
             "invalid hook name",
         ),
         (

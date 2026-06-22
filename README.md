@@ -109,16 +109,18 @@ untaped-recipe apply add-config ./service-a --preview diff
 ```
 
 `apply` plans every target first, prints a stderr preview, then asks for
-confirmation unless `--yes` is passed. The default `--preview table` shows a
-file-level table with absolute paths, change kind, and line counts. Use
-`--preview diff` for patch-compatible unified diffs with `a/` and `b/`
+confirmation unless `--yes` is passed. Normal apply and `--dry-run` default to
+`--preview table`, which shows a file-level table with absolute paths, change
+kind, and line counts. `--check` defaults to summary-only preview output for
+CI; pass `--preview table` when you want the same file table in check mode.
+Use `--preview diff` for patch-compatible unified diffs with `a/` and `b/`
 relative paths, or `--preview none` for summary-only runs. `--preview` controls
 safety review detail; `--quiet` only mutes success chatter after the run.
 Backups are created by default before writing and can be restored later. Target
 writes are transactional: if a target cannot be written safely, that target is
 rolled back and reported as failed. Use `--check` for CI or compliance checks:
-it writes nothing, creates no backups, and exits non-zero when any target would
-change.
+it writes nothing, creates no backups, prompts for nothing, and exits non-zero
+when any target would change.
 
 Recipes can list known candidate files explicitly for `transform` and `remove`
 steps. `transform.files` and `remove.files` are expanded into ordinary

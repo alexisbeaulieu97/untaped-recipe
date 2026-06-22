@@ -27,19 +27,19 @@ from untaped.api import (
 
 from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
-from untaped_recipe.application.inputs import PromptFunc, has_sensitive_inputs
+from untaped_recipe.application.inputs import PromptFunc
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import library_root, report_config_errors, settings
 from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.pack_commands import app as pack_app
+from untaped_recipe.cli.preview import PreviewMode, render_preview
 from untaped_recipe.cli.recipe_commands import app as recipe_app
-from untaped_recipe.domain.plan import FileChange, TargetPlan
+from untaped_recipe.domain.plan import TargetPlan
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolver, RecipeLibrary
 from untaped_recipe.infrastructure.backup import BackupDraft
-from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
@@ -50,7 +50,6 @@ app.command(pack_app, name="pack")
 app.command(hook_app, name="hook")
 app.command(backup_app, name="backup")
 
-PreviewMode = Literal["table", "diff", "none"]
 MessageKind = Literal["success", "warning", "error", "info"]
 
 
@@ -72,6 +71,7 @@ class ApplyExecution:
     applied: frozenset[int]
     failed: dict[int, str]
     backup_id: str | None = None
+    cancelled: bool = False
 
 
 @app.command(name="apply")
@@ -140,12 +140,15 @@ def apply_command(
         Parameter(name="--hook-timeout", help="Per-hook timeout in seconds; 0 disables."),
     ] = None,
     preview: Annotated[
-        PreviewMode,
+        PreviewMode | None,
         Parameter(
             name="--preview",
-            help="Preview style: table, diff, or none.",
+            help=(
+                "Preview style: table, diff, or none. "
+                "Defaults to none with --check, table otherwise."
+            ),
         ),
-    ] = "table",
+    ] = None,
     fmt: FormatOption = "table",
     columns: ColumnsOption = None,
 ) -> None:
@@ -172,7 +175,8 @@ def apply_command(
                 hook_timeout_seconds=_hook_timeout_seconds(hook_timeout),
                 recipe_id=recipe_id,
             )
-            _render_preview(context, preview=preview)
+            effective_preview = _effective_preview(preview, check=check)
+            render_preview(context.recipe, context.plans, preview=effective_preview)
             outcome = _execute_plans(
                 context,
                 backup=backup and not check,
@@ -188,7 +192,7 @@ def apply_command(
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.outcome")
         if rendered:
             echo(rendered)
-        _render_result_summary(rows, outcome, check=check, dry_run=dry_run)
+        _render_result_summary(context.plans, outcome, check=check, dry_run=dry_run)
         has_errors = any(plan.status == "error" for plan in context.plans)
         has_drift = check and any(plan.status != "error" and plan.changes for plan in context.plans)
         if has_errors or outcome.outcome.any_failed or has_drift:
@@ -261,70 +265,12 @@ def _load_recipe(recipe_path: Path) -> Recipe:
         raise ConfigError(str(exc)) from exc
 
 
-def _render_preview(context: ApplyContext, *, preview: PreviewMode) -> None:
-    echo(_preview_summary(context.plans), err=True)
-    if preview == "none":
-        return
-    if preview == "diff":
-        _render_diff_preview(context)
-        return
-    _render_table_preview(context)
-
-
-def _render_diff_preview(context: ApplyContext) -> None:
-    for plan in context.plans:
-        if plan.changes and has_sensitive_inputs(context.recipe.inputs, plan.display_inputs):
-            echo(f"# {plan.target}", err=True)
-            echo("diff suppressed for target with sensitive inputs", err=True)
-            continue
-        for change in plan.changes:
-            diff = unified_diff(change)
-            if diff:
-                echo(f"# {plan.target}", err=True)
-                echo(diff, err=True, nl=False)
-
-
-def _render_table_preview(context: ApplyContext) -> None:
-    rows: list[dict[str, object]] = []
-    suppressed_rows: list[dict[str, object]] = []
-    error_rows: list[dict[str, object]] = []
-    for plan in context.plans:
-        if plan.status == "error":
-            error_rows.append({"target": str(plan.target), "error": plan.error})
-            continue
-        if not plan.changes:
-            continue
-        if has_sensitive_inputs(context.recipe.inputs, plan.display_inputs):
-            suppressed_rows.append(
-                {
-                    "target": str(plan.target),
-                    "files_changed": plan.files_changed,
-                }
-            )
-            continue
-        rows.extend(
-            {
-                "path": str(change.path),
-                "action": change.kind,
-                "changes": _change_counts(change),
-            }
-            for change in plan.changes
-        )
-    _render_stderr_table(rows, columns=["path", "action", "changes"])
-    _render_stderr_table(suppressed_rows, columns=["target", "files_changed"])
-    _render_stderr_table(error_rows, columns=["target", "error"])
-
-
-def _render_stderr_table(rows: list[dict[str, object]], *, columns: list[str]) -> None:
-    if not rows:
-        return
-    rendered = ui_context(stdout=sys.stderr, stderr=sys.stderr, strict=False).collection(
-        rows,
-        fmt="table",
-        columns=columns,
-    )
-    if rendered:
-        echo(rendered, err=True)
+def _effective_preview(preview: PreviewMode | None, *, check: bool) -> PreviewMode:
+    if preview is not None:
+        return preview
+    if check:
+        return "none"
+    return "table"
 
 
 def _execute_plans(
@@ -383,11 +329,13 @@ def _execute_plans(
     backup_id = draft.id if draft is not None and draft.entries else None
     if draft is not None:
         draft.discard_if_empty()
+    cancelled = bool(actionable) and not dry_run and not outcome.results and not outcome.failed
     return ApplyExecution(
         outcome=outcome,
         applied=frozenset(applied),
         failed=failed,
         backup_id=backup_id,
+        cancelled=cancelled,
     )
 
 
@@ -498,44 +446,17 @@ def _preview_status(dry_run: bool, check: bool) -> str | None:
     return None
 
 
-def _preview_summary(plans: list[TargetPlan]) -> str:
-    total = len(plans)
-    failed = sum(1 for plan in plans if plan.status == "error")
-    changing = sum(1 for plan in plans if plan.status != "error" and plan.changes)
-    unchanged = sum(1 for plan in plans if plan.status != "error" and not plan.changes)
-    files_changed = sum(plan.files_changed for plan in plans if plan.status != "error")
-    return (
-        "Recipe preview: "
-        f"{_plural(total, 'target')}, "
-        f"{changing} changing, "
-        f"{unchanged} unchanged, "
-        f"{failed} failed, "
-        f"{_plural(files_changed, 'file')} changed"
-    )
-
-
 def _render_result_summary(
-    rows: list[dict[str, object]],
+    plans: list[TargetPlan],
     execution: ApplyExecution,
     *,
     check: bool,
     dry_run: bool,
 ) -> None:
-    failed = 0
-    changed = 0
-    unchanged = 0
-    applied = 0
-    for row in rows:
-        status = str(row["status"])
-        if status == "error":
-            failed += 1
-            continue
-        if status == "applied":
-            applied += 1
-        if _row_files_changed(row) > 0:
-            changed += 1
-        else:
-            unchanged += 1
+    failed = sum(1 for plan in plans if plan.status == "error") + len(execution.failed)
+    changed = sum(1 for plan in plans if plan.status != "error" and plan.changes)
+    unchanged = sum(1 for plan in plans if plan.status != "error" and not plan.changes)
+    applied = len(execution.applied)
     ui = ui_context(strict=False)
     if check:
         kind: MessageKind = "warning" if failed or changed else "info"
@@ -551,35 +472,20 @@ def _render_result_summary(
             f"Recipe dry run: {changed} would change, {unchanged} unchanged, {failed} failed",
         )
         return
+    if execution.cancelled:
+        ui.message(
+            "warning",
+            "Recipe apply cancelled: "
+            f"{_plural(changed, 'changing target')} not applied, "
+            f"{unchanged} unchanged, {failed} failed",
+        )
+        return
     kind = "warning" if failed else "info"
     backup = f", backup {execution.backup_id}" if execution.backup_id else ""
     ui.message(
         kind,
         f"Recipe apply: {applied} applied, {unchanged} unchanged, {failed} failed{backup}",
     )
-
-
-def _row_files_changed(row: dict[str, object]) -> int:
-    value = row["files_changed"]
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        return int(value)
-    raise TypeError(f"invalid files_changed value: {value!r}")
-
-
-def _change_counts(change: FileChange) -> str:
-    diff = unified_diff(change)
-    additions = 0
-    deletions = 0
-    for line in diff.splitlines():
-        if line.startswith("+++") or line.startswith("---"):
-            continue
-        if line.startswith("+"):
-            additions += 1
-        elif line.startswith("-"):
-            deletions += 1
-    return f"+{additions} -{deletions}"
 
 
 def _plural(count: int, noun: str) -> str:

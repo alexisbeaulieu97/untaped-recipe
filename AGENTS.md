@@ -48,7 +48,7 @@ recipe execution, previews, backups, and restore.
 src/untaped_recipe/
 ├── __main__.py          # SDK ToolSpec and console-script entry point
 ├── settings.py          # recipe settings section
-├── cli/                 # Cyclopts commands and output rendering
+├── cli/                 # Cyclopts commands, output rows, and preview rendering
 ├── application/         # apply orchestration, target parsing, ports
 ├── domain/              # schema, verdicts, file changes, plans
 ├── infrastructure/      # libraries, hook resolution/execution, backups, diffs, YAML
@@ -56,13 +56,16 @@ src/untaped_recipe/
 └── skills/              # packaged agent skill
 ```
 
-The `application` layer plans all target changes in memory. The CLI renders a
-table-first preview by default, can render patch-compatible unified diffs with
-`--preview diff`, and calls the SDK batch confirmation helper with the generic
-target-row preview suppressed because recipe owns richer file-level preview
-detail. Successful target plans are flushed only after confirmation and one
-backup bundle has been created for the invocation. Target parsing preserves
-optional untaped pipe record context for per-target input derivation;
+The `application` layer plans all target changes in memory. The CLI renders
+stderr previews from `cli/preview.py`: normal apply and `--dry-run` default to
+a file-level table, while `--check` defaults to summary-only CI output unless
+`--preview table` or `--preview diff` is passed. Diff mode keeps
+patch-compatible `a/` and `b/` headers. The command path calls the SDK batch
+confirmation helper with the generic target-row preview suppressed because
+recipe owns richer file-level preview detail. Successful target plans are
+flushed only after confirmation and one backup bundle has been created for the
+invocation. Target parsing preserves optional untaped pipe record context for
+per-target input derivation;
 `ApplyRecipe` still receives only a concrete target path plus resolved plain
 inputs.
 
@@ -181,9 +184,9 @@ through a controlling terminal.
 
 `recipe.outcome` rows and backup file metadata include resolved declared
 inputs only. Sensitive input values are redacted in rows, warnings/errors, and
-backup metadata; diffs are suppressed for targets with sensitive inputs. Real
-values still reach templates and hooks. Never copy the full incoming pipe record
-into rows or backups.
+backup metadata; file-level previews and diffs are suppressed for targets with
+sensitive inputs. Real values still reach templates and hooks. Never copy the
+full incoming pipe record into rows or backups.
 
 ## Hook Contracts
 

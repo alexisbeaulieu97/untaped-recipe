@@ -45,6 +45,9 @@ plain directories.
   project directories; `remove` is destructive and requires confirmation or
   `--yes`. `hook add` derives the library directory from the declared hook
   metadata; `--name`, if passed, must match that derived name.
+- `untaped-recipe hook run <hook> --target DIR` invokes one hook against
+  explicit fixture context without running a full recipe or writing target
+  files.
 
 ## Recipe Model
 
@@ -92,6 +95,16 @@ plain directories.
   alongside `module`; old rows that only declare `module` are invalid.
 - `recipe check` and `pack check` reject steps whose type does not match the
   resolved hook kind.
+- `hook run` resolves explicit `--project PATH`, then a cwd hook project, then
+  global hooks, then built-ins. Transform hooks require `--file`; default
+  stdout is exact transformed content with no added newline, and `--diff`
+  switches stdout to a unified diff. Validate hooks reject file/content options
+  and emit a `recipe.hook_run` verdict record.
+- `hook run` accepts `--inputs`/`--args` YAML mapping files plus repeated
+  YAML-parsed `--input KEY=VALUE` and `--arg KEY=VALUE` overrides. It prints
+  resolved context and hook diagnostics to stderr; SDK `--quiet` suppresses
+  context chatter but not hook diagnostics or errors. Structured
+  `--format json|yaml|table|pipe` omits raw input and arg values.
 - Use `untaped-recipe recipe init <name>` and
   `untaped-recipe pack init <name>` to scaffold authoring projects. Add local
   hooks with `untaped-recipe recipe hook init <recipe> <hook>` or
@@ -128,8 +141,8 @@ plain directories.
 - Prefer `--format json` for machine-readable summaries and `--format pipe`
   when chaining into other untaped tools.
 - Use `--columns` to narrow list/output rows. `apply` emits `recipe.outcome`
-  rows; library commands emit `recipe.recipe`, `recipe.hook`, and
-  `recipe.backup`.
+  rows; `hook run` emits `recipe.hook_run`; library commands emit
+  `recipe.recipe`, `recipe.hook`, and `recipe.backup`.
 - Optional transform skips appear in the `warnings` field of `recipe.outcome`
   rows as a semicolon-delimited string.
 - Apply rows and backup metadata use canonical recipe refs: `foo` for

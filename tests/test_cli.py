@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from untaped.api import build_tool_app, invalidate_settings_cache
@@ -14,7 +15,9 @@ from untaped.testing import CliInvoker
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe import app
 from untaped_recipe.__main__ import SPEC
+from untaped_recipe.builtins.registry import BUILTIN_HOOKS, BuiltinHook
 from untaped_recipe.cli.common import library_root
+from untaped_recipe.domain.hook_project import project_name_for_hook
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.infrastructure.backup import BackupStore
 
@@ -1630,6 +1633,492 @@ def test_external_hook_args_with_yaml_dates_cross_worker_as_strings(tmp_path: Pa
 
     assert result.exit_code == 0, result.output
     assert "day=2026-06-19" in (target / "local.yml").read_text()
+
+
+def test_hook_run_transform_reads_disk_and_emits_exact_content(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="append",
+        module_name="append",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    print('external diagnostic')\n"
+            "    return content + args['suffix']\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("start")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "append",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+            "--arg",
+            "suffix='!'",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "start!"
+    assert (target / "local.txt").read_text() == "start"
+    assert "external diagnostic" in result.stderr
+    assert str(target) in result.stderr
+    assert "local.txt" in result.stderr
+    assert '"suffix": "!"' in result.stderr
+
+
+def test_hook_run_transform_content_overrides_do_not_require_existing_file(
+    tmp_path: Path,
+) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="show_context",
+        module_name="show_context",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return content + '|' + file.name + '|' + target.name\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    content_file = tmp_path / "fixture.txt"
+    content_file.write_text("from-file")
+
+    literal = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "show_context",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "missing.txt",
+            "--content",
+            "literal",
+        ],
+    )
+    stdin = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "show_context",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "stdin.txt",
+            "--content",
+            "-",
+        ],
+        input="from-stdin",
+    )
+    file_result = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "show_context",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "file.txt",
+            "--content-file",
+            str(content_file),
+        ],
+    )
+
+    assert literal.exit_code == 0, literal.output
+    assert literal.stdout == "literal|missing.txt|target"
+    assert stdin.exit_code == 0, stdin.output
+    assert stdin.stdout == "from-stdin|stdin.txt|target"
+    assert file_result.exit_code == 0, file_result.output
+    assert file_result.stdout == "from-file|file.txt|target"
+
+
+def test_hook_run_transform_diff_and_structured_output(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="replace",
+        module_name="replace",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return content.replace('old', 'new')\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("old\n")
+
+    diff = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "replace",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+            "--diff",
+        ],
+    )
+    structured = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "replace",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+            "--diff",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert diff.exit_code == 0, diff.output
+    assert "--- a/local.txt" in diff.stdout
+    assert "+++ b/local.txt" in diff.stdout
+    assert "-old" in diff.stdout
+    assert "+new" in diff.stdout
+    assert structured.exit_code == 0, structured.output
+    row = json.loads(structured.stdout)
+    assert row["content"] == "new\n"
+    assert "--- a/local.txt" in row["diff"]
+    assert "inputs" not in row
+    assert "args" not in row
+
+
+def test_hook_run_validate_records_and_fail_exit(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="ready",
+        module_name="ready",
+        code=(
+            "def validate(*, inputs, target, args, helpers):\n"
+            "    if args.get('fail'):\n"
+            "        return helpers.fail('not ready')\n"
+            "    return helpers.warn('check manually')\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    warn = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "ready",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--format",
+            "json",
+        ],
+    )
+    failed = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "ready",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--arg",
+            "fail=yes",
+            "--format",
+            "pipe",
+        ],
+    )
+
+    assert warn.exit_code == 0, warn.output
+    warn_row = json.loads(warn.stdout)
+    assert warn_row["hook"] == "ready"
+    assert warn_row["kind"] == "validate"
+    assert warn_row["status"] == "warn"
+    assert warn_row["message"] == "check manually"
+    assert failed.exit_code == 1, failed.output
+    failed_row = json.loads(failed.stdout)
+    assert failed_row["kind"] == "recipe.hook_run"
+    assert failed_row["record"]["status"] == "fail"
+    assert failed_row["record"]["message"] == "not ready"
+
+
+def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="ready",
+        module_name="ready",
+        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    validate_with_file = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "ready",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+        ],
+    )
+    transform_without_file = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "yaml_edit",
+            "--target",
+            str(target),
+            "--args",
+            str(tmp_path / "missing.yml"),
+        ],
+    )
+
+    assert validate_with_file.exit_code != 0
+    assert "validate hooks do not accept --file or content options" in validate_with_file.output
+    assert transform_without_file.exit_code != 0
+    assert "transform hooks require --file" in transform_without_file.output
+
+
+def test_hook_run_inputs_and_args_merge_files_and_yaml_flags(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="types",
+        module_name="types",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return (\n"
+            "        f\"enabled={inputs['enabled']!r};\"\n"
+            "        f\"count={inputs['count']!r};\"\n"
+            "        f\"mode={args['mode']!r}\"\n"
+            "    )\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("ignored")
+    inputs = tmp_path / "inputs.yml"
+    inputs.write_text("enabled: false\ncount: 1\n")
+    args = tmp_path / "args.yml"
+    args.write_text("mode: old\n")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "types",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+            "--inputs",
+            str(inputs),
+            "--input",
+            "enabled=yes",
+            "--input",
+            "count=3",
+            "--args",
+            str(args),
+            "--arg",
+            "mode=new",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "enabled=True;count=3;mode='new'"
+    assert '"enabled": true' in result.stderr
+    assert '"count": 3' in result.stderr
+    assert '"mode": "new"' in result.stderr
+
+
+def test_hook_run_resolution_order_prefers_cwd_then_global_then_builtin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_project = library_root() / "hooks" / project_name_for_hook("shadow")
+    _write_hook_project(
+        global_project,
+        public_name="shadow",
+        module_name="shadow",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n    return 'global'\n"
+        ),
+    )
+    cwd_project = tmp_path / "cwd"
+    _write_hook_project(
+        cwd_project,
+        public_name="shadow",
+        module_name="shadow",
+        code="def transform(content, *, inputs, target, file, args, helpers):\n    return 'cwd'\n",
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("ignored")
+
+    monkeypatch.chdir(cwd_project)
+    cwd = CliInvoker().invoke(
+        app,
+        ["hook", "run", "shadow", "--target", str(target), "--file", "local.txt"],
+    )
+    monkeypatch.chdir(tmp_path)
+    global_result = CliInvoker().invoke(
+        app,
+        ["hook", "run", "shadow", "--target", str(target), "--file", "local.txt"],
+    )
+
+    assert cwd.exit_code == 0, cwd.output
+    assert cwd.stdout == "cwd"
+    assert global_result.exit_code == 0, global_result.output
+    assert global_result.stdout == "global"
+
+
+def test_hook_run_external_failure_prints_traceback(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="broken",
+        module_name="broken",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    print('before failure')\n"
+            "    raise RuntimeError('boom')\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("ignored")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "broken",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "before failure" in result.stderr
+    assert "Traceback" in result.stderr
+    assert "RuntimeError: boom" in result.stderr
+
+
+def test_hook_run_builtin_stdout_is_redirected_to_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = ModuleType("debug_builtin")
+
+    def transform(content: str, **kwargs: object) -> str:
+        print("builtin diagnostic")
+        return content + "!"
+
+    module.transform = transform  # type: ignore[attr-defined]
+    monkeypatch.setitem(
+        BUILTIN_HOOKS,
+        "debug_builtin",
+        BuiltinHook(kind="transform", module=module),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("start")
+
+    result = CliInvoker().invoke(
+        app,
+        ["hook", "run", "debug_builtin", "--target", str(target), "--file", "local.txt"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "start!"
+    assert "builtin diagnostic" in result.stderr
+
+
+def test_hook_run_quiet_suppresses_context_but_not_hook_diagnostics(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="noisy",
+        module_name="noisy",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    print('hook diagnostic')\n"
+            "    return content\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("start")
+
+    result = CliInvoker().invoke(
+        build_tool_app(app, SPEC).meta,
+        [
+            "--quiet",
+            "hook",
+            "run",
+            "noisy",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "start"
+    assert "hook diagnostic" in result.stderr
+    assert "Hook run:" not in result.stderr
+    assert str(target) not in result.stderr
 
 
 @pytest.mark.parametrize(

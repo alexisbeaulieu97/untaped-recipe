@@ -109,6 +109,7 @@ untaped-recipe pack init ansible --library
 untaped-recipe pack recipe init ansible playbook-migration
 untaped-recipe recipe hook init add-config set_owner --kind validate
 untaped-recipe pack hook init ansible add_play_collections
+untaped-recipe hook run set_owner --target ./repo --file pyproject.toml --diff
 ```
 
 `recipe init` creates a standalone uv recipe project with `recipe.yml`,
@@ -122,6 +123,8 @@ updates the pack metadata.
 `recipe hook init` and `pack hook init` add local hook modules to the top-level
 project `src/` tree, update `[tool.untaped_recipe.hooks]`, and refresh
 `uv.lock`. Top-level `hook init` is for reusable global hooks only.
+`hook run` invokes one resolved hook against explicit fixture context without
+running a full recipe or writing target files.
 
 ## Resolution
 
@@ -370,6 +373,9 @@ Important behavior:
 - `pack check` validates pack metadata, all declared recipe files and assets,
   recipe input source expressions, pack-local hooks, hook kind mismatches, and
   lockfile state.
+- `hook run <hook>` executes one hook through the same built-in or external uv
+  worker path as `apply`; transform stdout is raw content or `--diff`, while
+  validate stdout is a `recipe.hook_run` verdict record.
 
 Structured output rows use kind `recipe.outcome`.
 Skipped optional transforms appear in the row's `warnings` field as a

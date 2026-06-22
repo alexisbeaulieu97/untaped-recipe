@@ -105,6 +105,11 @@ the hook row must declare a matching `kind`, and uv hook projects must have a
 and transform steps wired to validate hooks, without importing or executing the
 hook body.
 
+For `untaped-recipe hook run <hook>`, resolution checks explicit
+`--project PATH` first. Without `--project`, it uses the current working
+directory when that directory has hook metadata, then global hooks, then
+built-ins.
+
 ## Execution Model
 
 External hook projects are launched with locked uv execution. During one
@@ -119,7 +124,9 @@ planning failures for the affected targets.
 The worker protocol is newline-delimited JSON over stdin/stdout. Worker stdout
 is protocol-only. Hook `print()` output is redirected to stderr, and stderr is
 used as bounded diagnostics when a worker request fails. Successful request
-diagnostics are discarded so chatty hooks do not grow memory during bulk runs.
+diagnostics are discarded during `apply` so chatty hooks do not grow memory
+during bulk runs. `hook run` captures successful hook diagnostics and prints
+them to stderr for debugging.
 Engine-side Pydantic models validate worker responses before any file changes
 are accepted into a plan.
 
@@ -201,6 +208,7 @@ Add hook-specific dependencies to the hook project's `pyproject.toml`, then run
 ```bash
 untaped-recipe hook list
 untaped-recipe hook init set_owner
+untaped-recipe hook run set_owner --target ./repo --file pyproject.toml --diff
 untaped-recipe recipe hook init add-config set_owner --kind validate
 untaped-recipe pack hook init ansible add_play_collections
 untaped-recipe hook add ./my-hook-project --name set_owner
@@ -220,6 +228,42 @@ Declared hook modules must resolve to files under the project's `src/`
 directory, matching the scaffolded layout. Use `./my-hook-project` or an
 absolute path when adding/showing/editing a project from the current directory;
 bare names resolve through the hook library.
+
+## Hook Run Debugging
+
+`hook run` invokes exactly one resolved hook without writing target files. It
+uses the same `HookExecutor`, resolver, helpers, built-in in-process calls, and
+external uv worker protocol as `apply`.
+
+Transform hooks require `--target DIR --file TARGET_RELATIVE_PATH`. Without a
+content override, `hook run` reads the target file and writes exact transformed
+content to stdout with no added newline:
+
+```bash
+untaped-recipe hook run set_owner --target ./repo --file pyproject.toml
+```
+
+Use `--content TEXT`, `--content -`, or `--content-file PATH` to pass fixture
+content while still giving the hook the requested target-relative `file` path.
+With a content override, the target file does not need to exist. Use `--diff`
+to write a unified input-to-output diff to stdout instead of raw content.
+
+Validate hooks require `--target DIR` and reject `--file`, content options, and
+`--diff`. They emit one `recipe.hook_run` verdict record by default and exit
+non-zero when the verdict status is `fail`.
+
+Both hook kinds accept `--inputs file.yml` and `--args file.yml` YAML mapping
+files. Repeated `--input KEY=VALUE` and `--arg KEY=VALUE` overrides are
+YAML-parsed and take precedence over file values, so `--input enabled=yes`
+passes a boolean and `--arg count=3` passes an integer. Quote values that should
+stay strings when YAML would coerce them.
+
+By default, `hook run` prints resolved target, file, inputs, args, and hook
+diagnostics to stderr. The SDK `--quiet` flag suppresses the resolved context
+messages but not hook diagnostics or errors. Structured
+`--format json|yaml|table|pipe` emits `recipe.hook_run` on stdout. Transform
+records include `content` and include `diff` when `--diff` is passed; structured
+records omit raw input and arg values.
 
 ## Built-In YAML Hook
 

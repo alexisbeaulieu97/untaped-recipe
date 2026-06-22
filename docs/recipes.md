@@ -86,10 +86,11 @@ Local hooks are declared in the same top-level `pyproject.toml`:
 
 ```toml
 [tool.untaped_recipe.hooks]
-"set_owner" = { module = "add_config_hooks.hooks.set_owner" }
+"set_owner" = { kind = "transform", module = "add_config_hooks.hooks.set_owner" }
 ```
 
-The recipe still uses the simple hook name:
+The declared `kind` must match the recipe step type that calls the hook. The
+recipe still uses the simple hook name:
 
 ```yaml
 steps:
@@ -365,9 +366,10 @@ Important behavior:
 - Backups are created by default; pass `--no-backup` only when the target tree
   is already protected another way.
 - `recipe check` validates standalone recipe projects or explicit path-only
-  recipe files, including input source expressions.
+  recipe files, including input source expressions and hook kind mismatches.
 - `pack check` validates pack metadata, all declared recipe files and assets,
-  recipe input source expressions, pack-local hooks, and lockfile state.
+  recipe input source expressions, pack-local hooks, hook kind mismatches, and
+  lockfile state.
 
 Structured output rows use kind `recipe.outcome`.
 Skipped optional transforms appear in the row's `warnings` field as a

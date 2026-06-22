@@ -6,10 +6,12 @@ import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 _DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+HookKind = Literal["transform", "validate"]
 
 
 class HookDefinition(BaseModel):
@@ -17,7 +19,18 @@ class HookDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
+    kind: HookKind
     module: str = ""
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _kind(cls, value: object) -> HookKind:
+        if not isinstance(value, str):
+            raise ValueError("invalid hook kind")
+        value = value.strip()
+        if value not in {"transform", "validate"}:
+            raise ValueError("invalid hook kind")
+        return cast(HookKind, value)
 
     @field_validator("module")
     @classmethod
@@ -53,6 +66,7 @@ class HookProjectMetadata(BaseModel):
             return cls(hooks={})
         if not isinstance(hooks, Mapping):
             raise ValueError("[tool.untaped_recipe.hooks] must be a table")
+        _reject_legacy_hook_rows(hooks)
         return cls(hooks=dict(hooks))
 
 
@@ -107,6 +121,18 @@ def validate_hook_modules(project_root: Path, metadata: HookProjectMetadata) -> 
         module_file = hook_module_file(project_root, definition.module)
         if not module_file.is_file():
             raise ValueError(f"hook module file not found: {module_file}")
+
+
+def _reject_legacy_hook_rows(hooks: Mapping[object, object]) -> None:
+    for name, definition in hooks.items():
+        if not isinstance(definition, Mapping):
+            continue
+        if "kind" not in definition:
+            raise ValueError(
+                "hook kind is required; update old hook metadata "
+                f"{name!r} = {{ module = ... }} to include "
+                '{ kind = "transform"|"validate", module = ... }'
+            )
 
 
 def _nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object | None:

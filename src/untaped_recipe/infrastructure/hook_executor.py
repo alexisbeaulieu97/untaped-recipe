@@ -6,8 +6,9 @@ from pathlib import Path
 
 from untaped_recipe import worker_protocol as protocol
 from untaped_recipe.application.ports import HookHelpersPort
+from untaped_recipe.domain.hook_project import HookKind
 from untaped_recipe.domain.plan import Verdict
-from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver
+from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookRef, HookResolver
 from untaped_recipe.infrastructure.hook_worker_client import HookWorkerClient
 
 
@@ -38,6 +39,7 @@ class HookExecutor:
     ) -> str:
         """Run a transform hook and return replacement content."""
         ref = self._resolver.resolve(hook, local_hook_project)
+        _ensure_kind(ref, hook, expected="transform")
         if isinstance(ref, BuiltinHookRef):
             transform = getattr(ref.module, "transform", None)
             if transform is None:
@@ -77,6 +79,7 @@ class HookExecutor:
     ) -> Verdict:
         """Run a validate hook and coerce its verdict."""
         ref = self._resolver.resolve(hook, local_hook_project)
+        _ensure_kind(ref, hook, expected="validate")
         if isinstance(ref, BuiltinHookRef):
             validate = getattr(ref.module, "validate", None)
             if validate is None:
@@ -93,6 +96,11 @@ class HookExecutor:
                 },
             )
         return _coerce_verdict(result)
+
+
+def _ensure_kind(ref: HookRef, hook: str, *, expected: HookKind) -> None:
+    if ref.kind != expected:
+        raise ValueError(f"{expected} step hook {hook!r} resolves to {ref.kind} hook")
 
 
 def _coerce_verdict(value: object) -> Verdict:

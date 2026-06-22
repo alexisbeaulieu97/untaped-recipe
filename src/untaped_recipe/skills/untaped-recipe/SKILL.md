@@ -88,6 +88,10 @@ plain directories.
 - Recipes only name hooks; they do not declare runtimes.
 - Hook resolution checks recipe-local pyproject metadata, then global hook
   projects, then packaged built-ins.
+- Hook metadata rows must declare `kind = "transform"` or `kind = "validate"`
+  alongside `module`; old rows that only declare `module` are invalid.
+- `recipe check` and `pack check` reject steps whose type does not match the
+  resolved hook kind.
 - Use `untaped-recipe recipe init <name>` and
   `untaped-recipe pack init <name>` to scaffold authoring projects. Add local
   hooks with `untaped-recipe recipe hook init <recipe> <hook>` or

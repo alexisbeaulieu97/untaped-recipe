@@ -88,7 +88,7 @@ class HookLibrary:
             'requires-python = ">=3.14"\n'
             "dependencies = []\n\n"
             "[tool.untaped_recipe.hooks]\n"
-            f'"{public_name}" = {{ module = "{module}" }}\n'
+            f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}\n'
         )
 
     def add(self, source: Path, *, name: str | None = None) -> Path:
@@ -203,7 +203,7 @@ def add_hook_to_project(
         if not hooks_init_existed:
             hooks_init.write_text("")
         module_path.write_text(_hook_stub(kind))
-        _append_hook_metadata(pyproject, public_name, module)
+        _append_hook_metadata(pyproject, public_name, kind, module)
         lock_project(project_root)
     except Exception:
         _rollback_scoped_hook(
@@ -245,12 +245,18 @@ def _hook_stub(kind: Literal["transform", "validate"]) -> str:
     return "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
 
 
-def _append_hook_metadata(path: Path, public_name: str, module: str) -> None:
+def _append_hook_metadata(
+    path: Path,
+    public_name: str,
+    kind: Literal["transform", "validate"],
+    module: str,
+) -> None:
     doc = read_toml_document(path)
     tool = toml_table(doc, "tool", "tool", create=True)
     untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
     hooks = toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
     entry = tomlkit.inline_table()
+    entry["kind"] = kind
     entry["module"] = module
     hooks[public_name] = entry
     path.write_text(doc.as_string())

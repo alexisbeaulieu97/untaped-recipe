@@ -11,6 +11,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from io import StringIO
 from pathlib import Path
 from threading import Barrier, Event
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -33,6 +34,7 @@ def _write_hook_project(
     *,
     hooks: dict[str, str],
     package: str = "project_hooks",
+    kind: Literal["transform", "validate"] = "transform",
     lock: bool = True,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
@@ -46,7 +48,7 @@ def _write_hook_project(
             "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
         )
     hook_rows = "\n".join(
-        f'"{public_name}" = {{ module = "{module}" }}'
+        f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}'
         for public_name, module in sorted(hooks.items())
     )
     (root / "pyproject.toml").write_text(
@@ -69,7 +71,8 @@ def test_hook_project_metadata_validates_pyproject_hook_table() -> None:
                 "untaped_recipe": {
                     "hooks": {
                         "ansible.add_play_collections": {
-                            "module": "project_hooks.hooks.add_play_collections"
+                            "kind": "transform",
+                            "module": "project_hooks.hooks.add_play_collections",
                         }
                     }
                 }
@@ -80,14 +83,39 @@ def test_hook_project_metadata_validates_pyproject_hook_table() -> None:
     assert metadata.hooks["ansible.add_play_collections"].module == (
         "project_hooks.hooks.add_play_collections"
     )
+    assert metadata.hooks["ansible.add_play_collections"].kind == "transform"
 
     with pytest.raises(ValueError, match="invalid hook name"):
         HookProjectMetadata.from_pyproject(
-            {"tool": {"untaped_recipe": {"hooks": {"bad-name": {"module": "pkg.hook"}}}}}
+            {
+                "tool": {
+                    "untaped_recipe": {
+                        "hooks": {"bad-name": {"kind": "transform", "module": "pkg.hook"}}
+                    }
+                }
+            }
         )
 
     with pytest.raises(ValueError, match="module is required"):
-        HookProjectMetadata.from_pyproject({"tool": {"untaped_recipe": {"hooks": {"check": {}}}}})
+        HookProjectMetadata.from_pyproject(
+            {"tool": {"untaped_recipe": {"hooks": {"check": {"kind": "transform"}}}}}
+        )
+
+    with pytest.raises(ValueError, match="hook kind is required"):
+        HookProjectMetadata.from_pyproject(
+            {"tool": {"untaped_recipe": {"hooks": {"check": {"module": "pkg.hook"}}}}}
+        )
+
+    with pytest.raises(ValueError, match="invalid hook kind"):
+        HookProjectMetadata.from_pyproject(
+            {
+                "tool": {
+                    "untaped_recipe": {
+                        "hooks": {"check": {"kind": "template", "module": "pkg.hook"}}
+                    }
+                }
+            }
+        )
 
 
 def test_hook_resolver_uses_recipe_local_global_namespaced_then_builtin(tmp_path: Path) -> None:
@@ -114,14 +142,17 @@ def test_hook_resolver_uses_recipe_local_global_namespaced_then_builtin(tmp_path
     assert isinstance(local, UvHookRef)
     assert local.project_root == recipe_dir
     assert local.module == "local_hooks.hooks.pick"
+    assert local.kind == "transform"
 
     global_ref = resolver.resolve("ansible.add_play_collections", recipe_dir)
     assert isinstance(global_ref, UvHookRef)
     assert global_ref.project_root == global_hooks / "ansible"
     assert global_ref.module == "ansible_hooks.hooks.add_play_collections"
+    assert global_ref.kind == "transform"
 
     builtin = resolver.resolve("yaml_edit", recipe_dir)
     assert isinstance(builtin, BuiltinHookRef)
+    assert builtin.kind == "transform"
 
 
 def test_hook_resolver_rejects_missing_lockfile(tmp_path: Path) -> None:
@@ -297,7 +328,7 @@ def test_uv_hook_worker_pool_leases_parallel_workers(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with (
         UvHookWorkerPool(max_workers_per_project=2) as pool,
@@ -330,7 +361,7 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with UvHookWorkerPool(max_workers_per_project=3) as pool:
         results = [pool.request(ref, {"kind": "transform"}) for _ in range(3)]
@@ -359,7 +390,7 @@ def test_uv_hook_worker_pool_passes_timeout_to_workers(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with UvHookWorkerPool(max_workers_per_project=1, hook_timeout_seconds=12) as pool:
         assert pool.request(ref, {"kind": "transform"}) == "ok"
@@ -389,7 +420,7 @@ def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with UvHookWorkerPool(max_workers_per_project=1) as pool:
         with pytest.raises(ValueError, match="malformed hook worker response"):
@@ -427,7 +458,7 @@ def test_uv_hook_worker_pool_wakes_waiters_after_fatal_retirement(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with (
         UvHookWorkerPool(max_workers_per_project=1) as pool,
@@ -477,7 +508,7 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with UvHookWorkerPool(max_workers_per_project=1) as pool:
         with pytest.raises(ValueError, match="validate hook failed"):
@@ -640,7 +671,7 @@ def test_worker_script_rejects_invalid_validate_return_object(tmp_path: Path) ->
 
 def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
-    _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"})
+    _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"}, kind="validate")
 
     class WarningWorkers:
         def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:

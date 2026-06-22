@@ -15,7 +15,6 @@ import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe import app
 from untaped_recipe.__main__ import SPEC
 from untaped_recipe.cli.common import library_root
-from untaped_recipe.cli.preview import _change_counts
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.infrastructure.backup import BackupStore
 
@@ -179,24 +178,6 @@ def test_apply_table_preview_counts_prefix_like_diff_headers(
     assert "+0 -2" in result.stderr
     assert str(target / "plus.txt") in result.stderr
     assert "+2 -0" in result.stderr
-
-
-def test_change_counts_handles_diff_header_like_lines_and_duplicates(tmp_path: Path) -> None:
-    removed = FileChange(
-        target=tmp_path,
-        relative_path=Path("doc.yml"),
-        before="---\nold\n",
-        after=None,
-    )
-    added = FileChange(
-        target=tmp_path,
-        relative_path=Path("plus.txt"),
-        before=None,
-        after="++same\n++same\n",
-    )
-
-    assert _change_counts(removed) == "+0 -2"
-    assert _change_counts(added) == "+2 -0"
 
 
 def test_apply_table_preview_renders_relative_target_as_absolute_path(
@@ -539,6 +520,25 @@ def test_apply_decline_renders_cancelled_summary_without_writing(
     assert "1 changing target not applied" in result.stderr
 
 
+def test_apply_preview_only_modes_do_not_render_cancelled_summary(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    dry_run = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+    check = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--check"])
+
+    assert dry_run.exit_code == 0, dry_run.output
+    assert check.exit_code == 1, check.output
+    assert "Recipe apply cancelled:" not in dry_run.stderr
+    assert "Recipe apply cancelled:" not in check.stderr
+    assert not (target / "out.txt").exists()
+
+
 def test_apply_preserves_backup_when_write_rollback_is_incomplete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -713,6 +713,32 @@ def test_apply_check_explicit_table_preview_reports_drift(
     assert str(target / "out.txt") in result.stderr
     assert "action" in result.stderr
     assert "changes" in result.stderr
+
+
+def test_apply_check_explicit_diff_preview_reports_drift_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    recipe = Path("recipe.yml")
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    Path("template.txt").write_text("hello\n")
+    target = Path("target")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", "./recipe.yml", str(target), "--check", "--preview", "diff"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert not (target / "out.txt").exists()
+    assert BackupStore(library_root() / "backups").list() == []
+    assert f"# {tmp_path / 'target'}" in result.stderr
+    assert "--- a/out.txt" in result.stderr
+    assert "+++ b/out.txt" in result.stderr
 
 
 def test_apply_stdin_requires_yes_and_resolves_workspace_repo_pipe(tmp_path: Path) -> None:

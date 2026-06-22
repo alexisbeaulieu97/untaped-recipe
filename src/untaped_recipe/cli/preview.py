@@ -73,8 +73,6 @@ def _render_table_preview(recipe: Recipe, plans: list[TargetPlan]) -> None:
     diffable_plans, suppressed_rows, error_rows = _preview_groups(recipe, plans)
     normal_rows: list[dict[str, object]] = []
     for plan in diffable_plans:
-        if not plan.changes:
-            continue
         normal_rows.extend(
             {
                 "path": str(_display_change_path(change)),

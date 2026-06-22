@@ -131,6 +131,11 @@ Hook names in recipes must be safe logical names, not filesystem paths.
 Recipes never declare hook runtimes. The resolver returns either a built-in
 reference or a uv hook project reference with a declared hook kind.
 
+`hook run <hook>` is not recipe step execution. It resolves explicit
+`--project PATH` first, then the current working directory when it has hook
+metadata, then global hooks, then built-ins. Keep it a single-hook, no-write
+debug harness.
+
 ## Recipe Schema
 
 V1 recipe YAML is behavior-only. Public identity comes from uv project metadata
@@ -212,6 +217,13 @@ before using them. A bounded worker pool is created per hook project per apply
 invocation, up to the clamped `--parallel` value; each worker serializes its own
 requests. Hook request timeouts kill and retire the affected worker and must
 surface as per-target planning failures rather than hanging the full batch.
+
+`hook run` must reuse `HookResolver`, `HookExecutor`, `UvHookWorkerPool`, and
+`HookHelpers`. Transform mode requires `--target` and `--file`, writes raw
+transformed content to stdout by default, and can emit `--diff`; validate mode
+emits a `recipe.hook_run` verdict record. Fixture context and hook diagnostics
+belong on stderr. Successful external hook diagnostics stay discarded for
+`apply`, but are surfaced by `hook run`.
 
 Built-ins use the direct registry and run in-process. Keep built-ins reserved
 for engine-owned code such as `yaml_edit`.

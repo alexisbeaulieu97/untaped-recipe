@@ -306,6 +306,21 @@ def test_uv_hook_worker_discards_success_diagnostics_before_failure(
     assert "success diagnostic" not in message
 
 
+def test_uv_hook_worker_can_return_success_diagnostics_for_debug(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(stdout='{"id": "1", "ok": true, "result": "after"}\n')
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+    worker._stderr.put("success diagnostic\n")
+
+    result = worker.request_with_diagnostics({"kind": "transform", "module": "hooks.sample"})
+
+    assert result.result == "after"
+    assert result.diagnostics == "success diagnostic"
+
+
 def test_uv_hook_worker_pool_leases_parallel_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

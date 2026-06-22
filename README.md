@@ -87,6 +87,8 @@ Supported hook forms are:
 Use `untaped-recipe hook init <hook-name>` to scaffold a global uv hook project.
 Use `untaped-recipe recipe hook init <recipe> <hook>` or
 `untaped-recipe pack hook init <pack> <hook>` for local hooks.
+Use `untaped-recipe hook run <hook> --target <dir>` to invoke one hook against
+an explicit fixture without writing target files.
 
 ```bash
 untaped-recipe recipe init add-config
@@ -95,6 +97,7 @@ untaped-recipe pack init ansible
 untaped-recipe pack recipe init ansible playbook-migration
 untaped-recipe recipe hook init add-config set_owner --kind validate
 untaped-recipe pack hook init ansible add_play_collections
+untaped-recipe hook run set_owner --target ./service-a --file pyproject.toml --diff
 ```
 
 ## Apply
@@ -173,7 +176,7 @@ redacted per-target inputs and never store the full incoming pipe record.
 untaped-recipe recipe init|list|show|add|check|remove|edit
 untaped-recipe pack init|list|show|add|check|remove|edit
 untaped-recipe pack recipe init|list|show|edit|remove
-untaped-recipe hook init|list|show|add|remove|edit
+untaped-recipe hook init|list|show|add|remove|edit|run
 untaped-recipe backup list|show|restore
 ```
 
@@ -191,6 +194,17 @@ resolved hook kind, but do not execute hooks against targets. `backup show` and
 `backup restore` accept full ids, unambiguous prefixes, or `latest`;
 restore uses the same transactional write path and symlink confinement as
 apply. Backups store text content and do not preserve file mode or mtime.
+
+`hook run` is a no-write debug harness. Transform hooks require `--file`; by
+default the command reads `--target/--file` and writes exact transformed content
+to stdout with no added newline. Use `--content TEXT`, `--content -`, or
+`--content-file PATH` to supply fixture content without requiring the target
+file to exist. Use `--diff` to emit a unified diff instead of raw content.
+Validate hooks reject file/content options and emit a `recipe.hook_run` verdict
+record. Repeated `--input KEY=VALUE` and `--arg KEY=VALUE` values are
+YAML-parsed and override `--inputs`/`--args` YAML mapping files. Fixture context
+and hook diagnostics go to stderr; structured `--format json|yaml|table|pipe`
+output omits raw input and arg values.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

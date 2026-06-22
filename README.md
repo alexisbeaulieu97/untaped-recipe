@@ -105,14 +105,20 @@ untaped-recipe apply add-config --stdin --yes --format json
 untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
 untaped-recipe apply add-config ./service-a --dry-run
 untaped-recipe apply add-config ./service-a --check
+untaped-recipe apply add-config ./service-a --preview diff
 ```
 
-`apply` plans every target first, prints unified diffs to stderr, then asks for
-confirmation unless `--yes` is passed. Backups are created by default before
-writing and can be restored later. Target writes are transactional: if a target
-cannot be written safely, that target is rolled back and reported as failed.
-Use `--check` for CI or compliance checks: it writes nothing, creates no
-backups, and exits non-zero when any target would change.
+`apply` plans every target first, prints a stderr preview, then asks for
+confirmation unless `--yes` is passed. The default `--preview table` shows a
+file-level table with absolute paths, change kind, and line counts. Use
+`--preview diff` for patch-compatible unified diffs with `a/` and `b/`
+relative paths, or `--preview none` for summary-only runs. `--preview` controls
+safety review detail; `--quiet` only mutes success chatter after the run.
+Backups are created by default before writing and can be restored later. Target
+writes are transactional: if a target cannot be written safely, that target is
+rolled back and reported as failed. Use `--check` for CI or compliance checks:
+it writes nothing, creates no backups, and exits non-zero when any target would
+change.
 
 Recipes can list known candidate files explicitly for `transform` and `remove`
 steps. `transform.files` and `remove.files` are expanded into ordinary
@@ -151,9 +157,9 @@ and prompts use the controlling terminal. `--stdin` writes still require
 
 Every `recipe.outcome` row includes resolved declared inputs. Inputs marked
 `sensitive: true` are redacted in rows, warnings/errors, and backup metadata;
-diffs are suppressed for targets with sensitive inputs. Real values still reach
-templates and hooks. Backup file entries record redacted per-target inputs and
-never store the full incoming pipe record.
+file-level previews and diffs are suppressed for targets with sensitive inputs.
+Real values still reach templates and hooks. Backup file entries record
+redacted per-target inputs and never store the full incoming pipe record.
 
 ## Library Commands
 

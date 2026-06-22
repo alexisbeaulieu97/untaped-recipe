@@ -56,12 +56,15 @@ src/untaped_recipe/
 └── skills/              # packaged agent skill
 ```
 
-The `application` layer plans all target changes in memory. The CLI renders
-diff previews first, then calls the SDK batch confirmation helper. Successful
-target plans are flushed only after confirmation and one backup bundle has been
-created for the invocation. Target parsing preserves optional untaped pipe
-record context for per-target input derivation; `ApplyRecipe` still receives
-only a concrete target path plus resolved plain inputs.
+The `application` layer plans all target changes in memory. The CLI renders a
+table-first preview by default, can render patch-compatible unified diffs with
+`--preview diff`, and calls the SDK batch confirmation helper with the generic
+target-row preview suppressed because recipe owns richer file-level preview
+detail. Successful target plans are flushed only after confirmation and one
+backup bundle has been created for the invocation. Target parsing preserves
+optional untaped pipe record context for per-target input derivation;
+`ApplyRecipe` still receives only a concrete target path plus resolved plain
+inputs.
 
 ## Settings And Library Layout
 

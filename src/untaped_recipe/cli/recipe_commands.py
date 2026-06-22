@@ -8,14 +8,14 @@ from typing import Annotated, Literal
 from cyclopts import Parameter
 from untaped.api import (
     ColumnsOption,
+    ConfigError,
     FormatOption,
+    batch_apply,
     create_app,
     echo,
     render_rows,
     ui_context,
 )
-from untaped.batch import batch_apply
-from untaped.errors import ConfigError
 
 from untaped_recipe.application.inputs import validate_recipe_input_sources
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors

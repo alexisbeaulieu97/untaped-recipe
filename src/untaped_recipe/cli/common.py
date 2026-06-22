@@ -9,8 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from untaped.api import get_config_section, report_errors
-from untaped.errors import ConfigError
+from untaped.api import ConfigError, get_config_section, report_errors
 
 from untaped_recipe.settings import RecipeSettings
 

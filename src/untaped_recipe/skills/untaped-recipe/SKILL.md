@@ -16,6 +16,10 @@ plain directories.
 - Pass `--yes` for non-interactive applies.
 - Use `--dry-run` to preview without writing, `--vars file.yml` or repeated
   `--var KEY=VALUE` for inputs, and `--parallel N` for planning workers.
+- Preview output goes to stderr. The default `--preview table` renders changed
+  files with absolute paths, change kind, and line counts. Use `--preview diff`
+  for patch-compatible unified diffs, or `--preview none` for summary-only
+  preview output.
 - Use `--input-from KEY=JINJA` to override a per-target input source and
   `--interactive` to prompt for unresolved inputs. Do not combine
   `--interactive` with `--check`.
@@ -125,9 +129,9 @@ plain directories.
 - Apply rows and backup metadata use canonical recipe refs: `foo` for
   standalone recipes and `pack:recipe` for pack recipes.
 - `recipe.outcome` rows include resolved declared `inputs`. Sensitive inputs
-  render as `***`, row warnings/errors are redacted, and diffs are suppressed
-  for targets with sensitive inputs; real values still reach templates and
-  hooks.
+  render as `***`, row warnings/errors are redacted, and file-level previews
+  and diffs are suppressed for targets with sensitive inputs; real values still
+  reach templates and hooks.
 - Backup file entries include redacted per-target inputs and never store the
   full incoming pipe record.
 - `--check` emits `recipe.outcome` rows with `status` set to `check`.
@@ -137,14 +141,19 @@ plain directories.
   no terminal is available. `--stdin` writes still require `--yes` unless
   `--dry-run` or `--check` is used.
 - The SDK provides `--quiet`/`-q`, `config doctor`, and `config edit`.
+  `--quiet` mutes post-run success chatter, not selected preview detail,
+  warnings, errors, or destructive confirmation prompts. `--format` and
+  `--columns` affect stdout outcome rows only, not the fixed-column preview
+  table.
 - Run `untaped-recipe skills install` to install this packaged skill for agent
   workflows.
 
 ## Safety
 
-Recipes are VCS-agnostic and do not call git. Review the diff preview before
-confirming broad changes. Python hooks are trusted local code; inspect hooks
-before running recipes from another person.
+Recipes are VCS-agnostic and do not call git. Review the preview before
+confirming broad changes; use `--preview diff` when exact hunks are needed.
+Python hooks are trusted local code; inspect hooks before running recipes from
+another person.
 
 `apply` plans every target before writing. A failed target plan or write does
 not block successful targets, and a failed target writes nothing for that

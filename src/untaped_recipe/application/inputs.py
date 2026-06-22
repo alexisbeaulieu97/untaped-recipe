@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from untaped.errors import ConfigError
+from untaped.api import ConfigError
 
 from untaped_recipe.application.targets import Target
 from untaped_recipe.domain.recipe import InputSpec, Recipe

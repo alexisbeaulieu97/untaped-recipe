@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -47,6 +46,27 @@ class RunHook:
     def __init__(self, executor: HookDebugExecutorPort) -> None:
         self._executor = executor
 
+    @staticmethod
+    def validate_context(
+        *,
+        kind: HookKind,
+        target: Path,
+        file: Path | None,
+        content: str | None,
+        content_file: Path | None,
+    ) -> None:
+        """Validate fixture context without running the hook."""
+        resolved_target = _target_dir(target)
+        if kind == "transform":
+            _transform_content(
+                resolved_target,
+                file,
+                content=content,
+                content_file=content_file,
+            )
+            return
+        _validate_validate_context(file=file, content=content, content_file=content_file)
+
     def run(
         self,
         hook: str,
@@ -59,7 +79,6 @@ class RunHook:
         content_file: Path | None,
         inputs: dict[str, object],
         args: dict[str, object],
-        diff: bool,
     ) -> HookRun:
         resolved_target = _target_dir(target)
         if kind == "transform":
@@ -73,7 +92,7 @@ class RunHook:
                 inputs=inputs,
                 args=args,
             )
-        _validate_validate_context(file=file, content=content, content_file=content_file, diff=diff)
+        _validate_validate_context(file=file, content=content, content_file=content_file)
         execution = self._executor.validate_for_debug(
             hook,
             local_hook_project=local_hook_project,
@@ -140,9 +159,8 @@ def _validate_validate_context(
     file: Path | None,
     content: str | None,
     content_file: Path | None,
-    diff: bool,
 ) -> None:
-    if file is not None or content is not None or content_file is not None or diff:
+    if file is not None or content is not None or content_file is not None:
         raise ValueError("validate hooks do not accept --file or content options")
 
 
@@ -164,7 +182,7 @@ def _transform_content(
         except OSError as exc:
             raise ValueError(f"--content-file file not found: {content_file}") from exc
     if content is not None:
-        return (sys.stdin.read() if content == "-" else content), resolved_file, file
+        return content, resolved_file, file
     if not resolved_file.exists():
         raise ValueError(f"transform file not found: {file}")
     if not resolved_file.is_file():

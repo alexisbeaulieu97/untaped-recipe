@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from untaped_recipe.application.ports import HookDebugResult
 from untaped_recipe.application.run_hook import RunHook, TransformHookRun
 from untaped_recipe.domain.plan import Verdict
@@ -65,7 +67,6 @@ def test_run_hook_transform_reads_target_file_and_invokes_executor(tmp_path: Pat
         content_file=None,
         inputs={"enabled": True},
         args={"count": 3},
-        diff=False,
     )
 
     assert isinstance(result, TransformHookRun)
@@ -83,3 +84,60 @@ def test_run_hook_transform_reads_target_file_and_invokes_executor(tmp_path: Pat
             "args": {"count": 3},
         }
     ]
+
+
+def test_run_hook_transform_requires_file(tmp_path: Path) -> None:
+    executor = _DebugExecutor()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(ValueError, match="transform hooks require --file"):
+        RunHook(executor).run(
+            "sample",
+            kind="transform",
+            local_hook_project=None,
+            target=target,
+            file=None,
+            content="before",
+            content_file=None,
+            inputs={},
+            args={},
+        )
+
+
+def test_run_hook_validate_rejects_file_and_content_options(tmp_path: Path) -> None:
+    executor = _DebugExecutor()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(ValueError, match="validate hooks do not accept --file or content options"):
+        RunHook(executor).run(
+            "sample",
+            kind="validate",
+            local_hook_project=None,
+            target=target,
+            file=Path("config.txt"),
+            content=None,
+            content_file=None,
+            inputs={},
+            args={},
+        )
+
+
+def test_run_hook_missing_content_file_is_clean_value_error(tmp_path: Path) -> None:
+    executor = _DebugExecutor()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(ValueError, match="--content-file file not found"):
+        RunHook(executor).run(
+            "sample",
+            kind="transform",
+            local_hook_project=None,
+            target=target,
+            file=Path("config.txt"),
+            content=None,
+            content_file=tmp_path / "missing.txt",
+            inputs={},
+            args={},
+        )

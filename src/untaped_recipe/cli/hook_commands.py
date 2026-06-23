@@ -131,16 +131,17 @@ def run_command(
     """Run one hook once against explicit fixture context without writing files."""
     with report_config_errors():
         root = library_root()
-        target = _target_dir(target)
         local_hook_project = _local_hook_project(project)
         resolver = HookResolver(global_hooks=root / "hooks")
         ref = resolver.resolve(name, local_hook_project)
-        _validate_context_options(
-            ref.kind,
+        if ref.kind == "validate" and diff:
+            raise ConfigError("validate hooks do not accept --file or content options")
+        RunHook.validate_context(
+            kind=ref.kind,
+            target=target,
             file=file,
             content=content,
             content_file=content_file,
-            diff=diff,
         )
         inputs = _fixture_mapping(
             inputs_file,
@@ -149,14 +150,7 @@ def run_command(
             kv_flag="--input",
         )
         args = _fixture_mapping(args_file, raw_args or [], file_flag="--args", kv_flag="--arg")
-        _render_hook_run_context(
-            name,
-            kind=ref.kind,
-            target=target,
-            file=file,
-            inputs=inputs,
-            args=args,
-        )
+        prepared_content = _content_value(content)
         with UvHookWorkerPool(hook_timeout_seconds=_hook_timeout_seconds(hook_timeout)) as workers:
             executor = HookExecutor(
                 resolver,
@@ -170,16 +164,23 @@ def run_command(
                     local_hook_project=local_hook_project,
                     target=target,
                     file=file,
-                    content=content,
+                    content=prepared_content,
                     content_file=content_file,
                     inputs=inputs,
                     args=args,
-                    diff=diff,
                 )
             except HookExecutionError as exc:
                 _print_hook_failure(str(exc))
                 raise SystemExit(1) from exc
             if isinstance(execution, TransformHookRun):
+                _render_hook_run_context(
+                    execution.hook,
+                    kind=execution.kind,
+                    target=execution.target,
+                    file=execution.relative_file,
+                    inputs=inputs,
+                    args=args,
+                )
                 _run_transform(
                     execution,
                     diff=diff,
@@ -187,6 +188,14 @@ def run_command(
                     columns=columns,
                 )
             else:
+                _render_hook_run_context(
+                    execution.hook,
+                    kind=execution.kind,
+                    target=execution.target,
+                    file=None,
+                    inputs=inputs,
+                    args=args,
+                )
                 _run_validate(
                     execution,
                     fmt=fmt,
@@ -302,29 +311,6 @@ def _run_validate(
         raise SystemExit(1)
 
 
-def _target_dir(target: Path) -> Path:
-    resolved = target.expanduser().resolve()
-    if not resolved.is_dir():
-        raise ConfigError(f"target is not a directory: {target}")
-    return resolved
-
-
-def _validate_context_options(
-    kind: HookKind,
-    *,
-    file: Path | None,
-    content: str | None,
-    content_file: Path | None,
-    diff: bool,
-) -> None:
-    if kind == "transform":
-        if file is None:
-            raise ConfigError("transform hooks require --file")
-        return
-    if file is not None or content is not None or content_file is not None or diff:
-        raise ConfigError("validate hooks do not accept --file or content options")
-
-
 def _local_hook_project(project: Path | None) -> Path | None:
     if project is not None:
         resolved = project.expanduser().resolve()
@@ -357,6 +343,12 @@ def _fixture_mapping(
         values.update(load_yaml_mapping_file(path, flag=file_flag))
     values.update(_yaml_kv_pairs(raw_pairs, flag=kv_flag))
     return values
+
+
+def _content_value(content: str | None) -> str | None:
+    if content == "-":
+        return sys.stdin.read()
+    return content
 
 
 def _yaml_kv_pairs(raw_pairs: list[str], *, flag: str) -> dict[str, object]:

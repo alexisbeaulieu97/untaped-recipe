@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import traceback
+from collections.abc import Callable
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -12,8 +13,8 @@ from untaped_recipe.application.ports import HookDebugResult, HookHelpersPort
 from untaped_recipe.domain.plan import Verdict
 from untaped_recipe.infrastructure.hook_resolver import (
     BuiltinHookRef,
-    HookRef,
     HookResolver,
+    UvHookRef,
     ensure_hook_kind,
 )
 from untaped_recipe.infrastructure.hook_worker_client import (
@@ -276,12 +277,10 @@ def _call_builtin_validate(
 
 
 def _call_builtin_for_debug(
-    call: object,
+    call: Callable[[], object],
     *,
     capture_diagnostics: bool,
 ) -> HookDebugResult[object]:
-    if not callable(call):
-        raise TypeError("call must be callable")
     if not capture_diagnostics:
         return HookDebugResult(result=call(), diagnostics="")
     stdout = StringIO()
@@ -295,13 +294,11 @@ def _call_builtin_for_debug(
 
 def _request_external(
     workers: HookWorkerClient,
-    ref: HookRef,
+    ref: UvHookRef,
     payload: dict[str, object],
     *,
     capture_diagnostics: bool,
 ) -> HookDebugResult[object]:
-    if isinstance(ref, BuiltinHookRef):
-        raise TypeError("external worker request requires a uv hook ref")
     diagnostic_limit = DEBUG_DIAGNOSTIC_LIMIT if capture_diagnostics else APPLY_DIAGNOSTIC_LIMIT
     settle_seconds = DEBUG_DIAGNOSTIC_SETTLE_SECONDS if capture_diagnostics else 0
     try:

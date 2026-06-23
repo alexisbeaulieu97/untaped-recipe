@@ -1911,11 +1911,17 @@ def test_hook_run_validate_records_and_fail_exit(tmp_path: Path) -> None:
 
 def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
     hook_project = tmp_path / "hooks"
+    marker = tmp_path / "marker"
     _write_hook_project(
         hook_project,
         public_name="ready",
         module_name="ready",
-        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+        code=(
+            "from pathlib import Path\n"
+            "def validate(*, inputs, target, args, helpers):\n"
+            f"    Path({str(marker)!r}).write_text('ran')\n"
+            "    return helpers.pass_()\n"
+        ),
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -1934,6 +1940,19 @@ def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
             "local.txt",
         ],
     )
+    validate_with_diff = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "ready",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--diff",
+        ],
+    )
     transform_without_file = CliInvoker().invoke(
         app,
         [
@@ -1949,6 +1968,9 @@ def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
 
     assert validate_with_file.exit_code != 0
     assert "validate hooks do not accept --file or content options" in validate_with_file.output
+    assert validate_with_diff.exit_code != 0
+    assert "validate hooks do not accept --file or content options" in validate_with_diff.output
+    assert not marker.exists()
     assert transform_without_file.exit_code != 0
     assert "transform hooks require --file" in transform_without_file.output
 

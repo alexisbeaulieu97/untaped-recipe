@@ -1753,6 +1753,41 @@ def test_hook_run_transform_content_overrides_do_not_require_existing_file(
     assert file_result.stdout == "from-file|file.txt|target"
 
 
+def test_hook_run_missing_content_file_is_reported_cleanly(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="append",
+        module_name="append",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "append",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+            "--content-file",
+            str(tmp_path / "missing.txt"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "error: --content-file file not found" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_hook_run_transform_diff_and_structured_output(tmp_path: Path) -> None:
     hook_project = tmp_path / "hooks"
     _write_hook_project(
@@ -1876,11 +1911,17 @@ def test_hook_run_validate_records_and_fail_exit(tmp_path: Path) -> None:
 
 def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
     hook_project = tmp_path / "hooks"
+    marker = tmp_path / "marker"
     _write_hook_project(
         hook_project,
         public_name="ready",
         module_name="ready",
-        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+        code=(
+            "from pathlib import Path\n"
+            "def validate(*, inputs, target, args, helpers):\n"
+            f"    Path({str(marker)!r}).write_text('ran')\n"
+            "    return helpers.pass_()\n"
+        ),
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -1899,6 +1940,19 @@ def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
             "local.txt",
         ],
     )
+    validate_with_diff = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "ready",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--diff",
+        ],
+    )
     transform_without_file = CliInvoker().invoke(
         app,
         [
@@ -1914,6 +1968,9 @@ def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
 
     assert validate_with_file.exit_code != 0
     assert "validate hooks do not accept --file or content options" in validate_with_file.output
+    assert validate_with_diff.exit_code != 0
+    assert "validate hooks do not accept --file or content options" in validate_with_diff.output
+    assert not marker.exists()
     assert transform_without_file.exit_code != 0
     assert "transform hooks require --file" in transform_without_file.output
 
@@ -1971,6 +2028,74 @@ def test_hook_run_inputs_and_args_merge_files_and_yaml_flags(tmp_path: Path) -> 
     assert '"enabled": true' in result.stderr
     assert '"count": 3' in result.stderr
     assert '"mode": "new"' in result.stderr
+
+
+def test_hook_run_yaml_flag_errors_are_reported_cleanly(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="types",
+        module_name="types",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("ignored")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "types",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+            "--arg",
+            "items=[",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "error: --arg value for 'items' is invalid YAML" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_hook_run_explicit_project_must_be_valid_before_global_or_builtin_fallback(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.yml").write_text("enabled: false\n")
+    args = tmp_path / "args.yml"
+    args.write_text("edits:\n  - {op: set, path: [enabled], value: true}\n")
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "yaml_edit",
+            "--project",
+            str(tmp_path / "missing-project"),
+            "--target",
+            str(target),
+            "--file",
+            "local.yml",
+            "--args",
+            str(args),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "error: hook project not found" in result.output
+    assert result.stdout == ""
+    assert "Hook run:" not in result.stderr
 
 
 def test_hook_run_resolution_order_prefers_cwd_then_global_then_builtin(

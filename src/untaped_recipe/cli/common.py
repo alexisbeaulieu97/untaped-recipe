@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import yaml
 from untaped.api import ConfigError, get_config_section, report_errors
 
 from untaped_recipe.settings import RecipeSettings
@@ -22,6 +23,19 @@ def settings() -> RecipeSettings:
 def library_root() -> Path:
     """Configured recipe library root."""
     return settings().library_root.expanduser()
+
+
+def load_yaml_mapping_file(path: Path, *, flag: str) -> dict[str, object]:
+    """Load a YAML mapping from a CLI file flag."""
+    try:
+        loaded = yaml.safe_load(path.expanduser().read_text()) or {}
+    except OSError as exc:
+        raise ConfigError(f"{flag} file not found: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{flag} file is invalid YAML: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ConfigError(f"{flag} file must contain a YAML mapping")
+    return {str(key): value for key, value in loaded.items()}
 
 
 def edit_path(path: Path) -> None:

@@ -18,6 +18,10 @@ from untaped_recipe import hook_worker
 from untaped_recipe import worker_protocol as protocol
 from untaped_recipe.infrastructure.hook_resolver import UvHookRef
 
+APPLY_DIAGNOSTIC_LIMIT = 4000
+DEBUG_DIAGNOSTIC_LIMIT = 10 * 1024 * 1024
+DEBUG_DIAGNOSTIC_SETTLE_SECONDS = 0.05
+
 
 class HookWorkerResponse(BaseModel):
     """Engine-side validation for one worker protocol response."""
@@ -55,8 +59,15 @@ class HookWorkerCallResult:
 class HookWorkerClient(Protocol):
     """Request/response transport for external hook execution."""
 
-    def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
-        """Send one hook request and return the validated result."""
+    def request(
+        self,
+        ref: UvHookRef,
+        payload: dict[str, object],
+        *,
+        diagnostic_limit: int | None = APPLY_DIAGNOSTIC_LIMIT,
+        settle_seconds: float = 0,
+    ) -> HookWorkerCallResult:
+        """Send one hook request and return the validated result plus diagnostics."""
 
 
 class UvHookWorkerPool:
@@ -81,17 +92,21 @@ class UvHookWorkerPool:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
+    def request(
+        self,
+        ref: UvHookRef,
+        payload: dict[str, object],
+        *,
+        diagnostic_limit: int | None = APPLY_DIAGNOSTIC_LIMIT,
+        settle_seconds: float = 0,
+    ) -> HookWorkerCallResult:
         """Send one serialized request to the hook project's worker."""
         group = self._group_for(ref.project_root)
-        return group.request({**payload, protocol.MODULE: ref.module})
-
-    def request_with_diagnostics(
-        self, ref: UvHookRef, payload: dict[str, object]
-    ) -> HookWorkerCallResult:
-        """Send one serialized request and return successful worker diagnostics."""
-        group = self._group_for(ref.project_root)
-        return group.request_with_diagnostics({**payload, protocol.MODULE: ref.module})
+        return group.request(
+            {**payload, protocol.MODULE: ref.module},
+            diagnostic_limit=diagnostic_limit,
+            settle_seconds=settle_seconds,
+        )
 
     def close(self) -> None:
         """Stop all worker processes."""
@@ -127,25 +142,34 @@ class _UvHookWorkerGroup:
         self._condition = Condition()
         self._closed = False
 
-    def request(self, payload: dict[str, object]) -> object:
+    def request(
+        self,
+        payload: dict[str, object],
+        *,
+        diagnostic_limit: int | None = APPLY_DIAGNOSTIC_LIMIT,
+        settle_seconds: float = 0,
+    ) -> HookWorkerCallResult:
         """Lease one serialized worker for a request."""
-        return self._request(payload, capture_diagnostics=False).result
-
-    def request_with_diagnostics(self, payload: dict[str, object]) -> HookWorkerCallResult:
-        """Lease one serialized worker and return successful diagnostics."""
-        return self._request(payload, capture_diagnostics=True)
+        return self._request(
+            payload,
+            diagnostic_limit=diagnostic_limit,
+            settle_seconds=settle_seconds,
+        )
 
     def _request(
         self,
         payload: dict[str, object],
         *,
-        capture_diagnostics: bool,
+        diagnostic_limit: int | None,
+        settle_seconds: float,
     ) -> HookWorkerCallResult:
         worker = self._lease()
         try:
-            if capture_diagnostics:
-                return worker.request_with_diagnostics(payload)
-            return HookWorkerCallResult(result=worker.request(payload), diagnostics="")
+            return worker.request(
+                payload,
+                diagnostic_limit=diagnostic_limit,
+                settle_seconds=settle_seconds,
+            )
         except FatalHookWorkerError:
             self._retire(worker)
             raise
@@ -228,22 +252,15 @@ class UvHookWorker:
             )
             self._stderr_thread.start()
 
-    def request(self, payload: dict[str, object]) -> object:
-        """Send one request over NDJSON and return its result."""
-        return self._request(payload, capture_diagnostics=False).result
-
-    def request_with_diagnostics(self, payload: dict[str, object]) -> HookWorkerCallResult:
-        """Send one request over NDJSON and return its result plus diagnostics."""
-        return self._request(payload, capture_diagnostics=True)
-
-    def _request(
+    def request(
         self,
         payload: dict[str, object],
         *,
-        capture_diagnostics: bool,
+        diagnostic_limit: int | None = APPLY_DIAGNOSTIC_LIMIT,
+        settle_seconds: float = 0,
     ) -> HookWorkerCallResult:
+        """Send one request over NDJSON and return its result plus diagnostics."""
         with self._lock:
-            diagnostic_limit = None if capture_diagnostics else 4000
             self._next_id += 1
             request_id = str(self._next_id)
             request = {protocol.ID: request_id, **payload}
@@ -262,14 +279,19 @@ class UvHookWorker:
                 message = self._failure_message(
                     "hook worker exited before request",
                     diagnostic_limit=diagnostic_limit,
+                    settle_seconds=settle_seconds,
                 )
                 raise FatalHookWorkerError(message) from exc
-            response_line = self._read_response_line(diagnostic_limit=diagnostic_limit)
+            response_line = self._read_response_line(
+                diagnostic_limit=diagnostic_limit,
+                settle_seconds=settle_seconds,
+            )
             if not response_line:
                 raise FatalHookWorkerError(
                     self._failure_message(
                         "hook worker exited before response",
                         diagnostic_limit=diagnostic_limit,
+                        settle_seconds=settle_seconds,
                     )
                 )
             try:
@@ -279,6 +301,7 @@ class UvHookWorker:
                     self._failure_message(
                         f"malformed hook worker response: {response_line!r}",
                         diagnostic_limit=diagnostic_limit,
+                        settle_seconds=settle_seconds,
                     )
                 ) from exc
             if response.id != request_id:
@@ -287,6 +310,7 @@ class UvHookWorker:
                         "hook worker response id mismatch: "
                         f"expected {request_id}, got {response.id}",
                         diagnostic_limit=diagnostic_limit,
+                        settle_seconds=settle_seconds,
                     )
                 )
             if not response.ok:
@@ -294,18 +318,24 @@ class UvHookWorker:
                     self._failure_message(
                         response.error or "hook worker failed",
                         diagnostic_limit=diagnostic_limit,
+                        settle_seconds=settle_seconds,
                     )
                 )
             diagnostics = self._drain_diagnostics(
                 limit=diagnostic_limit,
-                settle_seconds=0.05 if capture_diagnostics else 0,
+                settle_seconds=settle_seconds,
             )
             return HookWorkerCallResult(
                 result=response.result,
-                diagnostics=diagnostics if capture_diagnostics else "",
+                diagnostics=diagnostics,
             )
 
-    def _read_response_line(self, *, diagnostic_limit: int | None) -> str | None:
+    def _read_response_line(
+        self,
+        *,
+        diagnostic_limit: int | None,
+        settle_seconds: float,
+    ) -> str | None:
         try:
             if self._hook_timeout_seconds == 0:
                 return self._stdout.get()
@@ -314,6 +344,7 @@ class UvHookWorker:
             message = self._failure_message(
                 f"hook worker timed out after {self._hook_timeout_seconds:g}s",
                 diagnostic_limit=diagnostic_limit,
+                settle_seconds=settle_seconds,
             )
             self.close()
             raise FatalHookWorkerError(message) from exc
@@ -363,17 +394,23 @@ class UvHookWorker:
         except FileNotFoundError as exc:
             raise ValueError("uv executable not found for hook project execution") from exc
 
-    def _failure_message(self, message: str, *, diagnostic_limit: int | None = 4000) -> str:
+    def _failure_message(
+        self,
+        message: str,
+        *,
+        diagnostic_limit: int | None = APPLY_DIAGNOSTIC_LIMIT,
+        settle_seconds: float = 0,
+    ) -> str:
         diagnostics = self._drain_diagnostics(
             limit=diagnostic_limit,
-            settle_seconds=0.05 if diagnostic_limit is None else 0,
+            settle_seconds=settle_seconds,
         )
         if diagnostics:
             return f"{message}\n{diagnostics}"
         return message
 
     def _discard_diagnostics(self) -> None:
-        self._drain_diagnostics(limit=4000)
+        self._drain_diagnostics(limit=APPLY_DIAGNOSTIC_LIMIT)
 
     def _drain_diagnostics(
         self,
@@ -391,7 +428,8 @@ class UvHookWorker:
                 if time.monotonic() >= deadline:
                     break
                 try:
-                    line = self._stderr.get(timeout=min(0.01, deadline - time.monotonic()))
+                    remaining = max(deadline - time.monotonic(), 0)
+                    line = self._stderr.get(timeout=min(0.01, remaining))
                 except Empty:
                     continue
             lines.append(line)

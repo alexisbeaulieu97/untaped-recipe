@@ -39,6 +39,12 @@ class UvHookRef:
 HookRef = BuiltinHookRef | UvHookRef
 
 
+def ensure_hook_kind(ref: HookRef, hook: str, *, expected: HookKind) -> None:
+    """Reject a hook reference whose declared kind cannot serve the caller."""
+    if ref.kind != expected:
+        raise ValueError(f"{expected} step hook {hook!r} resolves to {ref.kind} hook")
+
+
 class HookResolver:
     """Resolve logical hook names without importing external hook code."""
 

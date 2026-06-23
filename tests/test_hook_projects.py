@@ -23,6 +23,7 @@ from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
 from untaped_recipe.infrastructure.hook_worker_client import (
+    HookWorkerCallResult,
     HookWorkerResponse,
     UvHookWorker,
     UvHookWorkerPool,
@@ -267,16 +268,15 @@ def test_uv_hook_worker_serializes_request_dates_as_strings(
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
     worker = UvHookWorker(tmp_path)
 
-    assert (
-        worker.request(
-            {
-                "kind": "transform",
-                "module": "hooks.sample",
-                "args": {"day": dt.date(2026, 6, 19)},
-            }
-        )
-        == "after"
+    result = worker.request(
+        {
+            "kind": "transform",
+            "module": "hooks.sample",
+            "args": {"day": dt.date(2026, 6, 19)},
+        }
     )
+
+    assert result.result == "after"
     assert '"day": "2026-06-19"' in fake.stdin.getvalue()
 
 
@@ -294,7 +294,7 @@ def test_uv_hook_worker_discards_success_diagnostics_before_failure(
     worker = UvHookWorker(tmp_path)
     worker._stderr.put("success diagnostic\n")
 
-    assert worker.request({"kind": "transform", "module": "hooks.sample"}) == "after"
+    assert worker.request({"kind": "transform", "module": "hooks.sample"}).result == "after"
     worker._stderr.put("failure diagnostic\n")
 
     with pytest.raises(ValueError) as excinfo:
@@ -306,7 +306,7 @@ def test_uv_hook_worker_discards_success_diagnostics_before_failure(
     assert "success diagnostic" not in message
 
 
-def test_uv_hook_worker_can_return_success_diagnostics_for_debug(
+def test_uv_hook_worker_request_returns_result_and_diagnostics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -315,10 +315,34 @@ def test_uv_hook_worker_can_return_success_diagnostics_for_debug(
     worker = UvHookWorker(tmp_path)
     worker._stderr.put("success diagnostic\n")
 
-    result = worker.request_with_diagnostics({"kind": "transform", "module": "hooks.sample"})
+    result = worker.request(
+        {"kind": "transform", "module": "hooks.sample"},
+        diagnostic_limit=10_000,
+        settle_seconds=0.05,
+    )
 
     assert result.result == "after"
     assert result.diagnostics == "success diagnostic"
+
+
+def test_uv_hook_worker_diagnostics_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(stdout='{"id": "1", "ok": true, "result": "after"}\n')
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+    worker._stderr.put("12345\n")
+    worker._stderr.put("67890\n")
+
+    result = worker.request(
+        {"kind": "transform", "module": "hooks.sample"},
+        diagnostic_limit=7,
+    )
+
+    assert result.result == "after"
+    assert len(result.diagnostics) <= 7
+    assert "12345" not in result.diagnostics
 
 
 def test_uv_hook_worker_pool_leases_parallel_workers(
@@ -335,9 +359,15 @@ def test_uv_hook_worker_pool_leases_parallel_workers(
             self.worker_id = len(workers) + 1
             workers.append(self)
 
-        def request(self, payload: dict[str, object]) -> int:
+        def request(
+            self,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
             barrier.wait(timeout=5)
-            return self.worker_id
+            return HookWorkerCallResult(result=self.worker_id, diagnostics="")
 
         def close(self) -> None:
             self.closed = True
@@ -349,7 +379,10 @@ def test_uv_hook_worker_pool_leases_parallel_workers(
         UvHookWorkerPool(max_workers_per_project=2) as pool,
         ThreadPoolExecutor(max_workers=2) as executor,
     ):
-        results = list(executor.map(lambda _: pool.request(ref, {"kind": "transform"}), range(2)))
+        results = [
+            result.result
+            for result in executor.map(lambda _: pool.request(ref, {"kind": "transform"}), range(2))
+        ]
 
     assert sorted(results) == [1, 2]
     assert len(workers) == 2
@@ -369,8 +402,14 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
             self.worker_id = len(workers) + 1
             workers.append(self)
 
-        def request(self, payload: dict[str, object]) -> int:
-            return self.worker_id
+        def request(
+            self,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
+            return HookWorkerCallResult(result=self.worker_id, diagnostics="")
 
         def close(self) -> None:
             self.closed = True
@@ -379,7 +418,7 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
     ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with UvHookWorkerPool(max_workers_per_project=3) as pool:
-        results = [pool.request(ref, {"kind": "transform"}) for _ in range(3)]
+        results = [pool.request(ref, {"kind": "transform"}).result for _ in range(3)]
 
     assert results == [1, 1, 1]
     assert len(workers) == 1
@@ -398,8 +437,14 @@ def test_uv_hook_worker_pool_passes_timeout_to_workers(
             self.closed = False
             timeouts.append(hook_timeout_seconds)
 
-        def request(self, payload: dict[str, object]) -> str:
-            return "ok"
+        def request(
+            self,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
+            return HookWorkerCallResult(result="ok", diagnostics="")
 
         def close(self) -> None:
             self.closed = True
@@ -408,7 +453,7 @@ def test_uv_hook_worker_pool_passes_timeout_to_workers(
     ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
 
     with UvHookWorkerPool(max_workers_per_project=1, hook_timeout_seconds=12) as pool:
-        assert pool.request(ref, {"kind": "transform"}) == "ok"
+        assert pool.request(ref, {"kind": "transform"}).result == "ok"
 
     assert timeouts == [12]
 
@@ -426,10 +471,16 @@ def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
             self.worker_id = len(workers) + 1
             workers.append(self)
 
-        def request(self, payload: dict[str, object]) -> int:
+        def request(
+            self,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
             if self.worker_id == 1:
                 raise worker_client.FatalHookWorkerError("malformed hook worker response")
-            return self.worker_id
+            return HookWorkerCallResult(result=self.worker_id, diagnostics="")
 
         def close(self) -> None:
             self.closed = True
@@ -440,7 +491,7 @@ def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
     with UvHookWorkerPool(max_workers_per_project=1) as pool:
         with pytest.raises(ValueError, match="malformed hook worker response"):
             pool.request(ref, {"kind": "transform"})
-        assert pool.request(ref, {"kind": "transform"}) == 2
+        assert pool.request(ref, {"kind": "transform"}).result == 2
 
     assert len(workers) == 2
     assert workers[0].closed
@@ -462,12 +513,18 @@ def test_uv_hook_worker_pool_wakes_waiters_after_fatal_retirement(
             self.worker_id = len(workers) + 1
             workers.append(self)
 
-        def request(self, payload: dict[str, object]) -> int:
+        def request(
+            self,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
             if self.worker_id == 1:
                 first_request_started.set()
                 assert fail_first_request.wait(timeout=5)
                 raise worker_client.FatalHookWorkerError("hook worker timed out")
-            return self.worker_id
+            return HookWorkerCallResult(result=self.worker_id, diagnostics="")
 
         def close(self) -> None:
             self.closed = True
@@ -489,7 +546,7 @@ def test_uv_hook_worker_pool_wakes_waiters_after_fatal_retirement(
         with pytest.raises(worker_client.FatalHookWorkerError, match="timed out"):
             first.result(timeout=5)
         try:
-            assert second.result(timeout=1) == 2
+            assert second.result(timeout=1).result == 2
         except FutureTimeoutError as exc:
             msg = "waiting request was not woken after fatal retirement"
             raise AssertionError(msg) from exc
@@ -513,11 +570,17 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
             self.calls = 0
             workers.append(self)
 
-        def request(self, payload: dict[str, object]) -> int:
+        def request(
+            self,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
             self.calls += 1
             if self.calls == 1:
                 raise ValueError("validate hook failed")
-            return self.worker_id
+            return HookWorkerCallResult(result=self.worker_id, diagnostics="")
 
         def close(self) -> None:
             self.closed = True
@@ -528,7 +591,7 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
     with UvHookWorkerPool(max_workers_per_project=1) as pool:
         with pytest.raises(ValueError, match="validate hook failed"):
             pool.request(ref, {"kind": "validate"})
-        assert pool.request(ref, {"kind": "validate"}) == 1
+        assert pool.request(ref, {"kind": "validate"}).result == 1
 
     assert len(workers) == 1
     assert workers[0].closed
@@ -536,7 +599,14 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
 
 def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None:
     class ExplodingWorkers:
-        def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
+        def request(
+            self,
+            ref: UvHookRef,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
             raise AssertionError("worker should not be used for built-ins")
 
     executor = HookExecutor(
@@ -564,9 +634,16 @@ def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> Non
     calls: list[dict[str, object]] = []
 
     class RecordingWorkers:
-        def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
+        def request(
+            self,
+            ref: UvHookRef,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
             calls.append({"ref": ref, "payload": payload})
-            return "after\n"
+            return HookWorkerCallResult(result="after\n", diagnostics="discarded\n")
 
     executor = HookExecutor(
         HookResolver(global_hooks=tmp_path / "hooks"),
@@ -591,6 +668,41 @@ def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> Non
     assert payload["content"] == "before\n"
     assert payload["target"] == str(tmp_path / "target")
     assert payload["file"] == str(tmp_path / "target" / "local.yml")
+
+
+def test_hook_executor_debug_returns_external_diagnostics(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(recipe_dir, hooks={"suffix": "project_hooks.hooks.suffix"})
+
+    class RecordingWorkers:
+        def request(
+            self,
+            ref: UvHookRef,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
+            return HookWorkerCallResult(result="after\n", diagnostics="diagnostic\n")
+
+    executor = HookExecutor(
+        HookResolver(global_hooks=tmp_path / "hooks"),
+        workers=RecordingWorkers(),
+        helpers=HookHelpers(),
+    )
+
+    result = executor.transform_for_debug(
+        "suffix",
+        "before\n",
+        local_hook_project=recipe_dir,
+        target=tmp_path / "target",
+        file=tmp_path / "target" / "local.yml",
+        inputs={},
+        args={},
+    )
+
+    assert result.result == "after\n"
+    assert result.diagnostics == "diagnostic\n"
 
 
 def test_worker_script_executes_hooks_and_redirects_prints_to_stderr(tmp_path: Path) -> None:
@@ -689,8 +801,18 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
     _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"}, kind="validate")
 
     class WarningWorkers:
-        def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
-            return {"status": "warn", "message": "check this"}
+        def request(
+            self,
+            ref: UvHookRef,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
+            return HookWorkerCallResult(
+                result={"status": "warn", "message": "check this"},
+                diagnostics="discarded\n",
+            )
 
     executor = HookExecutor(
         HookResolver(global_hooks=tmp_path / "hooks"),

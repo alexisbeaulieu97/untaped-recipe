@@ -3,28 +3,26 @@
 from __future__ import annotations
 
 import traceback
+from collections.abc import Callable
 from contextlib import redirect_stdout
-from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
 from untaped_recipe import worker_protocol as protocol
-from untaped_recipe.application.ports import HookHelpersPort
-from untaped_recipe.domain.hook_project import HookKind
+from untaped_recipe.application.ports import HookDebugResult, HookHelpersPort
 from untaped_recipe.domain.plan import Verdict
-from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookRef, HookResolver
+from untaped_recipe.infrastructure.hook_resolver import (
+    BuiltinHookRef,
+    HookResolver,
+    UvHookRef,
+    ensure_hook_kind,
+)
 from untaped_recipe.infrastructure.hook_worker_client import (
-    HookWorkerCallResult,
+    APPLY_DIAGNOSTIC_LIMIT,
+    DEBUG_DIAGNOSTIC_LIMIT,
+    DEBUG_DIAGNOSTIC_SETTLE_SECONDS,
     HookWorkerClient,
 )
-
-
-@dataclass(frozen=True)
-class HookDebugResult[T]:
-    """Hook result plus diagnostics captured for one debug invocation."""
-
-    result: T
-    diagnostics: str
 
 
 class HookExecutionError(RuntimeError):
@@ -104,7 +102,7 @@ class HookExecutor:
         capture_diagnostics: bool,
     ) -> HookDebugResult[str]:
         ref = self._resolver.resolve(hook, local_hook_project)
-        _ensure_kind(ref, hook, expected="transform")
+        ensure_hook_kind(ref, hook, expected="transform")
         if isinstance(ref, BuiltinHookRef):
             execution = _call_builtin_for_debug(
                 lambda: _call_builtin_transform(
@@ -122,7 +120,7 @@ class HookExecutor:
             result = execution.result
             diagnostics = execution.diagnostics
         else:
-            execution = _request_external_for_debug(
+            execution = _request_external(
                 self._workers,
                 ref,
                 _transform_payload(
@@ -189,7 +187,7 @@ class HookExecutor:
         capture_diagnostics: bool,
     ) -> HookDebugResult[Verdict]:
         ref = self._resolver.resolve(hook, local_hook_project)
-        _ensure_kind(ref, hook, expected="validate")
+        ensure_hook_kind(ref, hook, expected="validate")
         if isinstance(ref, BuiltinHookRef):
             execution = _call_builtin_for_debug(
                 lambda: _call_builtin_validate(
@@ -205,7 +203,7 @@ class HookExecutor:
             result = execution.result
             diagnostics = execution.diagnostics
         else:
-            execution = _request_external_for_debug(
+            execution = _request_external(
                 self._workers,
                 ref,
                 {
@@ -219,11 +217,6 @@ class HookExecutor:
             result = execution.result
             diagnostics = execution.diagnostics
         return HookDebugResult(result=_coerce_verdict(result), diagnostics=diagnostics)
-
-
-def _ensure_kind(ref: HookRef, hook: str, *, expected: HookKind) -> None:
-    if ref.kind != expected:
-        raise ValueError(f"{expected} step hook {hook!r} resolves to {ref.kind} hook")
 
 
 def _transform_payload(
@@ -284,12 +277,10 @@ def _call_builtin_validate(
 
 
 def _call_builtin_for_debug(
-    call: object,
+    call: Callable[[], object],
     *,
     capture_diagnostics: bool,
 ) -> HookDebugResult[object]:
-    if not callable(call):
-        raise TypeError("call must be callable")
     if not capture_diagnostics:
         return HookDebugResult(result=call(), diagnostics="")
     stdout = StringIO()
@@ -301,27 +292,29 @@ def _call_builtin_for_debug(
     return HookDebugResult(result=result, diagnostics=stdout.getvalue().strip())
 
 
-def _request_external_for_debug(
+def _request_external(
     workers: HookWorkerClient,
-    ref: HookRef,
+    ref: UvHookRef,
     payload: dict[str, object],
     *,
     capture_diagnostics: bool,
 ) -> HookDebugResult[object]:
-    if isinstance(ref, BuiltinHookRef):
-        raise TypeError("external worker request requires a uv hook ref")
-    if not capture_diagnostics:
-        return HookDebugResult(result=workers.request(ref, payload), diagnostics="")
-    request_with_diagnostics = getattr(workers, "request_with_diagnostics", None)
-    if not callable(request_with_diagnostics):
-        return HookDebugResult(result=workers.request(ref, payload), diagnostics="")
+    diagnostic_limit = DEBUG_DIAGNOSTIC_LIMIT if capture_diagnostics else APPLY_DIAGNOSTIC_LIMIT
+    settle_seconds = DEBUG_DIAGNOSTIC_SETTLE_SECONDS if capture_diagnostics else 0
     try:
-        worker_result: HookWorkerCallResult = request_with_diagnostics(ref, payload)
+        worker_result = workers.request(
+            ref,
+            payload,
+            diagnostic_limit=diagnostic_limit,
+            settle_seconds=settle_seconds,
+        )
     except Exception as exc:
+        if not capture_diagnostics:
+            raise
         raise HookExecutionError(str(exc)) from exc
     return HookDebugResult(
         result=worker_result.result,
-        diagnostics=worker_result.diagnostics,
+        diagnostics=worker_result.diagnostics if capture_diagnostics else "",
     )
 
 

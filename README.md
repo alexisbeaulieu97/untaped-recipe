@@ -204,7 +204,8 @@ Validate hooks reject file/content options and emit a `recipe.hook_run` verdict
 record. Repeated `--input KEY=VALUE` and `--arg KEY=VALUE` values are
 YAML-parsed and override `--inputs`/`--args` YAML mapping files. Fixture context
 and hook diagnostics go to stderr; structured `--format json|yaml|table|pipe`
-output omits raw input and arg values.
+output omits raw input and arg values. Use SDK `--quiet` when ad-hoc fixture
+values should not be echoed in a shared terminal.
 
 See [docs/recipes.md](./docs/recipes.md) and
 [docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.

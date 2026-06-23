@@ -22,9 +22,15 @@ from untaped.api import (
     ui_context,
 )
 
-from untaped_recipe.cli.common import edit_path, library_root, report_config_errors, settings
+from untaped_recipe.application.run_hook import RunHook, TransformHookRun, ValidateHookRun
+from untaped_recipe.cli.common import (
+    edit_path,
+    library_root,
+    load_yaml_mapping_file,
+    report_config_errors,
+    settings,
+)
 from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata
-from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.plan import FileChange, Verdict
 from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_executor import HookExecutionError, HookExecutor
@@ -125,16 +131,17 @@ def run_command(
     """Run one hook once against explicit fixture context without writing files."""
     with report_config_errors():
         root = library_root()
-        target = _target_dir(target)
         local_hook_project = _local_hook_project(project)
         resolver = HookResolver(global_hooks=root / "hooks")
         ref = resolver.resolve(name, local_hook_project)
-        _validate_context_options(
-            ref.kind,
+        if ref.kind == "validate" and diff:
+            raise ConfigError("validate hooks do not accept --file or content options")
+        RunHook.validate_context(
+            kind=ref.kind,
+            target=target,
             file=file,
             content=content,
             content_file=content_file,
-            diff=diff,
         )
         inputs = _fixture_mapping(
             inputs_file,
@@ -143,47 +150,54 @@ def run_command(
             kv_flag="--input",
         )
         args = _fixture_mapping(args_file, raw_args or [], file_flag="--args", kv_flag="--arg")
-        _render_hook_run_context(
-            name,
-            kind=ref.kind,
-            target=target,
-            file=file,
-            inputs=inputs,
-            args=args,
-        )
+        prepared_content = _content_value(content)
         with UvHookWorkerPool(hook_timeout_seconds=_hook_timeout_seconds(hook_timeout)) as workers:
             executor = HookExecutor(
                 resolver,
                 workers=workers,
                 helpers=HookHelpers(),
             )
-            if ref.kind == "transform":
-                _run_transform(
-                    executor,
+            try:
+                execution = RunHook(executor).run(
                     name,
+                    kind=ref.kind,
                     local_hook_project=local_hook_project,
                     target=target,
                     file=file,
-                    content=content,
+                    content=prepared_content,
                     content_file=content_file,
                     inputs=inputs,
                     args=args,
+                )
+            except HookExecutionError as exc:
+                _print_hook_failure(str(exc))
+                raise SystemExit(1) from exc
+            if isinstance(execution, TransformHookRun):
+                _render_hook_run_context(
+                    execution.hook,
+                    kind=execution.kind,
+                    target=execution.target,
+                    file=execution.relative_file,
+                    inputs=inputs,
+                    args=args,
+                )
+                _run_transform(
+                    execution,
                     diff=diff,
                     fmt=fmt,
                     columns=columns,
                 )
             else:
-                _run_validate(
-                    executor,
-                    name,
-                    local_hook_project=local_hook_project,
-                    target=target,
-                    file=file,
-                    content=content,
-                    content_file=content_file,
+                _render_hook_run_context(
+                    execution.hook,
+                    kind=execution.kind,
+                    target=execution.target,
+                    file=None,
                     inputs=inputs,
                     args=args,
-                    diff=diff,
+                )
+                _run_validate(
+                    execution,
                     fmt=fmt,
                     columns=columns,
                 )
@@ -249,49 +263,20 @@ def edit_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) 
 
 
 def _run_transform(
-    executor: HookExecutor,
-    hook: str,
+    execution: TransformHookRun,
     *,
-    local_hook_project: Path | None,
-    target: Path,
-    file: Path | None,
-    content: str | None,
-    content_file: Path | None,
-    inputs: dict[str, object],
-    args: dict[str, object],
     diff: bool,
     fmt: HookRunFormat | None,
     columns: list[str] | None,
 ) -> None:
-    if file is None:
-        raise ConfigError("transform hooks require --file")
-    before, resolved_file = _transform_content(
-        target,
-        file,
-        content=content,
-        content_file=content_file,
-    )
-    try:
-        execution = executor.transform_for_debug(
-            hook,
-            before,
-            local_hook_project=local_hook_project,
-            target=target,
-            file=resolved_file,
-            inputs=inputs,
-            args=args,
-        )
-    except HookExecutionError as exc:
-        _print_hook_failure(str(exc))
-        raise SystemExit(1) from exc
     _print_hook_diagnostics(execution.diagnostics)
     diff_text = (
         unified_diff(
             FileChange(
-                target=target,
-                relative_path=file,
-                before=before,
-                after=execution.result,
+                target=execution.target,
+                relative_path=execution.relative_file,
+                before=execution.before,
+                after=execution.content,
             )
         )
         if diff
@@ -299,79 +284,44 @@ def _run_transform(
     )
     if fmt is not None:
         record: dict[str, object] = {
-            "hook": hook,
+            "hook": execution.hook,
             "kind": "transform",
-            "target": str(target),
-            "file": str(file),
+            "target": str(execution.target),
+            "file": str(execution.relative_file),
             "status": "ok",
-            "content": execution.result,
+            "content": execution.content,
         }
         if diff_text is not None:
             record["diff"] = diff_text
         emit(record, fmt=fmt, columns=columns, kind="recipe.hook_run")
         return
-    echo(diff_text if diff_text is not None else execution.result, nl=False)
+    echo(diff_text if diff_text is not None else execution.content, nl=False)
 
 
 def _run_validate(
-    executor: HookExecutor,
-    hook: str,
+    execution: ValidateHookRun,
     *,
-    local_hook_project: Path | None,
-    target: Path,
-    file: Path | None,
-    content: str | None,
-    content_file: Path | None,
-    inputs: dict[str, object],
-    args: dict[str, object],
-    diff: bool,
     fmt: HookRunFormat | None,
     columns: list[str] | None,
 ) -> None:
-    try:
-        execution = executor.validate_for_debug(
-            hook,
-            local_hook_project=local_hook_project,
-            target=target,
-            inputs=inputs,
-            args=args,
-        )
-    except HookExecutionError as exc:
-        _print_hook_failure(str(exc))
-        raise SystemExit(1) from exc
     _print_hook_diagnostics(execution.diagnostics)
-    record = _validate_record(hook, target=target, verdict=execution.result)
+    record = _validate_record(execution.hook, target=execution.target, verdict=execution.verdict)
     emit(record, fmt=fmt or "table", columns=columns, kind="recipe.hook_run")
-    if execution.result.failed:
+    if execution.verdict.failed:
         raise SystemExit(1)
-
-
-def _target_dir(target: Path) -> Path:
-    resolved = target.expanduser().resolve()
-    if not resolved.is_dir():
-        raise ConfigError(f"target is not a directory: {target}")
-    return resolved
-
-
-def _validate_context_options(
-    kind: HookKind,
-    *,
-    file: Path | None,
-    content: str | None,
-    content_file: Path | None,
-    diff: bool,
-) -> None:
-    if kind == "transform":
-        if file is None:
-            raise ConfigError("transform hooks require --file")
-        return
-    if file is not None or content is not None or content_file is not None or diff:
-        raise ConfigError("validate hooks do not accept --file or content options")
 
 
 def _local_hook_project(project: Path | None) -> Path | None:
     if project is not None:
-        return project.expanduser().resolve()
+        resolved = project.expanduser().resolve()
+        if not resolved.is_dir():
+            raise ConfigError(f"hook project not found: {project}")
+        if not (resolved / "pyproject.toml").is_file():
+            raise ConfigError(f"hook project has no pyproject.toml: {project}")
+        metadata = read_hook_metadata(resolved)
+        if not metadata.hooks:
+            raise ConfigError(f"hook project has no hook metadata: {project}")
+        return resolved
     cwd = Path.cwd()
     if not (cwd / "pyproject.toml").is_file():
         return None
@@ -379,27 +329,6 @@ def _local_hook_project(project: Path | None) -> Path | None:
     if not metadata.hooks:
         return None
     return cwd
-
-
-def _transform_content(
-    target: Path,
-    file: Path,
-    *,
-    content: str | None,
-    content_file: Path | None,
-) -> tuple[str, Path]:
-    if content is not None and content_file is not None:
-        raise ConfigError("provide --content or --content-file, not both")
-    resolved_file = confined_path(target, file, field="file")
-    if content_file is not None:
-        return content_file.expanduser().read_text(), resolved_file
-    if content is not None:
-        return (sys.stdin.read() if content == "-" else content), resolved_file
-    if not resolved_file.exists():
-        raise ConfigError(f"transform file not found: {file}")
-    if not resolved_file.is_file():
-        raise ConfigError(f"transform path is not a file: {file}")
-    return resolved_file.read_text(), resolved_file
 
 
 def _fixture_mapping(
@@ -411,26 +340,26 @@ def _fixture_mapping(
 ) -> dict[str, object]:
     values: dict[str, object] = {}
     if path is not None:
-        values.update(_yaml_mapping_file(path, flag=file_flag))
+        values.update(load_yaml_mapping_file(path, flag=file_flag))
     values.update(_yaml_kv_pairs(raw_pairs, flag=kv_flag))
     return values
 
 
-def _yaml_mapping_file(path: Path, *, flag: str) -> dict[str, object]:
-    try:
-        loaded = yaml.safe_load(path.expanduser().read_text()) or {}
-    except OSError as exc:
-        raise ConfigError(f"{flag} file not found: {path}") from exc
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"{flag} file is invalid YAML: {exc}") from exc
-    if not isinstance(loaded, dict):
-        raise ConfigError(f"{flag} file must contain a YAML mapping")
-    return {str(key): value for key, value in loaded.items()}
+def _content_value(content: str | None) -> str | None:
+    if content == "-":
+        return sys.stdin.read()
+    return content
 
 
 def _yaml_kv_pairs(raw_pairs: list[str], *, flag: str) -> dict[str, object]:
     parsed = parse_kv_pairs(raw_pairs, flag=flag)
-    return {key: yaml.safe_load(str(value)) for key, value in parsed.items()}
+    values: dict[str, object] = {}
+    for key, value in parsed.items():
+        try:
+            values[key] = yaml.safe_load(str(value))
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"{flag} value for {key!r} is invalid YAML: {exc}") from exc
+    return values
 
 
 def _render_hook_run_context(

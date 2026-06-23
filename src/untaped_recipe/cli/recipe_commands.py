@@ -23,7 +23,7 @@ from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata, val
 from untaped_recipe.domain.paths import confined_path, is_explicit_path
 from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
 from untaped_recipe.infrastructure.hook_library import add_hook_to_project
-from untaped_recipe.infrastructure.hook_resolver import HookResolver
+from untaped_recipe.infrastructure.hook_resolver import HookResolver, ensure_hook_kind
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary, RecipeResolution
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
@@ -274,5 +274,4 @@ def _check_hook_kind(
     expected: HookKind,
 ) -> None:
     ref = resolver.resolve(hook, local_hook_project)
-    if ref.kind != expected:
-        raise ValueError(f"{expected} step hook {hook!r} resolves to {ref.kind} hook")
+    ensure_hook_kind(ref, hook, expected=expected)

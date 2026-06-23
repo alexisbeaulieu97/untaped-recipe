@@ -13,12 +13,20 @@ from untaped_recipe.hook_worker import handle_request
 from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_resolver import HookResolver, UvHookRef
+from untaped_recipe.infrastructure.hook_worker_client import HookWorkerCallResult
 
 
 class InlineWorkers:
     """Execute worker requests in-process for planner unit tests."""
 
-    def request(self, ref: UvHookRef, payload: dict[str, object]) -> object:
+    def request(
+        self,
+        ref: UvHookRef,
+        payload: dict[str, object],
+        *,
+        diagnostic_limit: int | None = 4000,
+        settle_seconds: float = 0,
+    ) -> HookWorkerCallResult:
         for name in tuple(sys.modules):
             if name == "recipe_hooks" or name.startswith("recipe_hooks."):
                 del sys.modules[name]
@@ -29,7 +37,7 @@ class InlineWorkers:
             sys.path.pop(0)
         if not response["ok"]:
             raise ValueError(str(response["error"]))
-        return response["result"]
+        return HookWorkerCallResult(result=response["result"], diagnostics="")
 
 
 def _planner(tmp_path: Path):

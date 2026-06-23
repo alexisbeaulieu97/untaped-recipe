@@ -1,0 +1,85 @@
+"""Tests for the hook-run application use case."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from untaped_recipe.application.ports import HookDebugResult
+from untaped_recipe.application.run_hook import RunHook, TransformHookRun
+from untaped_recipe.domain.plan import Verdict
+
+
+class _DebugExecutor:
+    def __init__(self) -> None:
+        self.transform_calls: list[dict[str, object]] = []
+
+    def transform_for_debug(
+        self,
+        hook: str,
+        content: str,
+        *,
+        local_hook_project: Path | None,
+        target: Path,
+        file: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+    ) -> HookDebugResult[str]:
+        self.transform_calls.append(
+            {
+                "hook": hook,
+                "content": content,
+                "local_hook_project": local_hook_project,
+                "target": target,
+                "file": file,
+                "inputs": inputs,
+                "args": args,
+            }
+        )
+        return HookDebugResult(result=content + "!", diagnostics="diagnostic\n")
+
+    def validate_for_debug(
+        self,
+        hook: str,
+        *,
+        local_hook_project: Path | None,
+        target: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+    ) -> HookDebugResult[Verdict]:
+        return HookDebugResult(result=Verdict(status="pass"), diagnostics="")
+
+
+def test_run_hook_transform_reads_target_file_and_invokes_executor(tmp_path: Path) -> None:
+    executor = _DebugExecutor()
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+
+    result = RunHook(executor).run(
+        "sample",
+        kind="transform",
+        local_hook_project=None,
+        target=target,
+        file=Path("config.txt"),
+        content=None,
+        content_file=None,
+        inputs={"enabled": True},
+        args={"count": 3},
+        diff=False,
+    )
+
+    assert isinstance(result, TransformHookRun)
+    assert result.before == "before"
+    assert result.content == "before!"
+    assert result.diagnostics == "diagnostic\n"
+    assert executor.transform_calls == [
+        {
+            "hook": "sample",
+            "content": "before",
+            "local_hook_project": None,
+            "target": target.resolve(),
+            "file": target.resolve() / "config.txt",
+            "inputs": {"enabled": True},
+            "args": {"count": 3},
+        }
+    ]

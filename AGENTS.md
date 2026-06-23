@@ -49,23 +49,23 @@ src/untaped_recipe/
 ├── __main__.py          # SDK ToolSpec and console-script entry point
 ├── settings.py          # recipe settings section
 ├── cli/                 # Cyclopts commands, output rows, and preview rendering
-├── application/         # apply orchestration, target parsing, ports
+├── application/         # apply orchestration, hook-run use cases, target parsing, ports
 ├── domain/              # schema, verdicts, file changes, plans
 ├── infrastructure/      # libraries, hook resolution/execution, backups, diffs, YAML
 ├── builtins/hooks/      # packaged trusted transform hooks
 └── skills/              # packaged agent skill
 ```
 
-The `application` layer plans all target changes in memory. The CLI renders
-stderr previews from `cli/preview.py`: normal apply and `--dry-run` default to
-a file-level table, while `--check` defaults to summary-only CI output unless
-`--preview table` or `--preview diff` is passed. Diff mode keeps
-patch-compatible `a/` and `b/` headers. The command path calls the SDK batch
-confirmation helper with the generic target-row preview suppressed because
-recipe owns richer file-level preview detail. Successful target plans are
-flushed only after confirmation and one backup bundle has been created for the
-invocation. Target parsing preserves optional untaped pipe record context for
-per-target input derivation;
+The `application` layer plans all target changes in memory and owns hook-run
+fixture validation plus hook invocation. The CLI renders stderr previews from
+`cli/preview.py`: normal apply and `--dry-run` default to a file-level table,
+while `--check` defaults to summary-only CI output unless `--preview table` or
+`--preview diff` is passed. Diff mode keeps patch-compatible `a/` and `b/`
+headers. The command path calls the SDK batch confirmation helper with the
+generic target-row preview suppressed because recipe owns richer file-level
+preview detail. Successful target plans are flushed only after confirmation and
+one backup bundle has been created for the invocation. Target parsing preserves
+optional untaped pipe record context for per-target input derivation;
 `ApplyRecipe` still receives only a concrete target path plus resolved plain
 inputs.
 
@@ -223,7 +223,7 @@ surface as per-target planning failures rather than hanging the full batch.
 transformed content to stdout by default, and can emit `--diff`; validate mode
 emits a `recipe.hook_run` verdict record. Fixture context and hook diagnostics
 belong on stderr. Successful external hook diagnostics stay discarded for
-`apply`, but are surfaced by `hook run`.
+`apply`, but are surfaced by `hook run` with a 10 MiB per-invocation cap.
 
 Built-ins use the direct registry and run in-process. Keep built-ins reserved
 for engine-owned code such as `yaml_edit`.

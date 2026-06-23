@@ -96,15 +96,19 @@ plain directories.
 - `recipe check` and `pack check` reject steps whose type does not match the
   resolved hook kind.
 - `hook run` resolves explicit `--project PATH`, then a cwd hook project, then
-  global hooks, then built-ins. Transform hooks require `--file`; default
+  global hooks, then built-ins. An explicit `--project` must point at a hook
+  project with hook metadata and never falls through to later sources.
+  Transform hooks require `--file`; default
   stdout is exact transformed content with no added newline, and `--diff`
   switches stdout to a unified diff. Validate hooks reject file/content options
   and emit a `recipe.hook_run` verdict record.
 - `hook run` accepts `--inputs`/`--args` YAML mapping files plus repeated
   YAML-parsed `--input KEY=VALUE` and `--arg KEY=VALUE` overrides. It prints
   resolved context and hook diagnostics to stderr; SDK `--quiet` suppresses
-  context chatter but not hook diagnostics or errors. Structured
-  `--format json|yaml|table|pipe` omits raw input and arg values.
+  context chatter but not hook diagnostics or errors. Context chatter includes
+  ad-hoc fixture values, so use `--quiet` for sensitive values in shared
+  terminals. Structured `--format json|yaml|table|pipe` omits raw input and arg
+  values. Successful hook-run diagnostics are capped at 10 MiB per invocation.
 - Use `untaped-recipe recipe init <name>` and
   `untaped-recipe pack init <name>` to scaffold authoring projects. Add local
   hooks with `untaped-recipe recipe hook init <recipe> <hook>` or

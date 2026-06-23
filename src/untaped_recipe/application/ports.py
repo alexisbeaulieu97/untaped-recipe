@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from untaped_recipe.domain.plan import Verdict
+
+
+@dataclass(frozen=True)
+class HookDebugResult[T]:
+    """Hook result plus diagnostics captured for one debug invocation."""
+
+    result: T
+    diagnostics: str
 
 
 class HookExecutorPort(Protocol):
@@ -34,6 +43,34 @@ class HookExecutorPort(Protocol):
         args: dict[str, object],
     ) -> Verdict:
         """Run a validate hook and return its coerced verdict."""
+
+
+class HookDebugExecutorPort(HookExecutorPort, Protocol):
+    """Execute trusted hooks and expose successful diagnostics for debugging."""
+
+    def transform_for_debug(
+        self,
+        hook: str,
+        content: str,
+        *,
+        local_hook_project: Path | None,
+        target: Path,
+        file: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+    ) -> HookDebugResult[str]:
+        """Run a transform hook and return replacement content plus diagnostics."""
+
+    def validate_for_debug(
+        self,
+        hook: str,
+        *,
+        local_hook_project: Path | None,
+        target: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+    ) -> HookDebugResult[Verdict]:
+        """Run a validate hook and return its coerced verdict plus diagnostics."""
 
 
 class HookHelpersPort(Protocol):

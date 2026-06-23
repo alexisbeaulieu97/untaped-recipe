@@ -126,7 +126,7 @@ is protocol-only. Hook `print()` output is redirected to stderr, and stderr is
 used as bounded diagnostics when a worker request fails. Successful request
 diagnostics are discarded during `apply` so chatty hooks do not grow memory
 during bulk runs. `hook run` captures successful hook diagnostics and prints
-them to stderr for debugging.
+them to stderr for debugging, capped at 10 MiB per hook invocation.
 Engine-side Pydantic models validate worker responses before any file changes
 are accepted into a plan.
 
@@ -233,7 +233,9 @@ bare names resolve through the hook library.
 
 `hook run` invokes exactly one resolved hook without writing target files. It
 uses the same `HookExecutor`, resolver, helpers, built-in in-process calls, and
-external uv worker protocol as `apply`.
+external uv worker protocol as `apply`. An explicit `--project PATH` must point
+at a hook project with hook metadata; it never falls through to global hooks or
+built-ins when the path is missing or not a hook project.
 
 Transform hooks require `--target DIR --file TARGET_RELATIVE_PATH`. Without a
 content override, `hook run` reads the target file and writes exact transformed
@@ -260,7 +262,9 @@ stay strings when YAML would coerce them.
 
 By default, `hook run` prints resolved target, file, inputs, args, and hook
 diagnostics to stderr. The SDK `--quiet` flag suppresses the resolved context
-messages but not hook diagnostics or errors. Structured
+messages but not hook diagnostics or errors. This context echo includes the
+ad-hoc fixture values passed on the command line or loaded from fixture files,
+so use `--quiet` in shared terminals when those values are sensitive. Structured
 `--format json|yaml|table|pipe` emits `recipe.hook_run` on stdout. Transform
 records include `content` and include `diff` when `--diff` is passed; structured
 records omit raw input and arg values.

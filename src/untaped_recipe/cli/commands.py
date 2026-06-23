@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
-import yaml
 from cyclopts import Parameter
 from untaped.api import (
     BatchOutcome,
@@ -31,7 +30,12 @@ from untaped_recipe.application.inputs import PromptFunc
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
-from untaped_recipe.cli.common import library_root, report_config_errors, settings
+from untaped_recipe.cli.common import (
+    library_root,
+    load_yaml_mapping_file,
+    report_config_errors,
+    settings,
+)
 from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.pack_commands import app as pack_app
 from untaped_recipe.cli.preview import PreviewMode, render_preview
@@ -386,10 +390,7 @@ def _targets(positional: list[Path], *, stdin: bool) -> list[Target]:
 def _input_values(raw_vars: list[str], vars_file: Path | None) -> dict[str, object]:
     values: dict[str, object] = {}
     if vars_file is not None:
-        loaded = yaml.safe_load(vars_file.read_text()) or {}
-        if not isinstance(loaded, dict):
-            raise ConfigError("--vars file must contain a YAML mapping")
-        values.update(loaded)
+        values.update(load_yaml_mapping_file(vars_file, flag="--vars"))
     values.update(parse_kv_pairs(raw_vars, flag="--var"))
     return values
 

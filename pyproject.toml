@@ -1,6 +1,6 @@
 [project]
 name = "untaped-recipe"
-version = "0.5.1"
+version = "0.6.0"
 description = "Apply reusable local recipes across plain directories."
 readme = "README.md"
 authors = [
@@ -14,7 +14,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "ruamel.yaml>=0.18.16",
     "tomlkit>=0.13,<1",
-    "untaped>=2.3.0,<3",
+    "untaped>=2.4.0,<3",
 ]
 
 [project.scripts]
@@ -112,4 +112,4 @@ exclude_also = [
 ]
 
 [tool.uv.sources]
-untaped = { git = "https://github.com/alexisbeaulieu97/untaped.git", rev = "v2.3.0" }
+untaped = { git = "https://github.com/alexisbeaulieu97/untaped.git", rev = "v2.4.0" }

@@ -758,7 +758,7 @@ def test_apply_stdin_requires_yes_and_resolves_workspace_repo_pipe(tmp_path: Pat
         {
             "untaped": "1",
             "kind": "workspace.repo",
-            "record": {"path": str(workspace), "repo": "api"},
+            "record": {"path": str(workspace), "target_path": str(repo), "repo": "api"},
         }
     )
 
@@ -773,6 +773,89 @@ def test_apply_stdin_requires_yes_and_resolves_workspace_repo_pipe(tmp_path: Pat
     )
     assert result.exit_code == 0, result.output
     assert (repo / "out.txt").read_text() == "hello\n"
+
+
+def test_apply_stdin_rejects_old_workspace_repo_pipe_without_target_path(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    workspace = tmp_path / "workspace"
+    repo = workspace / "api"
+    repo.mkdir(parents=True)
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "workspace.repo",
+            "record": {"path": str(workspace), "repo": "api"},
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--yes"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code != 0
+    assert "workspace.repo pipe record requires target_path" in result.output
+    assert "rerun or upgrade untaped-workspace" in result.output
+    assert not (workspace / "out.txt").exists()
+    assert not (repo / "out.txt").exists()
+
+
+def test_apply_stdin_summary_only_is_noop(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "workspace.summary",
+            "record": {
+                "workspace": "prod",
+                "path": str(workspace),
+                "default_branch": "main",
+                "repo_count": 0,
+                "repo": "",
+                "url": "",
+                "repo_branch": None,
+                "target_branch": None,
+            },
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--yes"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Recipe apply: 0 applied, 0 unchanged, 0 failed" in result.stderr
+    assert not (workspace / "out.txt").exists()
+
+
+def test_apply_stdin_empty_input_still_errors(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--yes"],
+        input="",
+    )
+
+    assert result.exit_code != 0
+    assert "no targets received on stdin" in result.output
 
 
 def test_apply_check_allows_stdin_without_yes(tmp_path: Path) -> None:
@@ -1338,7 +1421,12 @@ def test_apply_derives_inputs_from_pipe_record_and_input_from_override(
         {
             "untaped": "1",
             "kind": "workspace.repo",
-            "record": {"path": str(workspace), "repo": "api", "team": "platform"},
+            "record": {
+                "path": str(workspace),
+                "target_path": str(target),
+                "repo": "api",
+                "team": "platform",
+            },
         }
     )
 

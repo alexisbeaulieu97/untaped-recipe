@@ -21,11 +21,19 @@ def test_resolves_bare_paths() -> None:
     ]
 
 
-def test_resolves_workspace_pipe_kinds() -> None:
+def test_resolves_pipe_target_paths_and_generic_path_fallback() -> None:
     lines = [
         (1, _env("workspace.workspace", {"path": "/tmp/ws"})),
-        (2, _env("workspace.repo", {"path": "/tmp/ws", "repo": "api"})),
-        (3, _env("other.kind", {"path": "/tmp/explicit"})),
+        (
+            2,
+            _env(
+                "workspace.repo",
+                {"path": "/tmp/ws", "target_path": "/tmp/ws/api", "repo": "api"},
+            ),
+        ),
+        (3, _env("other.kind", {"path": "/tmp/ws", "target_path": "/tmp/explicit"})),
+        (4, _env("other.kind", {"path": "/tmp/fallback"})),
+        (5, _env("workspace.summary", {"path": "/tmp/ws", "repo_count": 0, "repo": ""})),
     ]
 
     assert resolve_target_lines(lines) == [
@@ -37,16 +45,30 @@ def test_resolves_workspace_pipe_kinds() -> None:
         ),
         Target(
             path=Path("/tmp/ws/api"),
-            record={"path": "/tmp/ws", "repo": "api"},
+            record={"path": "/tmp/ws", "target_path": "/tmp/ws/api", "repo": "api"},
             kind="workspace.repo",
             lineno=2,
         ),
         Target(
             path=Path("/tmp/explicit"),
-            record={"path": "/tmp/explicit"},
+            record={"path": "/tmp/ws", "target_path": "/tmp/explicit"},
             kind="other.kind",
             lineno=3,
         ),
+        Target(
+            path=Path("/tmp/fallback"),
+            record={"path": "/tmp/fallback"},
+            kind="other.kind",
+            lineno=4,
+        ),
+    ]
+
+
+def test_foreign_records_with_repo_use_generic_path_fallback() -> None:
+    record = {"path": "/tmp/checkout", "repo": "api"}
+
+    assert resolve_target_lines([(1, _env("github.pr", record))]) == [
+        Target(path=Path("/tmp/checkout"), record=record, kind="github.pr", lineno=1)
     ]
 
 
@@ -56,9 +78,25 @@ def test_rejects_malformed_or_unusable_pipe_records() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"line 1: workspace\.repo record requires path and repo",
+        match=r"line 1: workspace.repo pipe record requires target_path.*rerun.*workspace",
     ):
         resolve_target_lines([(1, _env("workspace.repo", {"path": "/tmp/ws"}))])
 
+    with pytest.raises(
+        ValueError,
+        match=r"line 1: workspace.repo pipe record requires target_path.*rerun.*workspace",
+    ):
+        resolve_target_lines([(1, _env("workspace.repo", {"path": "/tmp/ws", "repo": ""}))])
+
+    with pytest.raises(ValueError, match="line 1: target_path must be absolute"):
+        resolve_target_lines(
+            [(1, _env("workspace.repo", {"path": "/tmp/ws", "target_path": "api"}))]
+        )
+
+    with pytest.raises(ValueError, match="line 1: target_path must be a non-empty string"):
+        resolve_target_lines(
+            [(1, _env("workspace.repo", {"path": "/tmp/ws", "target_path": "   "}))]
+        )
+
     with pytest.raises(ValueError, match="line 1: record path is missing or blank"):
-        resolve_target_lines([(1, _env("other.kind", {"repo": "api"}))])
+        resolve_target_lines([(1, _env("other.kind", {"name": "api"}))])

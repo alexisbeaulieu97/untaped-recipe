@@ -57,7 +57,11 @@ src/untaped_recipe/
 ```
 
 The `application` layer plans all target changes in memory and owns hook-run
-fixture validation plus hook invocation. The CLI renders stderr previews from
+fixture validation plus hook invocation. Pipe target parsing resolves
+absolute `record.target_path` before generic `record.path`; records whose
+`kind` ends in `.summary` are skipped as non-targets. Repo-grain records such
+as `workspace.repo` must provide `target_path` and stale `path`+`repo` streams
+fail before planning. The CLI renders stderr previews from
 `cli/preview.py`: normal apply and `--dry-run` default to a file-level table,
 while `--check` defaults to summary-only CI output unless `--preview table` or
 `--preview diff` is passed. Diff mode keeps patch-compatible `a/` and `b/`

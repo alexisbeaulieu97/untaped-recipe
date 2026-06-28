@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from untaped.pipe import is_envelope_line, parse_envelope_line
+from untaped.api import is_envelope_line, parse_envelope_line
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,8 @@ def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Target]:
             targets.append(Target(path=Path(text), lineno=lineno))
             continue
         env = parse_envelope_line(lineno, text)
+        if _is_summary_kind(env.kind):
+            continue
         targets.append(
             Target(
                 path=_target_from_record(env.kind, env.record, lineno),
@@ -47,15 +49,36 @@ def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Target]:
 
 
 def _target_from_record(kind: str | None, record: dict[str, object], lineno: int) -> Path:
-    path_value = _string_field(record, "path")
+    target_path = _target_path(record, lineno)
+    if target_path is not None:
+        return target_path
     if kind == "workspace.repo":
-        repo = _string_field(record, "repo")
-        if path_value is None or repo is None:
-            raise ValueError(f"line {lineno}: workspace.repo record requires path and repo")
-        return Path(path_value) / repo
+        # Bounded migration shim for pre-target_path workspace repo records;
+        # generic target consumers should otherwise rely on path/target_path.
+        raise ValueError(
+            f"line {lineno}: workspace.repo pipe record requires target_path; "
+            "rerun or upgrade untaped-workspace so repo records include target_path"
+        )
+    path_value = _string_field(record, "path")
     if path_value is None:
         raise ValueError(f"line {lineno}: record path is missing or blank")
     return Path(path_value)
+
+
+def _is_summary_kind(kind: str | None) -> bool:
+    return kind is not None and kind.endswith(".summary")
+
+
+def _target_path(record: dict[str, object], lineno: int) -> Path | None:
+    value = record.get("target_path")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"line {lineno}: target_path must be a non-empty string")
+    path = Path(value.strip())
+    if not path.is_absolute():
+        raise ValueError(f"line {lineno}: target_path must be absolute")
+    return path
 
 
 def _string_field(record: dict[str, object], field: str) -> str | None:

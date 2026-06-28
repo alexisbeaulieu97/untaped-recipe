@@ -158,11 +158,14 @@ plain directories.
 - Backup file entries include redacted per-target inputs and never store the
   full incoming pipe record.
 - `--check` emits `recipe.outcome` rows with `status` set to `check`.
-- `apply --stdin` consumes bare paths plus `workspace.workspace` and
-  `workspace.repo` records. `--stdin --interactive` reads target data from
-  stdin and prompts only through the controlling terminal; it fails clearly if
-  no terminal is available. `--stdin` writes still require `--yes` unless
-  `--dry-run` or `--check` is used.
+- `apply --stdin` consumes bare paths plus untaped pipe records. It resolves
+  absolute `record.target_path` first, then generic `record.path`; records
+  whose `kind` ends in `.summary` are skipped as non-targets. Repo-grain
+  records such as `workspace.repo` must provide `target_path` and stale
+  `path`+`repo` streams fail before planning. `--stdin --interactive` reads
+  target data from stdin and prompts only through the controlling terminal; it
+  fails clearly if no terminal is available. `--stdin` writes still require
+  `--yes` unless `--dry-run` or `--check` is used.
 - The SDK provides `--quiet`/`-q`, `config doctor`, and `config edit`.
   `--quiet` mutes post-run success chatter, not selected preview detail,
   warnings, errors, or destructive confirmation prompts. `--format` and

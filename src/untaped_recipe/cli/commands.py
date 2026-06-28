@@ -78,6 +78,14 @@ class ApplyExecution:
     cancelled: bool = False
 
 
+@dataclass(frozen=True)
+class TargetInput:
+    """Resolved target records plus whether stdin supplied nonblank lines."""
+
+    targets: list[Target]
+    stdin_records: bool = False
+
+
 @app.command(name="apply")
 def apply_command(
     recipe_ref: Annotated[str, Parameter(help="Recipe id, pack:recipe ref, or path.")],
@@ -221,8 +229,16 @@ def _apply_context(
     recipe_resolution = RecipeLibrary(root).resolve_detail(recipe, recipe_id=recipe_id)
     recipe_path = recipe_resolution.path
     loaded = _load_recipe(recipe_path)
-    targets = _targets(dirs, stdin=stdin)
+    target_input = _targets(dirs, stdin=stdin)
+    targets = target_input.targets
     if not targets:
+        if target_input.stdin_records:
+            return ApplyContext(
+                root=root,
+                recipe=loaded,
+                recipe_ref=recipe_resolution.ref,
+                plans=[],
+            )
         raise ConfigError("at least one target directory is required (or use --stdin)")
     inputs = _input_values(raw_vars, vars_file)
     input_from = _input_sources(raw_input_from)
@@ -369,11 +385,11 @@ def _outcome_rows(
     return rendered
 
 
-def _targets(positional: list[Path], *, stdin: bool) -> list[Target]:
+def _targets(positional: list[Path], *, stdin: bool) -> TargetInput:
     if stdin and positional:
         raise ConfigError("provide targets as positional args or via --stdin, not both")
     if not stdin:
-        return [Target(path=path) for path in positional]
+        return TargetInput([Target(path=path) for path in positional])
     pairs: list[tuple[int, str]] = []
     for lineno, line in enumerate(sys.stdin, start=1):
         stripped = line.strip()
@@ -382,7 +398,7 @@ def _targets(positional: list[Path], *, stdin: bool) -> list[Target]:
     if not pairs:
         raise ConfigError("no targets received on stdin")
     try:
-        return resolve_target_lines(pairs)
+        return TargetInput(resolve_target_lines(pairs), stdin_records=True)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 

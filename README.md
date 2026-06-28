@@ -8,7 +8,7 @@ does not clone repos, create branches, commit, push, or open PRs.
 ## Install
 
 ```bash
-uv tool install untaped-recipe
+uv tool install git+https://github.com/alexisbeaulieu97/untaped-recipe.git
 ```
 
 ## Configure
@@ -136,9 +136,12 @@ config files that are absent in some targets. Missing optional transforms are
 reported as warnings in `recipe.outcome` rows. There is no globbing; recipes
 name the candidate paths they intend to touch.
 
-Piped stdin accepts bare paths and untaped pipe records. For
-`workspace.workspace` records it uses `record.path`; for `workspace.repo`
-records it uses `Path(record.path) / record.repo`.
+Piped stdin accepts bare paths and untaped pipe records. Recipe resolves
+absolute `record.target_path` first, then falls back to `record.path` for
+generic path records. Records whose `kind` ends in `.summary` are informational
+and skipped as non-targets. Repo-grain records such as `workspace.repo` must
+provide `target_path`; older saved streams that only contain `path` plus `repo`
+are rejected instead of writing to the wrong directory.
 
 Recipe inputs may be invocation-global or per-target. Input specs support
 `description`, `sensitive`, `scope`, and `from` in addition to `type`,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from untaped_recipe.domain.plan import Verdict
 from untaped_recipe.domain.templates import render_template
 from untaped_recipe.infrastructure.ruamel_io import dump_yaml, load_yaml
@@ -30,6 +32,6 @@ class HookHelpers:
         """Round-trip-load YAML content."""
         return load_yaml(content)
 
-    def dump_yaml(self, data: object) -> str:
+    def dump_yaml(self, data: object, *, options: Mapping[str, object] | None = None) -> str:
         """Round-trip-dump YAML data."""
-        return dump_yaml(data)
+        return dump_yaml(data, options=options)

@@ -87,6 +87,8 @@ Supported hook forms are:
 Use `untaped-recipe hook init <hook-name>` to scaffold a global uv hook project.
 Use `untaped-recipe recipe hook init <recipe> <hook>` or
 `untaped-recipe pack hook init <pack> <hook>` for local hooks.
+Generated hooks use `TYPE_CHECKING` imports from `untaped_recipe.hook_api` for
+editor discovery without requiring `untaped-recipe` at hook runtime.
 Use `untaped-recipe hook run <hook> --target <dir>` to invoke one hook against
 an explicit fixture without writing target files.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -91,5 +92,5 @@ class HookHelpersPort(Protocol):
     def load_yaml(self, content: str) -> object:
         """Round-trip-load YAML content."""
 
-    def dump_yaml(self, data: object) -> str:
+    def dump_yaml(self, data: object, *, options: Mapping[str, object] | None = None) -> str:
         """Round-trip-dump YAML data."""

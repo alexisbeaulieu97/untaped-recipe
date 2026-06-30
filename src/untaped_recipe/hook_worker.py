@@ -11,12 +11,17 @@ from collections.abc import Mapping
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     from untaped_recipe import worker_protocol as protocol
 except ModuleNotFoundError:  # pragma: no cover - used when executed as a script in a hook env.
     import worker_protocol as protocol  # type: ignore[import-not-found,no-redef]
+
+try:
+    from untaped_recipe.yaml_options import apply_yaml_dump_options
+except ModuleNotFoundError:  # pragma: no cover - used when executed as a script in a hook env.
+    from yaml_options import apply_yaml_dump_options  # type: ignore[import-not-found,no-redef]
 
 _PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 
@@ -55,15 +60,21 @@ class HookHelpers:
         yaml.preserve_quotes = True
         return yaml.load(content)
 
-    def dump_yaml(self, data: object) -> str:
+    def dump_yaml(self, data: object, *, options: Mapping[str, object] | None = None) -> str:
         """Round-trip-dump YAML content if ruamel.yaml is installed in the hook project."""
         from ruamel.yaml import YAML  # noqa: PLC0415
 
         yaml = YAML()
-        yaml.preserve_quotes = True
+        apply_yaml_dump_options(yaml, options)
         out = StringIO()
         yaml.dump(data, out)
         return out.getvalue()
+
+
+if TYPE_CHECKING:
+    from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
+
+    _external_helper_contract: ExternalHookHelpers = HookHelpers()
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any]:

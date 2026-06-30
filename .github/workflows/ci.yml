@@ -51,3 +51,6 @@ jobs:
           NO_COLOR: "1"
           COLUMNS: "200"
         run: uv run pytest
+
+      - name: Build packages
+        run: uv build --all-packages

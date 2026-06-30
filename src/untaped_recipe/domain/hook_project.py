@@ -8,7 +8,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 from pydantic import BaseModel, ConfigDict, field_validator
+from untaped_recipe_hook_api import HOOK_API_VERSION
 
 _DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 HookKind = Literal["transform", "validate"]
@@ -49,6 +54,8 @@ class HookProjectMetadata(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     hooks: dict[str, HookDefinition]
+    requires_hook_api: str | None = None
+    runtime_dependencies: tuple[str, ...] = ()
 
     @field_validator("hooks")
     @classmethod
@@ -61,13 +68,36 @@ class HookProjectMetadata(BaseModel):
     @classmethod
     def from_pyproject(cls, data: Mapping[str, object]) -> HookProjectMetadata:
         """Build hook metadata from parsed pyproject data."""
+        project = _mapping(data.get("project"), "project")
+        runtime_dependencies = _runtime_dependencies(project)
+        tool_config = _nested_mapping(data, ("tool", "untaped_recipe"))
+        if tool_config is not None and not isinstance(tool_config, Mapping):
+            raise ValueError("[tool.untaped_recipe] must be a table")
+        requires_hook_api = None
+        if isinstance(tool_config, Mapping):
+            raw_requires = tool_config.get("requires_hook_api")
+            if raw_requires is not None:
+                if not isinstance(raw_requires, str):
+                    raise ValueError("[tool.untaped_recipe].requires_hook_api must be a string")
+                requires_hook_api = raw_requires.strip()
+                if not requires_hook_api:
+                    raise ValueError("[tool.untaped_recipe].requires_hook_api must not be empty")
+                _specifier_set(requires_hook_api)
         hooks = _nested_mapping(data, ("tool", "untaped_recipe", "hooks"))
         if hooks is None:
-            return cls(hooks={})
+            return cls(
+                hooks={},
+                requires_hook_api=requires_hook_api,
+                runtime_dependencies=runtime_dependencies,
+            )
         if not isinstance(hooks, Mapping):
             raise ValueError("[tool.untaped_recipe.hooks] must be a table")
         _reject_legacy_hook_rows(hooks)
-        return cls(hooks=dict(hooks))
+        return cls(
+            hooks=dict(hooks),
+            requires_hook_api=requires_hook_api,
+            runtime_dependencies=runtime_dependencies,
+        )
 
 
 def is_valid_dotted_name(name: str) -> bool:
@@ -123,6 +153,25 @@ def validate_hook_modules(project_root: Path, metadata: HookProjectMetadata) -> 
             raise ValueError(f"hook module file not found: {module_file}")
 
 
+def validate_hook_project_contract(project_root: Path, metadata: HookProjectMetadata) -> None:
+    """Require hook projects to be compatible with the running helper API."""
+    for dependency in metadata.runtime_dependencies:
+        if dependency_name(dependency) == "untaped-recipe":
+            raise ValueError(
+                "hook project must not depend on untaped-recipe at runtime; "
+                "add untaped-recipe-hook-api to dependency-groups.dev instead: "
+                f"{project_root}"
+            )
+    if metadata.requires_hook_api is None:
+        return
+    specifier = _specifier_set(metadata.requires_hook_api)
+    if Version(HOOK_API_VERSION) not in specifier:
+        raise ValueError(
+            f"hook project requires hook API {metadata.requires_hook_api}, "
+            f"but untaped-recipe provides {HOOK_API_VERSION}: {project_root}"
+        )
+
+
 def _reject_legacy_hook_rows(hooks: Mapping[object, object]) -> None:
     for name, definition in hooks.items():
         if not isinstance(definition, Mapping):
@@ -142,3 +191,45 @@ def _nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object
             return None
         current = current[key]
     return current
+
+
+def _mapping(value: object, field: str) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"[{field}] must be a table")
+    return value
+
+
+def _runtime_dependencies(project: Mapping[str, object] | None) -> tuple[str, ...]:
+    if project is None:
+        return ()
+    raw_dependencies = project.get("dependencies")
+    if raw_dependencies is None:
+        return ()
+    if not isinstance(raw_dependencies, list):
+        raise ValueError("[project].dependencies must be an array")
+    dependencies: list[str] = []
+    for dependency in raw_dependencies:
+        if not isinstance(dependency, str):
+            raise ValueError("[project].dependencies entries must be strings")
+        dependency_name(dependency)
+        dependencies.append(dependency)
+    return tuple(dependencies)
+
+
+def dependency_name(dependency: str) -> str:
+    """Return the normalized PEP 508 project name for a dependency string."""
+    try:
+        return canonicalize_name(Requirement(dependency).name)
+    except InvalidRequirement as exc:
+        raise ValueError(
+            f"[project].dependencies entry must be a valid requirement: {dependency}"
+        ) from exc
+
+
+def _specifier_set(value: str) -> SpecifierSet:
+    try:
+        return SpecifierSet(value)
+    except InvalidSpecifier as exc:
+        raise ValueError(f"invalid hook API requirement: {value}") from exc

@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.15'",
 ]
 
+[manifest]
+members = [
+    "untaped-recipe",
+    "untaped-recipe-hook-api",
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -740,16 +746,18 @@ dependencies = [
 
 [[package]]
 name = "untaped-recipe"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "cyclopts" },
     { name = "jinja2" },
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
     { name = "tomlkit" },
     { name = "untaped" },
+    { name = "untaped-recipe-hook-api" },
 ]
 
 [package.dev-dependencies]
@@ -766,11 +774,13 @@ dev = [
 requires-dist = [
     { name = "cyclopts", specifier = ">=4.16.0,<5" },
     { name = "jinja2", specifier = ">=3.1.6,<4" },
+    { name = "packaging", specifier = ">=26.2,<27" },
     { name = "pydantic", specifier = ">=2.13.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruamel-yaml", specifier = ">=0.18.16" },
     { name = "tomlkit", specifier = ">=0.13,<1" },
     { name = "untaped", git = "https://github.com/alexisbeaulieu97/untaped.git?rev=v2.4.0" },
+    { name = "untaped-recipe-hook-api", editable = "packages/hook-api" },
 ]
 
 [package.metadata.requires-dev]
@@ -782,6 +792,11 @@ dev = [
     { name = "ruff", specifier = ">=0.15.12" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260518" },
 ]
+
+[[package]]
+name = "untaped-recipe-hook-api"
+version = "0.8.0"
+source = { editable = "packages/hook-api" }
 
 [[package]]
 name = "virtualenv"

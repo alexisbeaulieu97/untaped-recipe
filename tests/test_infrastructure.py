@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import errno
+import importlib.util
 from pathlib import Path
 
 import pytest
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 import untaped_recipe.infrastructure.hook_library as hook_library_module
+import untaped_recipe.infrastructure.recipe_library as recipe_library_module
 import untaped_recipe.infrastructure.ruamel_io as ruamel_io_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
@@ -208,11 +210,96 @@ def test_hook_library_init_cleans_up_partial_project_on_lock_failure(
 
     monkeypatch.setattr(hook_library_module, "lock_project", fail_lock)
 
-    with pytest.raises(ValueError, match=r"failed to create project uv\.lock"):
+    with pytest.raises(ValueError, match="untaped-recipe-hook-api"):
         library.init("check")
 
     assert not (tmp_path / "library" / "hooks" / "check").exists()
     assert library.list() == []
+
+
+def test_hook_library_init_locks_scaffold_with_local_hook_api_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hook_api_release = _release_module()
+    dist_dir = tmp_path / "dist"
+    hook_api_release.build_hook_api_wheel(dist_dir)
+    monkeypatch.setenv("UV_FIND_LINKS", str(dist_dir))
+    monkeypatch.setenv("UV_NO_INDEX", "1")
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+
+    project = HookLibrary(tmp_path / "library").init("check")
+
+    lock = (project / "uv.lock").read_text()
+    assert "untaped-recipe-hook-api" in lock
+    assert "0.8.0" in lock
+
+
+def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(tmp_path: Path) -> None:
+    hook_api_release = _release_module()
+    dist_dir = tmp_path / "dist"
+    hook_api_release.build_hook_api_wheel(dist_dir)
+
+    hook_api_release.smoke_hook_init(find_links=dist_dir, no_index=True)
+
+
+def test_release_smoke_hook_init_resolves_relative_local_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hook_api_release = _release_module()
+    dist_dir = tmp_path / "dist"
+    hook_api_release.build_hook_api_wheel(dist_dir)
+    monkeypatch.chdir(tmp_path)
+
+    hook_api_release.smoke_hook_init(find_links=Path("dist"), no_index=True)
+
+
+def test_release_publish_hook_api_filters_artifacts_by_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hook_api_release = _release_module()
+    dist = Path(hook_api_release.ROOT) / "dist"
+    published: list[list[str]] = []
+
+    matching_wheel = dist / "untaped_recipe_hook_api-0.8.0-py3-none-any.whl"
+    matching_sdist = dist / "untaped_recipe_hook_api-0.8.0.tar.gz"
+    stale_wheel = dist / "untaped_recipe_hook_api-0.7.0-py3-none-any.whl"
+    unrelated = dist / "untaped_recipe-0.8.0-py3-none-any.whl"
+
+    def fake_glob(pattern: str) -> list[Path]:
+        assert pattern == "untaped_recipe_hook_api-0.8.0*"
+        return [matching_wheel, matching_sdist, stale_wheel, unrelated]
+
+    def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+        del cwd, env
+        published.append(command)
+
+    monkeypatch.setattr(type(dist), "glob", lambda self, pattern: fake_glob(pattern))
+    monkeypatch.setattr(hook_api_release, "_run", fake_run)
+
+    hook_api_release.publish_hook_api("0.8.0")
+
+    assert published == [
+        [
+            "uv",
+            "publish",
+            "--trusted-publishing",
+            "always",
+            str(matching_wheel),
+            str(matching_sdist),
+        ]
+    ]
+
+
+def _release_module() -> object:
+    module_path = Path(__file__).parents[1] / "scripts" / "hook_api_release.py"
+    spec = importlib.util.spec_from_file_location("hook_api_release", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.mark.parametrize("kind", ["transform", "validate"])
@@ -226,10 +313,13 @@ def test_hook_init_stubs_use_type_checking_helper_annotations(
     project = HookLibrary(tmp_path / "library").init("check", kind=kind)
 
     source = next((project / "src").glob("*/hooks/check.py")).read_text()
+    pyproject = (project / "pyproject.toml").read_text()
     assert "from typing import TYPE_CHECKING" in source
     assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe.hook_api import HookHelpers" in source
+    assert "from untaped_recipe_hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
+    assert 'requires_hook_api = ">=0.8"' in pyproject
+    assert 'dev = ["untaped-recipe-hook-api>=0.8,<1"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:
@@ -242,16 +332,20 @@ def test_scoped_hook_stubs_use_type_checking_helper_annotations(
     monkeypatch: pytest.MonkeyPatch,
     kind: str,
 ) -> None:
+    monkeypatch.setattr(recipe_library_module, "lock_project", lambda project_root: None)
     project = RecipeLibrary(tmp_path / "library").init("demo", base_dir=tmp_path)
     monkeypatch.setattr(hook_library_module, "lock_project", lambda project_root: None)
 
     module = add_hook_to_project(project, "check", kind=kind)
 
     source = module.read_text()
+    pyproject = (project / "pyproject.toml").read_text()
     assert "from typing import TYPE_CHECKING" in source
     assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe.hook_api import HookHelpers" in source
+    assert "from untaped_recipe_hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
+    assert 'requires_hook_api = ">=0.8"' in pyproject
+    assert 'dev = ["untaped-recipe-hook-api>=0.8,<1"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:
@@ -280,12 +374,13 @@ def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None =
 
 
 def test_public_hook_api_exposes_dependency_light_yaml_option_types() -> None:
+    from untaped_recipe.hook_api import HOOK_API_VERSION, YamlDumpOptions, YamlIndentOptions
     from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
-    from untaped_recipe.hook_api import YamlDumpOptions, YamlIndentOptions
 
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
+    assert HOOK_API_VERSION == "0.8.0"
     assert options["indent"]["sequence"] == 4
     assert ExternalHookHelpers.__name__ == "HookHelpers"
 

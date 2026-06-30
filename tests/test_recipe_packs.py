@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from untaped.testing import CliInvoker
 
+import untaped_recipe.infrastructure.hook_library as hook_library_module
 import untaped_recipe.infrastructure.pack_library as pack_library_module
 from untaped_recipe import app
 from untaped_recipe.cli.common import library_root
@@ -18,6 +19,10 @@ from untaped_recipe.infrastructure.pack_library import PackLibrary
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 
 pytestmark = pytest.mark.usefixtures("isolate_config")
+
+
+def _write_minimal_lock(project_root: Path) -> None:
+    (project_root / "uv.lock").write_text("version = 1\n")
 
 
 def test_recipe_yaml_is_behavior_without_embedded_name() -> None:
@@ -414,6 +419,7 @@ def test_cli_recipe_and_pack_authoring_workflows(
     editor.chmod(0o755)
     monkeypatch.setenv("EDITOR", str(editor))
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(hook_library_module, "lock_project", _write_minimal_lock)
     invoker = CliInvoker()
 
     initialized_recipe = invoker.invoke(app, ["recipe", "init", "demo"])

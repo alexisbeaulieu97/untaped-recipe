@@ -14,6 +14,7 @@ from untaped_recipe.domain.hook_project import (
     project_name_for_hook,
     read_hook_metadata,
     validate_hook_modules,
+    validate_hook_project_contract,
 )
 
 
@@ -57,6 +58,7 @@ class HookResolver:
         self._global_hooks = global_hooks
         self._builtins = builtins if builtins is not None else BUILTIN_HOOKS
         self._metadata_cache: dict[Path, HookProjectMetadata] = {}
+        self._validated_contracts: set[Path] = set()
 
     def resolve(self, name: str, local_hook_project: Path | None) -> HookRef:
         """Resolve a hook name to either a built-in or uv hook project reference."""
@@ -85,6 +87,7 @@ class HookResolver:
         definition = metadata.hooks.get(public_name)
         if definition is None:
             return None
+        self._validate_contract_once(project_root, metadata)
         if not (project_root / "uv.lock").is_file():
             raise ValueError(f"hook project is missing uv.lock: {project_root}")
         validate_hook_modules(project_root, metadata)
@@ -102,3 +105,10 @@ class HookResolver:
             metadata = read_hook_metadata(project_root)
             self._metadata_cache[resolved] = metadata
         return metadata
+
+    def _validate_contract_once(self, project_root: Path, metadata: HookProjectMetadata) -> None:
+        resolved = project_root.resolve()
+        if resolved in self._validated_contracts:
+            return
+        validate_hook_project_contract(project_root, metadata)
+        self._validated_contracts.add(resolved)

@@ -16,6 +16,7 @@ from typing import Literal
 import pytest
 from pydantic import ValidationError
 
+import untaped_recipe.infrastructure.hook_resolver as hook_resolver_module
 import untaped_recipe.infrastructure.hook_worker_client as worker_client
 from untaped_recipe.domain.hook_project import HookProjectMetadata
 from untaped_recipe.domain.plan import Verdict
@@ -37,6 +38,8 @@ def _write_hook_project(
     package: str = "project_hooks",
     kind: Literal["transform", "validate"] = "transform",
     lock: bool = True,
+    dependencies: list[str] | None = None,
+    requires_hook_api: str | None = None,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "src" / package / "hooks").mkdir(parents=True)
@@ -52,12 +55,19 @@ def _write_hook_project(
         f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}'
         for public_name, module in sorted(hooks.items())
     )
+    dependency_rows = ", ".join(json.dumps(dependency) for dependency in dependencies or [])
+    tool_table = (
+        f'[tool.untaped_recipe]\nrequires_hook_api = "{requires_hook_api}"\n\n'
+        if requires_hook_api is not None
+        else ""
+    )
     (root / "pyproject.toml").write_text(
         "[project]\n"
         f'name = "{root.name}"\n'
         'version = "0.1.0"\n'
         'requires-python = ">=3.14"\n'
-        "dependencies = []\n\n"
+        f"dependencies = [{dependency_rows}]\n\n"
+        f"{tool_table}"
         "[tool.untaped_recipe.hooks]\n"
         f"{hook_rows}\n"
     )
@@ -168,6 +178,109 @@ def test_hook_resolver_rejects_missing_lockfile(tmp_path: Path) -> None:
         HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
 
 
+def test_hook_resolver_rejects_runtime_untaped_recipe_dependency(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"check": "project_hooks.hooks.check"},
+        dependencies=["untaped-recipe>=0.7"],
+    )
+
+    with pytest.raises(ValueError, match="must not depend on untaped-recipe"):
+        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        "Untaped_Recipe[hooks]>=0.7; python_version >= '3.14'",
+        "untaped-recipe @ git+https://example.invalid/untaped-recipe.git",
+    ],
+)
+def test_hook_resolver_rejects_pep508_runtime_untaped_recipe_dependencies(
+    tmp_path: Path,
+    dependency: str,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"check": "project_hooks.hooks.check"},
+        dependencies=[dependency],
+    )
+
+    with pytest.raises(ValueError, match="must not depend on untaped-recipe"):
+        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+
+
+def test_hook_project_metadata_rejects_invalid_dependency_declarations() -> None:
+    with pytest.raises(ValueError, match=r"\[project\]\.dependencies entry"):
+        HookProjectMetadata.from_pyproject(
+            {
+                "project": {"dependencies": ["not a valid @@@ requirement"]},
+                "tool": {
+                    "untaped_recipe": {
+                        "hooks": {
+                            "check": {
+                                "kind": "transform",
+                                "module": "project_hooks.hooks.check",
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+
+def test_hook_resolver_rejects_newer_required_hook_api(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"check": "project_hooks.hooks.check"},
+        requires_hook_api=">=99",
+    )
+
+    with pytest.raises(ValueError, match="requires hook API >=99"):
+        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+
+
+def test_hook_resolver_ignores_unrelated_local_project_contract_for_builtin(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={},
+        dependencies=["untaped-recipe>=0.8"],
+    )
+
+    ref = HookResolver(global_hooks=tmp_path / "hooks").resolve("yaml_edit", recipe_dir)
+
+    assert isinstance(ref, BuiltinHookRef)
+    assert ref.name == "yaml_edit"
+
+
+def test_hook_resolver_ignores_unrelated_local_project_contract_for_global_hook(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    global_hooks = tmp_path / "global" / "hooks"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"local_only": "project_hooks.hooks.local_only"},
+        dependencies=["untaped-recipe>=0.8"],
+    )
+    _write_hook_project(
+        global_hooks / "shared",
+        hooks={"shared.check": "shared_hooks.hooks.check"},
+        package="shared_hooks",
+    )
+
+    ref = HookResolver(global_hooks=global_hooks).resolve("shared.check", recipe_dir)
+
+    assert isinstance(ref, UvHookRef)
+    assert ref.project_root == global_hooks / "shared"
+
+
 def test_hook_resolver_rejects_missing_declared_module_file(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"})
@@ -189,6 +302,27 @@ def test_hook_resolver_caches_metadata_for_apply_lifetime(tmp_path: Path) -> Non
     assert isinstance(first, UvHookRef)
     assert isinstance(second, UvHookRef)
     assert second.module == "project_hooks.hooks.check"
+
+
+def test_hook_resolver_validates_project_contract_once_per_metadata_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"})
+    calls: list[Path] = []
+
+    def validate(project_root: Path, metadata: HookProjectMetadata) -> None:
+        del metadata
+        calls.append(project_root)
+
+    monkeypatch.setattr(hook_resolver_module, "validate_hook_project_contract", validate)
+    resolver = HookResolver(global_hooks=tmp_path / "hooks")
+
+    resolver.resolve("check", recipe_dir)
+    resolver.resolve("check", recipe_dir)
+
+    assert calls == [recipe_dir]
 
 
 def test_worker_response_validation_rejects_malformed_protocol_rows() -> None:
@@ -216,6 +350,25 @@ def test_uv_hook_worker_reports_missing_uv(
 
     with pytest.raises(ValueError, match="uv executable not found"):
         UvHookWorker(tmp_path)
+
+
+def test_uv_hook_worker_excludes_dev_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def popen(args: list[str], **kwargs: object) -> _FakeProcess:
+        calls.append(args)
+        return _FakeProcess(stdout="")
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    UvHookWorker(tmp_path)
+
+    assert calls
+    assert "--no-dev" in calls[0]
+    assert calls[0].index("--no-dev") < calls[0].index("python")
 
 
 def test_uv_hook_worker_rejects_malformed_json_response(
@@ -759,6 +912,70 @@ def test_worker_script_executes_hooks_and_redirects_prints_to_stderr(tmp_path: P
     }
     assert "diagnostic from import" in stderr
     assert "diagnostic from hook" in stderr
+
+
+def test_worker_script_prefers_cli_sibling_modules_over_hook_env_package(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "worker_hooks"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "sample.py").write_text(
+        "def validate(*, inputs, target, args, helpers):\n"
+        "    return helpers.pass_('from real worker protocol')\n"
+    )
+    fake_engine = tmp_path / "src" / "untaped_recipe"
+    fake_engine.mkdir()
+    (fake_engine / "__init__.py").write_text("")
+    (fake_engine / "worker_protocol.py").write_text(
+        "ID = 'bad_id'\n"
+        "KIND = 'bad_kind'\n"
+        "MODULE = 'bad_module'\n"
+        "VALIDATE = 'bad_validate'\n"
+        "TRANSFORM = 'bad_transform'\n"
+        "INPUTS = 'bad_inputs'\n"
+        "TARGET = 'bad_target'\n"
+        "ARGS = 'bad_args'\n"
+        "CONTENT = 'bad_content'\n"
+        "FILE = 'bad_file'\n"
+    )
+    (fake_engine / "yaml_options.py").write_text(
+        "def apply_yaml_dump_options(yaml, options):\n"
+        "    raise RuntimeError('fake yaml_options imported')\n"
+    )
+    worker = Path(__file__).parents[1] / "src" / "untaped_recipe" / "hook_worker.py"
+    proc = subprocess.Popen(
+        [sys.executable, str(worker)],
+        cwd=tmp_path,
+        env={"PYTHONPATH": str(tmp_path / "src")},
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    request = {
+        "id": "1",
+        "kind": "validate",
+        "module": "worker_hooks.sample",
+        "inputs": {},
+        "target": str(tmp_path),
+        "args": {},
+    }
+    proc.stdin.write(json.dumps(request) + "\n")
+    proc.stdin.flush()
+
+    response = json.loads(proc.stdout.readline())
+    proc.stdin.close()
+    stderr = proc.stderr.read()
+    proc.wait(timeout=10)
+
+    assert response == {
+        "id": "1",
+        "ok": True,
+        "result": {"status": "pass", "message": "from real worker protocol"},
+    }
+    assert "fake yaml_options imported" not in stderr
 
 
 def test_worker_script_rejects_invalid_validate_return_object(tmp_path: Path) -> None:

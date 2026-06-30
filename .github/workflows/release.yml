@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, without the leading v.
+        required: true
+        type: string
+      index:
+        description: Publish target.
+        required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.index }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.index }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Guard production releases to main
+        if: inputs.index == 'pypi' && github.ref != 'refs/heads/main'
+        run: |
+          echo "Production releases must be dispatched from main." >&2
+          exit 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          version: "0.11.19"
+          enable-cache: true
+
+      - name: Cache pre-commit hook envs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            pre-commit-${{ runner.os }}-
+
+      - name: Sync project
+        run: uv sync --frozen
+
+      - name: Verify version parity
+        run: uv run python scripts/hook_api_release.py verify-versions "${{ inputs.version }}"
+
+      - name: Pre-commit hooks
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+      - name: mypy
+        run: uv run mypy
+
+      - name: Pytest
+        env:
+          TERM: dumb
+          NO_COLOR: "1"
+          COLUMNS: "200"
+        run: uv run pytest
+
+      - name: Build packages
+        run: uv build --all-packages --no-sources
+
+      - name: Smoke scaffold against local wheel
+        run: |
+          uv run python scripts/hook_api_release.py smoke-hook-init \
+            --find-links dist \
+            --no-index
+
+      - name: Publish hook API package
+        run: |
+          if [ "${{ inputs.index }}" = "testpypi" ]; then
+            uv run python scripts/hook_api_release.py publish-hook-api \
+              "${{ inputs.version }}" \
+              --publish-url https://test.pypi.org/legacy/
+          else
+            uv run python scripts/hook_api_release.py publish-hook-api "${{ inputs.version }}"
+          fi
+
+      - name: Wait for published hook API package
+        run: |
+          if [ "${{ inputs.index }}" = "testpypi" ]; then
+            uv run python scripts/hook_api_release.py wait-published \
+              "${{ inputs.version }}" \
+              --index-url https://test.pypi.org/simple/
+          else
+            uv run python scripts/hook_api_release.py wait-published "${{ inputs.version }}"
+          fi
+
+      - name: Smoke scaffold against published package
+        run: |
+          if [ "${{ inputs.index }}" = "testpypi" ]; then
+            uv run python scripts/hook_api_release.py smoke-hook-init \
+              --index-url https://test.pypi.org/simple/
+          else
+            uv run python scripts/hook_api_release.py smoke-hook-init
+          fi
+
+      - name: Create GitHub release
+        if: inputs.index == 'pypi'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --target "$GITHUB_SHA" \
+            --title "untaped-recipe v${{ inputs.version }}" \
+            --notes "Release v${{ inputs.version }}."

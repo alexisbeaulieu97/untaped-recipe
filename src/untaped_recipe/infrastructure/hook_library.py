@@ -10,18 +10,35 @@ from pathlib import Path
 from typing import Literal
 
 import tomlkit
+from tomlkit import TOMLDocument
+from untaped_recipe_hook_api import HOOK_API_VERSION
 
 from untaped_recipe.domain.hook_project import (
+    dependency_name,
     hook_module_file,
     normalize_hook_name,
     project_name_for_hook,
     project_name_from_metadata,
     read_hook_metadata,
     validate_hook_modules,
+    validate_hook_project_contract,
 )
 from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
 from untaped_recipe.domain.project_toml import read_toml_document, toml_table
 from untaped_recipe.infrastructure.uv_project import lock_project
+
+
+def hook_api_requirements(version: str) -> tuple[str, str]:
+    """Return the hook API project floor and authoring dependency for ``version``."""
+    major_minor = ".".join(version.split(".")[:2])
+    return f">={major_minor}", f"untaped-recipe-hook-api>={major_minor},<1"
+
+
+_HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements(HOOK_API_VERSION)
+_HOOK_API_LOCK_HINT = (
+    "untaped-recipe-hook-api must be reachable from PyPI/TestPyPI or a configured uv source "
+    "while scaffolding typed hooks"
+)
 
 
 @dataclass(frozen=True)
@@ -56,7 +73,7 @@ class HookLibrary:
         temp_root = self.hooks_dir / f".{project_name}.tmp-{uuid.uuid4().hex}"
         try:
             self._scaffold(public_name, project_name, temp_root, kind=kind)
-            lock_project(temp_root)
+            _lock_scaffold(temp_root)
             temp_root.rename(project_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -87,6 +104,10 @@ class HookLibrary:
             'version = "0.1.0"\n'
             'requires-python = ">=3.14"\n'
             "dependencies = []\n\n"
+            "[dependency-groups]\n"
+            f'dev = ["{_HOOK_API_DEV_REQUIREMENT}"]\n\n'
+            "[tool.untaped_recipe]\n"
+            f'requires_hook_api = "{_HOOK_API_PROJECT_REQUIREMENT}"\n\n'
             "[tool.untaped_recipe.hooks]\n"
             f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}\n'
         )
@@ -99,6 +120,7 @@ class HookLibrary:
             raise ValueError("hook source must be a uv hook project directory")
         metadata = read_hook_metadata(source)
         declared_name = project_name_from_metadata(metadata)
+        validate_hook_project_contract(source, metadata)
         validate_hook_modules(source, metadata)
         if not (source / "uv.lock").is_file():
             raise ValueError(f"hook project is missing uv.lock: {source}")
@@ -204,7 +226,7 @@ def add_hook_to_project(
             hooks_init.write_text("")
         module_path.write_text(_hook_stub(kind))
         _append_hook_metadata(pyproject, public_name, kind, module)
-        lock_project(project_root)
+        _lock_scaffold(project_root)
     except Exception:
         _rollback_scoped_hook(
             pyproject=pyproject,
@@ -243,7 +265,7 @@ _HOOK_STUB_PREAMBLE = (
     "from typing import TYPE_CHECKING\n"
     "\n"
     "if TYPE_CHECKING:\n"
-    "    from untaped_recipe.hook_api import HookHelpers\n"
+    "    from untaped_recipe_hook_api import HookHelpers\n"
     "\n"
     "\n"
 )
@@ -269,6 +291,7 @@ def _append_hook_metadata(
     module: str,
 ) -> None:
     doc = read_toml_document(path)
+    _ensure_hook_authoring_metadata(doc)
     tool = toml_table(doc, "tool", "tool", create=True)
     untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
     hooks = toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
@@ -277,6 +300,44 @@ def _append_hook_metadata(
     entry["module"] = module
     hooks[public_name] = entry
     path.write_text(doc.as_string())
+
+
+def _ensure_hook_authoring_metadata(doc: TOMLDocument) -> None:
+    groups = toml_table(doc, "dependency-groups", "dependency-groups", create=True)
+    dev = groups.get("dev")
+    if dev is None:
+        groups["dev"] = [_HOOK_API_DEV_REQUIREMENT]
+    elif not isinstance(dev, list):
+        raise ValueError("[dependency-groups].dev must be an array")
+    elif not _has_dependency(dev, "untaped-recipe-hook-api"):
+        dev.append(_HOOK_API_DEV_REQUIREMENT)
+
+    tool = toml_table(doc, "tool", "tool", create=True)
+    untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
+    if "requires_hook_api" not in untaped:
+        untaped["requires_hook_api"] = _HOOK_API_PROJECT_REQUIREMENT
+
+
+def _has_dependency(dependencies: object, name: str) -> bool:
+    if not isinstance(dependencies, list):
+        return False
+    normalized = dependency_name(name)
+    for dependency in dependencies:
+        if isinstance(dependency, str):
+            try:
+                candidate_name = dependency_name(dependency)
+            except ValueError:
+                continue
+            if candidate_name == normalized:
+                return True
+    return False
+
+
+def _lock_scaffold(project_root: Path) -> None:
+    try:
+        lock_project(project_root)
+    except ValueError as exc:
+        raise ValueError(f"{exc}\n{_HOOK_API_LOCK_HINT}") from exc
 
 
 def _rollback_scoped_hook(

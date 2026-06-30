@@ -381,6 +381,7 @@ class UvHookWorker:
                     "--project",
                     str(self._project_root),
                     "--locked",
+                    "--no-dev",
                     "python",
                     str(worker_path),
                 ],

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     from untaped_recipe import worker_protocol as protocol
@@ -69,6 +69,12 @@ class HookHelpers:
         out = StringIO()
         yaml.dump(data, out)
         return out.getvalue()
+
+
+if TYPE_CHECKING:
+    from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
+
+    _external_helper_contract: ExternalHookHelpers = HookHelpers()
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any]:

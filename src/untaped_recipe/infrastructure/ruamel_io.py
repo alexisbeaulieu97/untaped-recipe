@@ -12,19 +12,15 @@ from untaped_recipe.yaml_options import apply_yaml_dump_options
 
 def load_yaml(content: str) -> object:
     """Load YAML while preserving round-trip metadata."""
-    yaml = _yaml()
+    yaml = YAML()
+    yaml.preserve_quotes = True
     return yaml.load(content)
 
 
 def dump_yaml(data: object, *, options: Mapping[str, object] | None = None) -> str:
     """Dump YAML while preserving round-trip metadata."""
-    yaml = _yaml(options=options)
+    yaml = YAML()
+    apply_yaml_dump_options(yaml, options)
     out = StringIO()
     yaml.dump(data, out)
     return out.getvalue()
-
-
-def _yaml(*, options: Mapping[str, object] | None = None) -> YAML:
-    yaml = YAML()
-    apply_yaml_dump_options(yaml, options)
-    return yaml

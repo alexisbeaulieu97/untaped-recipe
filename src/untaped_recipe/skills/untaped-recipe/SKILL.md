@@ -140,7 +140,7 @@ plain directories.
   `sequence`, and `offset`, `block_seq_indent`, `explicit_start`, and
   `explicit_end`. Defaults are `preserve_quotes=True` and `width=4096` for both
   in-process built-ins and external workers. `load_yaml(content)` has no
-  options.
+  options. Unsupported option keys are rejected.
 - Built-ins are direct engine imports and do not start uv workers. External
   hooks run through pooled uv workers, up to the clamped `--parallel` value per
   hook project; hook stdout must not be used for data because stdout is reserved

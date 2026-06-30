@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypedDict
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
 
 class YamlIndentOptions(TypedDict, total=False):
@@ -42,5 +43,20 @@ class HookHelpers(Protocol):
     def load_yaml(self, content: str) -> object:
         """Round-trip-load YAML content."""
 
-    def dump_yaml(self, data: object, *, options: YamlDumpOptions | None = None) -> str:
+    def dump_yaml(self, data: object, *, options: Mapping[str, object] | None = None) -> str:
         """Round-trip-dump YAML data with optional formatting controls."""
+
+
+if TYPE_CHECKING:
+
+    def _plain_mapping_options_are_supported(
+        helpers: HookHelpers,
+        options: dict[str, object],
+    ) -> str:
+        return helpers.dump_yaml({}, options=options)
+
+    def _typed_options_are_supported(
+        helpers: HookHelpers,
+        options: YamlDumpOptions,
+    ) -> str:
+        return helpers.dump_yaml({}, options=options)

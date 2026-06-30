@@ -281,7 +281,8 @@ application-layer `HookHelpersPort` separate for in-process built-ins, where
 verdict helpers return `Verdict`. External `helpers.dump_yaml(data, options=...)`
 accepts plain dict options for width, quote preservation, indent, block sequence
 indent, and explicit document start/end; worker and in-process defaults are
-`preserve_quotes=True` and `width=4096`.
+`preserve_quotes=True` and `width=4096`. Unsupported option keys must be
+rejected rather than ignored.
 
 ## Development Workflow
 

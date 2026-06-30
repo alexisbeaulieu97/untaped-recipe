@@ -215,20 +215,47 @@ def test_hook_library_init_cleans_up_partial_project_on_lock_failure(
     assert library.list() == []
 
 
+@pytest.mark.parametrize("kind", ["transform", "validate"])
 def test_hook_init_stubs_use_type_checking_helper_annotations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    kind: str,
 ) -> None:
     monkeypatch.setattr(hook_library_module, "lock_project", lambda project_root: None)
 
-    project = HookLibrary(tmp_path / "library").init("check", kind="validate")
+    project = HookLibrary(tmp_path / "library").init("check", kind=kind)
 
     source = next((project / "src").glob("*/hooks/check.py")).read_text()
     assert "from typing import TYPE_CHECKING" in source
     assert "if TYPE_CHECKING:" in source
     assert "from untaped_recipe.hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
-    assert "return helpers.pass_()" in source
+    if kind == "validate":
+        assert "return helpers.pass_()" in source
+    else:
+        assert "return content" in source
+
+
+@pytest.mark.parametrize("kind", ["transform", "validate"])
+def test_scoped_hook_stubs_use_type_checking_helper_annotations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    project = RecipeLibrary(tmp_path / "library").init("demo", base_dir=tmp_path)
+    monkeypatch.setattr(hook_library_module, "lock_project", lambda project_root: None)
+
+    module = add_hook_to_project(project, "check", kind=kind)
+
+    source = module.read_text()
+    assert "from typing import TYPE_CHECKING" in source
+    assert "if TYPE_CHECKING:" in source
+    assert "from untaped_recipe.hook_api import HookHelpers" in source
+    assert 'helpers: "HookHelpers"' in source
+    if kind == "validate":
+        assert "return helpers.pass_()" in source
+    else:
+        assert "return content" in source
 
 
 def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None = None) -> None:
@@ -307,6 +334,25 @@ def test_dump_yaml_applies_core_formatting_options(
     assert yaml.block_seq_indent == 2
     assert yaml.explicit_start is True
     assert yaml.explicit_end is True
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"preserve_quote": True}, "unsupported YAML dump option"),
+        ({"indent": {"seqence": 4}}, "unsupported YAML indent option"),
+        ({"width": "100"}, "must be an integer"),
+        ({"width": True}, "must be an integer"),
+        ({"preserve_quotes": "yes"}, "must be a boolean"),
+        ({"indent": 2}, "must be a mapping"),
+    ],
+)
+def test_dump_yaml_rejects_invalid_options(
+    options: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(TypeError, match=message):
+        dump_yaml({"items": [1]}, options=options)
 
 
 def test_dump_yaml_defaults_preserve_existing_in_process_formatting(

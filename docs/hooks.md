@@ -232,7 +232,8 @@ return helpers.dump_yaml(
 
 Defaults are `preserve_quotes=True` and `width=4096` for both in-process
 built-ins and external workers. Omitted options use ruamel's defaults for that
-setting. `load_yaml` has no formatting options.
+setting. Unsupported option keys and unsupported nested `indent` keys are
+rejected. `load_yaml` has no formatting options.
 
 ## Hook Library Commands
 

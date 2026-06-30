@@ -241,8 +241,26 @@ def _local_package_name(project_name: str) -> str:
 
 def _hook_stub(kind: Literal["transform", "validate"]) -> str:
     if kind == "validate":
-        return "def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n"
-    return "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+        return (
+            "from typing import TYPE_CHECKING\n"
+            "\n"
+            "if TYPE_CHECKING:\n"
+            "    from untaped_recipe.hook_api import HookHelpers\n"
+            "\n"
+            "\n"
+            'def validate(*, inputs, target, args, helpers: "HookHelpers"):\n'
+            "    return helpers.pass_()\n"
+        )
+    return (
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from untaped_recipe.hook_api import HookHelpers\n"
+        "\n"
+        "\n"
+        'def transform(content, *, inputs, target, file, args, helpers: "HookHelpers"):\n'
+        "    return content\n"
+    )
 
 
 def _append_hook_metadata(

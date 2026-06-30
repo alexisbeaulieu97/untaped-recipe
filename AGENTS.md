@@ -235,6 +235,12 @@ for engine-owned code such as `yaml_edit`.
 External transform hooks expose:
 
 ```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from untaped_recipe.hook_api import HookHelpers
+
+
 def transform(
     content: str,
     *,
@@ -242,19 +248,25 @@ def transform(
     target: Path,
     file: Path,
     args: dict,
-    helpers: object,
+    helpers: "HookHelpers",
 ) -> str: ...
 ```
 
 External validate hooks expose:
 
 ```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from untaped_recipe.hook_api import HookHelpers
+
+
 def validate(
     *,
     inputs: dict,
     target: Path,
     args: dict,
-    helpers: object,
+    helpers: "HookHelpers",
 ) -> dict | None | str: ...
 ```
 
@@ -263,6 +275,13 @@ for fail, or a `Verdict`-like object with `model_dump()` if the hook project
 chooses to depend on `untaped-recipe`. Prefer explicit `helpers.pass_()`,
 `helpers.warn()`, and `helpers.fail()` in shipped examples. Built-in hooks may
 use the engine's concrete `HookHelpers` and `Verdict` types directly.
+The public `untaped_recipe.hook_api.HookHelpers` protocol models external
+worker helpers, where verdict helpers return dict-shaped verdicts. Keep the
+application-layer `HookHelpersPort` separate for in-process built-ins, where
+verdict helpers return `Verdict`. External `helpers.dump_yaml(data, options=...)`
+accepts plain dict options for width, quote preservation, indent, block sequence
+indent, and explicit document start/end; worker and in-process defaults are
+`preserve_quotes=True` and `width=4096`.
 
 ## Development Workflow
 

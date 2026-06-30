@@ -9,12 +9,14 @@ import pytest
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 import untaped_recipe.infrastructure.hook_library as hook_library_module
+import untaped_recipe.infrastructure.ruamel_io as ruamel_io_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
 from untaped_recipe.application.targets import Target
 from untaped_recipe.builtins.hooks import yaml_edit
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.domain.recipe import Recipe
+from untaped_recipe.hook_worker import HookHelpers as WorkerHookHelpers
 from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_library import HookLibrary, add_hook_to_project
@@ -213,6 +215,22 @@ def test_hook_library_init_cleans_up_partial_project_on_lock_failure(
     assert library.list() == []
 
 
+def test_hook_init_stubs_use_type_checking_helper_annotations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hook_library_module, "lock_project", lambda project_root: None)
+
+    project = HookLibrary(tmp_path / "library").init("check", kind="validate")
+
+    source = next((project / "src").glob("*/hooks/check.py")).read_text()
+    assert "from typing import TYPE_CHECKING" in source
+    assert "if TYPE_CHECKING:" in source
+    assert "from untaped_recipe.hook_api import HookHelpers" in source
+    assert 'helpers: "HookHelpers"' in source
+    assert "return helpers.pass_()" in source
+
+
 def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None = None) -> None:
     package = "shared_hooks"
     (root / "src" / package / "hooks").mkdir(parents=True, exist_ok=True)
@@ -232,6 +250,103 @@ def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None =
         f'"{hook_name}" = {{ kind = "transform", module = "{package}.hooks.{module_leaf}" }}\n'
     )
     (root / "uv.lock").write_text("version = 1\n")
+
+
+def test_public_hook_api_exposes_dependency_light_yaml_option_types() -> None:
+    from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
+    from untaped_recipe.hook_api import YamlDumpOptions, YamlIndentOptions
+
+    indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
+    options: YamlDumpOptions = {"width": 120, "indent": indent}
+
+    assert options["indent"]["sequence"] == 4
+    assert ExternalHookHelpers.__name__ == "HookHelpers"
+
+
+def test_dump_yaml_applies_core_formatting_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[object] = []
+
+    class FakeYaml:
+        def __init__(self) -> None:
+            self.preserve_quotes: bool | None = None
+            self.width: int | None = None
+            self.block_seq_indent: int | None = None
+            self.explicit_start: bool | None = None
+            self.explicit_end: bool | None = None
+            self.indent_calls: list[dict[str, int]] = []
+            created.append(self)
+
+        def indent(self, **kwargs: int) -> None:
+            self.indent_calls.append(kwargs)
+
+        def dump(self, data: object, out: object) -> None:
+            del data
+            out.write("dumped\n")
+
+    monkeypatch.setattr(ruamel_io_module, "YAML", FakeYaml)
+
+    result = ruamel_io_module.dump_yaml(
+        {"items": [1]},
+        options={
+            "width": 120,
+            "preserve_quotes": False,
+            "indent": {"mapping": 2, "sequence": 4, "offset": 2},
+            "block_seq_indent": 2,
+            "explicit_start": True,
+            "explicit_end": True,
+        },
+    )
+
+    yaml = created[0]
+    assert result == "dumped\n"
+    assert yaml.preserve_quotes is False
+    assert yaml.width == 120
+    assert yaml.indent_calls == [{"mapping": 2, "sequence": 4, "offset": 2}]
+    assert yaml.block_seq_indent == 2
+    assert yaml.explicit_start is True
+    assert yaml.explicit_end is True
+
+
+def test_dump_yaml_defaults_preserve_existing_in_process_formatting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[object] = []
+
+    class FakeYaml:
+        def __init__(self) -> None:
+            self.preserve_quotes: bool | None = None
+            self.width: int | None = None
+            self.indent_calls: list[dict[str, int]] = []
+            created.append(self)
+
+        def indent(self, **kwargs: int) -> None:
+            self.indent_calls.append(kwargs)
+
+        def dump(self, data: object, out: object) -> None:
+            del data
+            out.write("dumped\n")
+
+    monkeypatch.setattr(ruamel_io_module, "YAML", FakeYaml)
+
+    assert ruamel_io_module.dump_yaml({"items": [1]}) == "dumped\n"
+
+    yaml = created[0]
+    assert yaml.preserve_quotes is True
+    assert yaml.width == 4096
+    assert yaml.indent_calls == []
+
+
+def test_worker_yaml_dump_matches_in_process_defaults_and_options() -> None:
+    data = {"items": ["x" * 100, "y" * 100]}
+
+    assert WorkerHookHelpers().dump_yaml(data) == HookHelpers().dump_yaml(data)
+    assert WorkerHookHelpers().dump_yaml(data, options={"width": 40}) == HookHelpers().dump_yaml(
+        data,
+        options={"width": 40},
+    )
+    assert WorkerHookHelpers().dump_yaml(data, options={"explicit_start": True}).startswith("---\n")
 
 
 def test_hook_helpers_and_builtin_yaml_edit_preserve_round_trip_yaml(tmp_path: Path) -> None:

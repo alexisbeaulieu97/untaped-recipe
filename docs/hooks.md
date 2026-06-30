@@ -141,6 +141,10 @@ content. They should not write files directly.
 
 ```python
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from untaped_recipe.hook_api import HookHelpers
 
 
 def transform(
@@ -150,15 +154,15 @@ def transform(
     target: Path,
     file: Path,
     args: dict,
-    helpers: object,
+    helpers: "HookHelpers",
 ) -> str:
     owner = args["owner"]
     return content.replace("OWNER", str(owner))
 ```
 
 `target` and `file` are rebuilt as `Path` objects in the worker. `helpers` is a
-small worker helper object; hook projects do not need to depend on host
-Pydantic or import engine models.
+small worker helper object. The `TYPE_CHECKING` import gives editors the helper
+API without making `untaped-recipe` a runtime dependency of the hook project.
 
 ## Validate Hooks
 
@@ -166,6 +170,10 @@ Validate hooks inspect a target and return a verdict.
 
 ```python
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from untaped_recipe.hook_api import HookHelpers
 
 
 def validate(
@@ -173,7 +181,7 @@ def validate(
     inputs: dict,
     target: Path,
     args: dict,
-    helpers: object,
+    helpers: "HookHelpers",
 ) -> dict[str, str]:
     if not (target / "pyproject.toml").is_file():
         return helpers.fail("missing pyproject.toml")
@@ -195,13 +203,36 @@ any writes.
 
 Worker helpers provide:
 
-- `pass_`, `warn`, and `fail` verdict helpers.
+- `pass_`, `warn`, and `fail` verdict helpers, returning dict-shaped verdicts
+  such as `{"status": "warn", "message": "..."}`.
 - `render_template(template, inputs)` for simple `{{ name }}` placeholders.
-- `load_yaml(content)` and `dump_yaml(data)`, which require `ruamel.yaml` in the
-  hook project's dependencies.
+- `load_yaml(content)` and `dump_yaml(data, options=None)`, which require
+  `ruamel.yaml` in the hook project's dependencies.
 
 Add hook-specific dependencies to the hook project's `pyproject.toml`, then run
 `uv lock`. The engine always runs hook projects with `--locked`.
+
+`dump_yaml` accepts ordinary dict options so hook projects do not need runtime
+imports from `untaped-recipe`:
+
+```python
+data = helpers.load_yaml(content)
+return helpers.dump_yaml(
+    data,
+    options={
+        "width": 120,
+        "preserve_quotes": True,
+        "indent": {"mapping": 2, "sequence": 4, "offset": 2},
+        "block_seq_indent": 2,
+        "explicit_start": False,
+        "explicit_end": False,
+    },
+)
+```
+
+Defaults are `preserve_quotes=True` and `width=4096` for both in-process
+built-ins and external workers. Omitted options use ruamel's defaults for that
+setting. `load_yaml` has no formatting options.
 
 ## Hook Library Commands
 

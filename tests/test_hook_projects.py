@@ -713,7 +713,10 @@ def test_worker_script_executes_hooks_and_redirects_prints_to_stderr(tmp_path: P
         "print('diagnostic from import')\n"
         "def transform(content, *, inputs, target, file, args, helpers):\n"
         "    print('diagnostic from hook')\n"
-        "    return content + inputs['suffix'] + '\\n'\n"
+        "    return helpers.dump_yaml(\n"
+        "        {'content': content, 'suffix': inputs['suffix']},\n"
+        "        options={'explicit_start': True, 'width': 4096},\n"
+        "    )\n"
         "\n"
         "def validate(*, inputs, target, args, helpers):\n"
         "    return helpers.warn('check warning')\n"
@@ -749,7 +752,11 @@ def test_worker_script_executes_hooks_and_redirects_prints_to_stderr(tmp_path: P
     stderr = proc.stderr.read()
     proc.wait(timeout=10)
 
-    assert response == {"id": "1", "ok": True, "result": "before after\n"}
+    assert response == {
+        "id": "1",
+        "ok": True,
+        "result": "---\ncontent: 'before '\nsuffix: after\n",
+    }
     assert "diagnostic from import" in stderr
     assert "diagnostic from hook" in stderr
 

@@ -130,6 +130,17 @@ plain directories.
 - External hooks are uv-managed projects with `pyproject.toml`, `uv.lock`, and
   `[tool.untaped_recipe.hooks]` metadata. Use
   `untaped-recipe hook init <name>` to scaffold a reusable global hook.
+- Scaffolded hooks use `TYPE_CHECKING` imports from
+  `untaped_recipe.hook_api.HookHelpers` so editors can discover helper methods
+  without making `untaped-recipe` a hook runtime dependency. That public
+  protocol models external worker helpers; `pass_`, `warn`, and `fail` return
+  dict-shaped verdicts.
+- External helper `dump_yaml(data, options=...)` accepts plain dict formatting
+  options: `width`, `preserve_quotes`, nested `indent` keys `mapping`,
+  `sequence`, and `offset`, `block_seq_indent`, `explicit_start`, and
+  `explicit_end`. Defaults are `preserve_quotes=True` and `width=4096` for both
+  in-process built-ins and external workers. `load_yaml(content)` has no
+  options.
 - Built-ins are direct engine imports and do not start uv workers. External
   hooks run through pooled uv workers, up to the clamped `--parallel` value per
   hook project; hook stdout must not be used for data because stdout is reserved

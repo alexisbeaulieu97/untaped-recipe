@@ -243,6 +243,55 @@ def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(tmp_pat
     hook_api_release.smoke_hook_init(find_links=dist_dir, no_index=True)
 
 
+def test_release_smoke_hook_init_resolves_relative_local_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hook_api_release = _release_module()
+    dist_dir = tmp_path / "dist"
+    hook_api_release.build_hook_api_wheel(dist_dir)
+    monkeypatch.chdir(tmp_path)
+
+    hook_api_release.smoke_hook_init(find_links=Path("dist"), no_index=True)
+
+
+def test_release_publish_hook_api_filters_artifacts_by_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hook_api_release = _release_module()
+    dist = Path(hook_api_release.ROOT) / "dist"
+    published: list[list[str]] = []
+
+    matching_wheel = dist / "untaped_recipe_hook_api-0.8.0-py3-none-any.whl"
+    matching_sdist = dist / "untaped_recipe_hook_api-0.8.0.tar.gz"
+    stale_wheel = dist / "untaped_recipe_hook_api-0.7.0-py3-none-any.whl"
+    unrelated = dist / "untaped_recipe-0.8.0-py3-none-any.whl"
+
+    def fake_glob(pattern: str) -> list[Path]:
+        assert pattern == "untaped_recipe_hook_api-0.8.0*"
+        return [matching_wheel, matching_sdist, stale_wheel, unrelated]
+
+    def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+        del cwd, env
+        published.append(command)
+
+    monkeypatch.setattr(type(dist), "glob", lambda self, pattern: fake_glob(pattern))
+    monkeypatch.setattr(hook_api_release, "_run", fake_run)
+
+    hook_api_release.publish_hook_api("0.8.0")
+
+    assert published == [
+        [
+            "uv",
+            "publish",
+            "--trusted-publishing",
+            "always",
+            str(matching_wheel),
+            str(matching_sdist),
+        ]
+    ]
+
+
 def _release_module() -> object:
     module_path = Path(__file__).parents[1] / "scripts" / "hook_api_release.py"
     spec = importlib.util.spec_from_file_location("hook_api_release", module_path)

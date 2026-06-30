@@ -243,6 +243,44 @@ def test_hook_resolver_rejects_newer_required_hook_api(tmp_path: Path) -> None:
         HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
 
 
+def test_hook_resolver_ignores_unrelated_local_project_contract_for_builtin(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={},
+        dependencies=["untaped-recipe>=0.8"],
+    )
+
+    ref = HookResolver(global_hooks=tmp_path / "hooks").resolve("yaml_edit", recipe_dir)
+
+    assert isinstance(ref, BuiltinHookRef)
+    assert ref.name == "yaml_edit"
+
+
+def test_hook_resolver_ignores_unrelated_local_project_contract_for_global_hook(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    global_hooks = tmp_path / "global" / "hooks"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"local_only": "project_hooks.hooks.local_only"},
+        dependencies=["untaped-recipe>=0.8"],
+    )
+    _write_hook_project(
+        global_hooks / "shared",
+        hooks={"shared.check": "shared_hooks.hooks.check"},
+        package="shared_hooks",
+    )
+
+    ref = HookResolver(global_hooks=global_hooks).resolve("shared.check", recipe_dir)
+
+    assert isinstance(ref, UvHookRef)
+    assert ref.project_root == global_hooks / "shared"
+
+
 def test_hook_resolver_rejects_missing_declared_module_file(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"})

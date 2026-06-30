@@ -27,9 +27,14 @@ from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
 from untaped_recipe.domain.project_toml import read_toml_document, toml_table
 from untaped_recipe.infrastructure.uv_project import lock_project
 
-_HOOK_API_MINOR = ".".join(HOOK_API_VERSION.split(".")[:2])
-_HOOK_API_DEV_REQUIREMENT = f"untaped-recipe-hook-api>={_HOOK_API_MINOR},<1"
-_HOOK_API_PROJECT_REQUIREMENT = f">={_HOOK_API_MINOR}"
+
+def hook_api_requirements(version: str) -> tuple[str, str]:
+    """Return the hook API project floor and authoring dependency for ``version``."""
+    major_minor = ".".join(version.split(".")[:2])
+    return f">={major_minor}", f"untaped-recipe-hook-api>={major_minor},<1"
+
+
+_HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements(HOOK_API_VERSION)
 _HOOK_API_LOCK_HINT = (
     "untaped-recipe-hook-api must be reachable from PyPI/TestPyPI or a configured uv source "
     "while scaffolding typed hooks"

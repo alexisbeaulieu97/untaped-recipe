@@ -44,10 +44,15 @@ def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
         (root / "packages" / "hook-api" / "pyproject.toml").read_text()
     )["project"]["version"]
     major_minor = ".".join(HOOK_API_VERSION.split(".")[:2])
+    project_requirement, dev_requirement = hook_library.hook_api_requirements(HOOK_API_VERSION)
 
     assert root_version == hook_api_version == HOOK_API_VERSION
-    assert f">={major_minor}" == hook_library._HOOK_API_PROJECT_REQUIREMENT
-    assert (f"untaped-recipe-hook-api>={major_minor},<1") == hook_library._HOOK_API_DEV_REQUIREMENT
+    assert f">={major_minor}" == project_requirement == hook_library._HOOK_API_PROJECT_REQUIREMENT
+    assert (
+        (f"untaped-recipe-hook-api>={major_minor},<1")
+        == dev_requirement
+        == hook_library._HOOK_API_DEV_REQUIREMENT
+    )
 
 
 def test_release_script_verifies_version_parity() -> None:

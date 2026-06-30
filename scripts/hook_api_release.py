@@ -11,6 +11,14 @@ import time
 import tomllib
 from pathlib import Path
 
+from packaging.utils import (
+    InvalidSdistFilename,
+    InvalidWheelFilename,
+    canonicalize_name,
+    parse_sdist_filename,
+    parse_wheel_filename,
+)
+from packaging.version import Version
 from untaped_recipe_hook_api import HOOK_API_VERSION
 
 from untaped_recipe.infrastructure import hook_library
@@ -24,26 +32,25 @@ def verify_versions(expected_version: str) -> None:
     """Require every hook API version source to match ``expected_version``."""
     root_version = _project_version(ROOT / "pyproject.toml")
     hook_api_version = _project_version(ROOT / "packages" / "hook-api" / "pyproject.toml")
+    project_requirement, dev_requirement = hook_library.hook_api_requirements(expected_version)
 
-    versions = {
-        "root pyproject": root_version,
-        "hook-api pyproject": hook_api_version,
-        "HOOK_API_VERSION": HOOK_API_VERSION,
-    }
-    mismatches = {
-        source: version for source, version in versions.items() if version != expected_version
-    }
-    major_minor = ".".join(expected_version.split(".")[:2])
-
-    expected_project_requirement = f">={major_minor}"
-    expected_dev_requirement = f"{PACKAGE_NAME}>={major_minor},<1"
-    if expected_project_requirement != hook_library._HOOK_API_PROJECT_REQUIREMENT:
-        mismatches["scaffold requires_hook_api floor"] = hook_library._HOOK_API_PROJECT_REQUIREMENT
-    if expected_dev_requirement != hook_library._HOOK_API_DEV_REQUIREMENT:
-        mismatches["scaffold dev dependency"] = hook_library._HOOK_API_DEV_REQUIREMENT
+    checks = [
+        ("root pyproject", root_version, expected_version),
+        ("hook-api pyproject", hook_api_version, expected_version),
+        ("HOOK_API_VERSION", HOOK_API_VERSION, expected_version),
+        (
+            "scaffold requires_hook_api floor",
+            hook_library._HOOK_API_PROJECT_REQUIREMENT,
+            project_requirement,
+        ),
+        ("scaffold dev dependency", hook_library._HOOK_API_DEV_REQUIREMENT, dev_requirement),
+    ]
+    mismatches = [
+        (label, actual, expected) for label, actual, expected in checks if actual != expected
+    ]
     if mismatches:
-        for source, version in mismatches.items():
-            print(f"{source}: expected {expected_version}, got {version}", file=sys.stderr)
+        for label, actual, expected in mismatches:
+            print(f"{label}: expected {expected}, got {actual}", file=sys.stderr)
         raise SystemExit(1)
 
 
@@ -102,14 +109,16 @@ def smoke_hook_init(
         env = os.environ.copy()
         env["UNTAPED_CONFIG"] = str(temp_root / "config.yml")
         env["UNTAPED_RECIPE__LIBRARY_ROOT"] = str(library)
-        env["UV_CACHE_DIR"] = str(temp_root / "uv-cache")
+        env.setdefault("UV_CACHE_DIR", str(temp_root / "uv-cache"))
         env["UV_NO_PROGRESS"] = "1"
         if index_url is not None:
             env["UV_DEFAULT_INDEX"] = index_url
         if find_links is not None:
-            env["UV_FIND_LINKS"] = str(find_links)
+            env["UV_FIND_LINKS"] = str(find_links.resolve())
         if no_index:
-            env["UV_NO_INDEX"] = "1"
+            empty_index = temp_root / "empty-index"
+            empty_index.mkdir()
+            env["UV_DEFAULT_INDEX"] = empty_index.as_uri()
 
         _run(
             [
@@ -117,6 +126,7 @@ def smoke_hook_init(
                 "run",
                 "--project",
                 str(ROOT),
+                "--frozen",
                 "untaped-recipe",
                 "hook",
                 "init",
@@ -130,16 +140,31 @@ def smoke_hook_init(
             raise SystemExit(f"smoke hook lockfile did not include {PACKAGE_NAME}: {lockfile}")
 
 
-def publish_hook_api(*, publish_url: str | None = None) -> None:
+def publish_hook_api(version: str, *, publish_url: str | None = None) -> None:
     """Publish built hook API distributions from ``dist``."""
-    files = sorted((ROOT / "dist").glob("untaped_recipe_hook_api-*"))
+    files = [
+        path
+        for path in sorted((ROOT / "dist").glob(f"untaped_recipe_hook_api-{version}*"))
+        if _is_hook_api_artifact_version(path, version)
+    ]
     if not files:
-        raise SystemExit("no hook API distributions found in dist/")
+        raise SystemExit(f"no hook API distributions found in dist/ for version {version}")
     command = ["uv", "publish", "--trusted-publishing", "always"]
     if publish_url is not None:
         command.extend(["--publish-url", publish_url])
     command.extend(str(path) for path in files)
     _run(command, cwd=ROOT)
+
+
+def _is_hook_api_artifact_version(path: Path, version: str) -> bool:
+    try:
+        if path.name.endswith(".whl"):
+            name, parsed_version, _build, _tags = parse_wheel_filename(path.name)
+        else:
+            name, parsed_version = parse_sdist_filename(path.name)
+    except InvalidSdistFilename, InvalidWheelFilename:
+        return False
+    return canonicalize_name(name) == PACKAGE_NAME and parsed_version == Version(version)
 
 
 def _uv_install_check_command(version: str, *, index_url: str | None) -> list[str]:
@@ -201,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     smoke.add_argument("--no-index", action="store_true")
 
     publish = subparsers.add_parser("publish-hook-api")
+    publish.add_argument("version")
     publish.add_argument("--publish-url")
 
     args = parser.parse_args(argv)
@@ -221,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             no_index=args.no_index,
         )
     elif args.command == "publish-hook-api":
-        publish_hook_api(publish_url=args.publish_url)
+        publish_hook_api(args.version, publish_url=args.publish_url)
     return 0
 
 

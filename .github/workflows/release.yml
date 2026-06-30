@@ -86,9 +86,10 @@ jobs:
         run: |
           if [ "${{ inputs.index }}" = "testpypi" ]; then
             uv run python scripts/hook_api_release.py publish-hook-api \
+              "${{ inputs.version }}" \
               --publish-url https://test.pypi.org/legacy/
           else
-            uv run python scripts/hook_api_release.py publish-hook-api
+            uv run python scripts/hook_api_release.py publish-hook-api "${{ inputs.version }}"
           fi
 
       - name: Wait for published hook API package

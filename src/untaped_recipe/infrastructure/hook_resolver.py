@@ -86,7 +86,6 @@ class HookResolver:
         definition = metadata.hooks.get(public_name)
         if definition is None:
             return None
-        validate_hook_project_contract(project_root, metadata)
         if not (project_root / "uv.lock").is_file():
             raise ValueError(f"hook project is missing uv.lock: {project_root}")
         validate_hook_modules(project_root, metadata)
@@ -102,5 +101,6 @@ class HookResolver:
         metadata = self._metadata_cache.get(resolved)
         if metadata is None:
             metadata = read_hook_metadata(project_root)
+            validate_hook_project_contract(project_root, metadata)
             self._metadata_cache[resolved] = metadata
         return metadata

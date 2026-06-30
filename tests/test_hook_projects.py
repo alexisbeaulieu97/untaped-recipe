@@ -16,6 +16,7 @@ from typing import Literal
 import pytest
 from pydantic import ValidationError
 
+import untaped_recipe.infrastructure.hook_resolver as hook_resolver_module
 import untaped_recipe.infrastructure.hook_worker_client as worker_client
 from untaped_recipe.domain.hook_project import HookProjectMetadata
 from untaped_recipe.domain.plan import Verdict
@@ -189,6 +190,47 @@ def test_hook_resolver_rejects_runtime_untaped_recipe_dependency(tmp_path: Path)
         HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
 
 
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        "Untaped_Recipe[hooks]>=0.7; python_version >= '3.14'",
+        "untaped-recipe @ git+https://example.invalid/untaped-recipe.git",
+    ],
+)
+def test_hook_resolver_rejects_pep508_runtime_untaped_recipe_dependencies(
+    tmp_path: Path,
+    dependency: str,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"check": "project_hooks.hooks.check"},
+        dependencies=[dependency],
+    )
+
+    with pytest.raises(ValueError, match="must not depend on untaped-recipe"):
+        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+
+
+def test_hook_project_metadata_rejects_invalid_dependency_declarations() -> None:
+    with pytest.raises(ValueError, match=r"\[project\]\.dependencies entry"):
+        HookProjectMetadata.from_pyproject(
+            {
+                "project": {"dependencies": ["not a valid @@@ requirement"]},
+                "tool": {
+                    "untaped_recipe": {
+                        "hooks": {
+                            "check": {
+                                "kind": "transform",
+                                "module": "project_hooks.hooks.check",
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+
 def test_hook_resolver_rejects_newer_required_hook_api(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     _write_hook_project(
@@ -222,6 +264,27 @@ def test_hook_resolver_caches_metadata_for_apply_lifetime(tmp_path: Path) -> Non
     assert isinstance(first, UvHookRef)
     assert isinstance(second, UvHookRef)
     assert second.module == "project_hooks.hooks.check"
+
+
+def test_hook_resolver_validates_project_contract_once_per_metadata_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"})
+    calls: list[Path] = []
+
+    def validate(project_root: Path, metadata: HookProjectMetadata) -> None:
+        del metadata
+        calls.append(project_root)
+
+    monkeypatch.setattr(hook_resolver_module, "validate_hook_project_contract", validate)
+    resolver = HookResolver(global_hooks=tmp_path / "hooks")
+
+    resolver.resolve("check", recipe_dir)
+    resolver.resolve("check", recipe_dir)
+
+    assert calls == [recipe_dir]
 
 
 def test_worker_response_validation_rejects_malformed_protocol_rows() -> None:

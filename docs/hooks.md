@@ -71,7 +71,9 @@ Scaffolded hook projects put the contract package in `[dependency-groups].dev`
 and declare `[tool.untaped_recipe].requires_hook_api` so older CLIs fail before
 running the hook. Do not add `untaped-recipe` itself to `[project].dependencies`;
 that would let the hook environment shadow the launching CLI's worker internals,
-so checks and hook resolution reject it.
+so checks and hook resolution reject it. Hook scaffolding runs `uv lock`, so it
+needs access to PyPI or a configured uv package source for
+`untaped-recipe-hook-api`.
 
 Recipe-local hooks use the same project shape inside a standalone recipe
 project:

@@ -138,6 +138,8 @@ plain directories.
 - Hook projects may declare `[tool.untaped_recipe].requires_hook_api` to fail
   fast when the installed CLI's helper API is too old. The scaffold adds this
   marker and the `untaped-recipe-hook-api` dev dependency automatically.
+- Hook scaffolding refreshes `uv.lock`, so it needs package-index access or a
+  configured uv source for `untaped-recipe-hook-api`.
 - Do not add the full `untaped-recipe` engine to a hook project's runtime
   dependencies. The installed CLI owns the worker and helper implementation,
   and hook workers run with `uv run --locked --no-dev`; packages imported by

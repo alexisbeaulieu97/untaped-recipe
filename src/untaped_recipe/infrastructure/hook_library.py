@@ -14,6 +14,7 @@ from tomlkit import TOMLDocument
 from untaped_recipe_hook_api import HOOK_API_VERSION
 
 from untaped_recipe.domain.hook_project import (
+    dependency_name,
     hook_module_file,
     normalize_hook_name,
     project_name_for_hook,
@@ -29,6 +30,10 @@ from untaped_recipe.infrastructure.uv_project import lock_project
 _HOOK_API_MINOR = ".".join(HOOK_API_VERSION.split(".")[:2])
 _HOOK_API_DEV_REQUIREMENT = f"untaped-recipe-hook-api>={_HOOK_API_MINOR},<1"
 _HOOK_API_PROJECT_REQUIREMENT = f">={_HOOK_API_MINOR}"
+_HOOK_API_LOCK_HINT = (
+    "untaped-recipe-hook-api must be reachable from PyPI/TestPyPI or a configured uv source "
+    "while scaffolding typed hooks"
+)
 
 
 @dataclass(frozen=True)
@@ -63,7 +68,7 @@ class HookLibrary:
         temp_root = self.hooks_dir / f".{project_name}.tmp-{uuid.uuid4().hex}"
         try:
             self._scaffold(public_name, project_name, temp_root, kind=kind)
-            lock_project(temp_root)
+            _lock_scaffold(temp_root)
             temp_root.rename(project_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -216,7 +221,7 @@ def add_hook_to_project(
             hooks_init.write_text("")
         module_path.write_text(_hook_stub(kind))
         _append_hook_metadata(pyproject, public_name, kind, module)
-        lock_project(project_root)
+        _lock_scaffold(project_root)
     except Exception:
         _rollback_scoped_hook(
             pyproject=pyproject,
@@ -311,18 +316,23 @@ def _ensure_hook_authoring_metadata(doc: TOMLDocument) -> None:
 def _has_dependency(dependencies: object, name: str) -> bool:
     if not isinstance(dependencies, list):
         return False
-    normalized = name.replace("_", "-").lower()
+    normalized = dependency_name(name)
     for dependency in dependencies:
-        if isinstance(dependency, str) and dependency.split(";", maxsplit=1)[0].strip():
-            candidate = dependency.split(";", maxsplit=1)[0].strip()
-            candidate_name = candidate.split("[", maxsplit=1)[0]
-            candidate_name = candidate_name.split(" ", maxsplit=1)[0]
-            candidate_name = candidate_name.split("<", maxsplit=1)[0]
-            candidate_name = candidate_name.split(">", maxsplit=1)[0]
-            candidate_name = candidate_name.split("=", maxsplit=1)[0]
-            if candidate_name.replace("_", "-").lower() == normalized:
+        if isinstance(dependency, str):
+            try:
+                candidate_name = dependency_name(dependency)
+            except ValueError:
+                continue
+            if candidate_name == normalized:
                 return True
     return False
+
+
+def _lock_scaffold(project_root: Path) -> None:
+    try:
+        lock_project(project_root)
+    except ValueError as exc:
+        raise ValueError(f"{exc}\n{_HOOK_API_LOCK_HINT}") from exc
 
 
 def _rollback_scoped_hook(

@@ -8,13 +8,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 from pydantic import BaseModel, ConfigDict, field_validator
 from untaped_recipe_hook_api import HOOK_API_VERSION
 
 _DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
-_DEPENDENCY_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)")
 HookKind = Literal["transform", "validate"]
 
 
@@ -155,7 +156,7 @@ def validate_hook_modules(project_root: Path, metadata: HookProjectMetadata) -> 
 def validate_hook_project_contract(project_root: Path, metadata: HookProjectMetadata) -> None:
     """Require hook projects to be compatible with the running helper API."""
     for dependency in metadata.runtime_dependencies:
-        if _dependency_name(dependency) == "untaped-recipe":
+        if dependency_name(dependency) == "untaped-recipe":
             raise ValueError(
                 "hook project must not depend on untaped-recipe at runtime; "
                 "add untaped-recipe-hook-api to dependency-groups.dev instead: "
@@ -212,15 +213,19 @@ def _runtime_dependencies(project: Mapping[str, object] | None) -> tuple[str, ..
     for dependency in raw_dependencies:
         if not isinstance(dependency, str):
             raise ValueError("[project].dependencies entries must be strings")
+        dependency_name(dependency)
         dependencies.append(dependency)
     return tuple(dependencies)
 
 
-def _dependency_name(dependency: str) -> str:
-    match = _DEPENDENCY_NAME_RE.match(dependency)
-    if match is None:
-        return ""
-    return match.group(1).replace("_", "-").lower()
+def dependency_name(dependency: str) -> str:
+    """Return the normalized PEP 508 project name for a dependency string."""
+    try:
+        return canonicalize_name(Requirement(dependency).name)
+    except InvalidRequirement as exc:
+        raise ValueError(
+            f"[project].dependencies entry must be a valid requirement: {dependency}"
+        ) from exc
 
 
 def _specifier_set(value: str) -> SpecifierSet:

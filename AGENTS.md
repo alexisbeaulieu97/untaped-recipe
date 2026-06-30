@@ -294,6 +294,22 @@ indent, and explicit document start/end; worker and in-process defaults are
 `preserve_quotes=True` and `width=4096`. Unsupported option keys must be
 rejected rather than ignored.
 
+## Release Workflow
+
+Use `.github/workflows/release.yml` for releases that include the hook API
+contract package. The workflow publishes `untaped-recipe-hook-api` to TestPyPI
+or PyPI through Trusted Publishing, verifies scaffold locking against the target
+index, and only creates the production GitHub release/tag after PyPI
+verification passes. The production `pypi` GitHub environment should be
+protected with required reviewers.
+
+Do not manually create a GitHub release/tag for a version whose hook API package
+has not been published and verified. PyPI versions are permanently burned once
+uploaded; if publish succeeds but post-publish verification never passes, bump
+the patch version in root `pyproject.toml`, `packages/hook-api/pyproject.toml`,
+`HOOK_API_VERSION`, and the derived scaffold floor before retrying. See
+`docs/release.md` for the runbook.
+
 ## Development Workflow
 
 ```bash

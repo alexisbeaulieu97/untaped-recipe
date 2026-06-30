@@ -93,7 +93,9 @@ Hook projects must not depend on the full `untaped-recipe` engine at runtime;
 the installed CLI provides the worker and helper implementation. Runtime hook
 dependencies belong in `[project].dependencies`, and type-only authoring
 dependencies belong in `[dependency-groups].dev` because workers execute with
-`uv run --locked --no-dev`.
+`uv run --locked --no-dev`. Hook initialization refreshes `uv.lock`, so
+scaffolding hooks needs access to PyPI or a configured uv source for
+`untaped-recipe-hook-api`.
 Use `untaped-recipe hook run <hook> --target <dir>` to invoke one hook against
 an explicit fixture without writing target files.
 
@@ -242,7 +244,8 @@ Please report suspected vulnerabilities privately. See
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) and [AGENTS.md](./AGENTS.md) for the
-local workflow, architecture rules, and product contracts.
+local workflow, architecture rules, product contracts, and
+[docs/release.md](./docs/release.md) for the release workflow.
 
 ## License
 

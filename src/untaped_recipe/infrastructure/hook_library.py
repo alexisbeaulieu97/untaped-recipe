@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Literal
 
 import tomlkit
+from tomlkit import TOMLDocument
+from untaped_recipe_hook_api import HOOK_API_VERSION
 
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
@@ -18,10 +20,15 @@ from untaped_recipe.domain.hook_project import (
     project_name_from_metadata,
     read_hook_metadata,
     validate_hook_modules,
+    validate_hook_project_contract,
 )
 from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
 from untaped_recipe.domain.project_toml import read_toml_document, toml_table
 from untaped_recipe.infrastructure.uv_project import lock_project
+
+_HOOK_API_MINOR = ".".join(HOOK_API_VERSION.split(".")[:2])
+_HOOK_API_DEV_REQUIREMENT = f"untaped-recipe-hook-api>={_HOOK_API_MINOR},<1"
+_HOOK_API_PROJECT_REQUIREMENT = f">={_HOOK_API_MINOR}"
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,10 @@ class HookLibrary:
             'version = "0.1.0"\n'
             'requires-python = ">=3.14"\n'
             "dependencies = []\n\n"
+            "[dependency-groups]\n"
+            f'dev = ["{_HOOK_API_DEV_REQUIREMENT}"]\n\n'
+            "[tool.untaped_recipe]\n"
+            f'requires_hook_api = "{_HOOK_API_PROJECT_REQUIREMENT}"\n\n'
             "[tool.untaped_recipe.hooks]\n"
             f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}\n'
         )
@@ -99,6 +110,7 @@ class HookLibrary:
             raise ValueError("hook source must be a uv hook project directory")
         metadata = read_hook_metadata(source)
         declared_name = project_name_from_metadata(metadata)
+        validate_hook_project_contract(source, metadata)
         validate_hook_modules(source, metadata)
         if not (source / "uv.lock").is_file():
             raise ValueError(f"hook project is missing uv.lock: {source}")
@@ -243,7 +255,7 @@ _HOOK_STUB_PREAMBLE = (
     "from typing import TYPE_CHECKING\n"
     "\n"
     "if TYPE_CHECKING:\n"
-    "    from untaped_recipe.hook_api import HookHelpers\n"
+    "    from untaped_recipe_hook_api import HookHelpers\n"
     "\n"
     "\n"
 )
@@ -269,6 +281,7 @@ def _append_hook_metadata(
     module: str,
 ) -> None:
     doc = read_toml_document(path)
+    _ensure_hook_authoring_metadata(doc)
     tool = toml_table(doc, "tool", "tool", create=True)
     untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
     hooks = toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
@@ -277,6 +290,39 @@ def _append_hook_metadata(
     entry["module"] = module
     hooks[public_name] = entry
     path.write_text(doc.as_string())
+
+
+def _ensure_hook_authoring_metadata(doc: TOMLDocument) -> None:
+    groups = toml_table(doc, "dependency-groups", "dependency-groups", create=True)
+    dev = groups.get("dev")
+    if dev is None:
+        groups["dev"] = [_HOOK_API_DEV_REQUIREMENT]
+    elif not isinstance(dev, list):
+        raise ValueError("[dependency-groups].dev must be an array")
+    elif not _has_dependency(dev, "untaped-recipe-hook-api"):
+        dev.append(_HOOK_API_DEV_REQUIREMENT)
+
+    tool = toml_table(doc, "tool", "tool", create=True)
+    untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
+    if "requires_hook_api" not in untaped:
+        untaped["requires_hook_api"] = _HOOK_API_PROJECT_REQUIREMENT
+
+
+def _has_dependency(dependencies: object, name: str) -> bool:
+    if not isinstance(dependencies, list):
+        return False
+    normalized = name.replace("_", "-").lower()
+    for dependency in dependencies:
+        if isinstance(dependency, str) and dependency.split(";", maxsplit=1)[0].strip():
+            candidate = dependency.split(";", maxsplit=1)[0].strip()
+            candidate_name = candidate.split("[", maxsplit=1)[0]
+            candidate_name = candidate_name.split(" ", maxsplit=1)[0]
+            candidate_name = candidate_name.split("<", maxsplit=1)[0]
+            candidate_name = candidate_name.split(">", maxsplit=1)[0]
+            candidate_name = candidate_name.split("=", maxsplit=1)[0]
+            if candidate_name.replace("_", "-").lower() == normalized:
+                return True
+    return False
 
 
 def _rollback_scoped_hook(

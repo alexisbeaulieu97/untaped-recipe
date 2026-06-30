@@ -13,6 +13,7 @@ from untaped.api import build_tool_app, invalidate_settings_cache
 from untaped.testing import CliInvoker
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
+import untaped_recipe.infrastructure.hook_library as hook_library_module
 from untaped_recipe import app
 from untaped_recipe.__main__ import SPEC
 from untaped_recipe.builtins.registry import BUILTIN_HOOKS, BuiltinHook
@@ -74,6 +75,10 @@ def _write_hook_project(
         f'"{public_name}" = {{ kind = "{kind}", module = "{package}.hooks.{module_name}" }}\n'
     )
     subprocess.run(["uv", "lock"], cwd=root, check=True)
+
+
+def _write_minimal_lock(project_root: Path) -> None:
+    (project_root / "uv.lock").write_text("version = 1\n")
 
 
 def test_apply_yes_writes_and_emits_json_summary(
@@ -2358,6 +2363,7 @@ def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.Mo
     editor.chmod(0o755)
     monkeypatch.setenv("EDITOR", str(editor))
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(hook_library_module, "lock_project", _write_minimal_lock)
     invoker = CliInvoker()
 
     initialized_recipe = invoker.invoke(app, ["recipe", "init", "demo"])
@@ -2603,6 +2609,32 @@ def test_recipe_check_validates_unreferenced_local_hook_project_lockfile(tmp_pat
     rows = json.loads(result.stdout)
     assert rows[0]["status"] == "error"
     assert "missing uv.lock" in rows[0]["error"]
+
+
+def test_recipe_check_rejects_runtime_untaped_recipe_hook_dependency(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text("version: 1\nsteps: []\n")
+    _write_hook_project(
+        recipe_dir,
+        public_name="check",
+        module_name="check",
+        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+    )
+    pyproject = recipe_dir / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace(
+            "dependencies = []",
+            'dependencies = ["untaped-recipe>=0.7"]',
+        )
+    )
+
+    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["status"] == "error"
+    assert "must not depend on untaped-recipe at runtime" in rows[0]["error"]
 
 
 def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path: Path) -> None:

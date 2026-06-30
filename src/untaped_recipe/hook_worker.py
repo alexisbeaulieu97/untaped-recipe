@@ -13,14 +13,14 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-try:
+if __package__:
     from untaped_recipe import worker_protocol as protocol
-except ModuleNotFoundError:  # pragma: no cover - used when executed as a script in a hook env.
+else:  # pragma: no cover - used when executed as a script in a hook env.
     import worker_protocol as protocol  # type: ignore[import-not-found,no-redef]
 
-try:
+if __package__:
     from untaped_recipe.yaml_options import apply_yaml_dump_options
-except ModuleNotFoundError:  # pragma: no cover - used when executed as a script in a hook env.
+else:  # pragma: no cover - used when executed as a script in a hook env.
     from yaml_options import apply_yaml_dump_options  # type: ignore[import-not-found,no-redef]
 
 _PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
@@ -72,7 +72,7 @@ class HookHelpers:
 
 
 if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
+    from untaped_recipe_hook_api import HookHelpers as ExternalHookHelpers
 
     _external_helper_contract: ExternalHookHelpers = HookHelpers()
 

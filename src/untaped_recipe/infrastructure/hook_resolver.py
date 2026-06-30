@@ -14,6 +14,7 @@ from untaped_recipe.domain.hook_project import (
     project_name_for_hook,
     read_hook_metadata,
     validate_hook_modules,
+    validate_hook_project_contract,
 )
 
 
@@ -85,6 +86,7 @@ class HookResolver:
         definition = metadata.hooks.get(public_name)
         if definition is None:
             return None
+        validate_hook_project_contract(project_root, metadata)
         if not (project_root / "uv.lock").is_file():
             raise ValueError(f"hook project is missing uv.lock: {project_root}")
         validate_hook_modules(project_root, metadata)

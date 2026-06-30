@@ -41,6 +41,12 @@ hooks/set_owner/
 Hook metadata lives in `pyproject.toml`:
 
 ```toml
+[dependency-groups]
+dev = ["untaped-recipe-hook-api>=0.8,<1"]
+
+[tool.untaped_recipe]
+requires_hook_api = ">=0.8"
+
 [tool.untaped_recipe.hooks]
 "set_owner" = { kind = "transform", module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
 ```
@@ -57,6 +63,15 @@ must be migrated by adding the matching kind:
 ```toml
 "set_owner" = { kind = "transform", module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
 ```
+
+`untaped-recipe-hook-api` is a type-only authoring package. It gives editors and
+type checkers the `HookHelpers` protocol and YAML option types, but the runtime
+helper implementation still comes from the installed `untaped-recipe` CLI.
+Scaffolded hook projects put the contract package in `[dependency-groups].dev`
+and declare `[tool.untaped_recipe].requires_hook_api` so older CLIs fail before
+running the hook. Do not add `untaped-recipe` itself to `[project].dependencies`;
+that would let the hook environment shadow the launching CLI's worker internals,
+so checks and hook resolution reject it.
 
 Recipe-local hooks use the same project shape inside a standalone recipe
 project:
@@ -112,10 +127,13 @@ built-ins.
 
 ## Execution Model
 
-External hook projects are launched with locked uv execution. During one
+External hook projects are launched with locked uv execution:
+`uv run --project <hook-project> --locked --no-dev python <worker>`. During one
 `apply`, the engine keeps a small worker pool per hook project. The pool can
 start up to the clamped `--parallel` value for that project, and each individual
-worker serializes its own requests safely.
+worker serializes its own requests safely. Put packages imported by hook code at
+runtime in `[project].dependencies`; dev-only dependencies are intentionally not
+installed into workers.
 Each hook request has a timeout controlled by `recipe.hook_timeout_seconds`
 or `apply --hook-timeout`; the default is 60 seconds and `0` disables the
 timeout. Timed-out workers are killed, retired from the pool, and reported as
@@ -144,7 +162,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers
+    from untaped_recipe_hook_api import HookHelpers
 
 
 def transform(
@@ -162,7 +180,8 @@ def transform(
 
 `target` and `file` are rebuilt as `Path` objects in the worker. `helpers` is a
 small worker helper object. The `TYPE_CHECKING` import gives editors the helper
-API without making `untaped-recipe` a runtime dependency of the hook project.
+API without importing anything at hook runtime; type checkers resolve it from
+the `untaped-recipe-hook-api` dev dependency.
 
 ## Validate Hooks
 
@@ -173,7 +192,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers
+    from untaped_recipe_hook_api import HookHelpers
 
 
 def validate(
@@ -193,8 +212,7 @@ Accepted return values:
 - compatible verdict dict, such as `{"status": "warn", "message": "..."}`
 - `None` for pass
 - string for fail
-- a `Verdict`-like object with `model_dump()` if the hook project chooses to
-  depend on `untaped-recipe`
+- a local verdict-like object with `model_dump()`
 
 Warnings are recorded on the target plan. Failures abort that target before
 any writes.
@@ -210,10 +228,11 @@ Worker helpers provide:
   `ruamel.yaml` in the hook project's dependencies.
 
 Add hook-specific dependencies to the hook project's `pyproject.toml`, then run
-`uv lock`. The engine always runs hook projects with `--locked`.
+`uv lock`. The engine always runs hook projects with `--locked --no-dev`, so
+only `[project].dependencies` are available to hook code at runtime.
 
 `dump_yaml` accepts ordinary dict options so hook projects do not need runtime
-imports from `untaped-recipe`:
+imports from the engine:
 
 ```python
 data = helpers.load_yaml(content)

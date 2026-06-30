@@ -19,7 +19,12 @@ from untaped.api import (
 
 from untaped_recipe.application.inputs import validate_recipe_input_sources
 from untaped_recipe.cli.common import edit_path, library_root, report_config_errors
-from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata, validate_hook_modules
+from untaped_recipe.domain.hook_project import (
+    HookKind,
+    read_hook_metadata,
+    validate_hook_modules,
+    validate_hook_project_contract,
+)
 from untaped_recipe.domain.paths import confined_path, is_explicit_path
 from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
 from untaped_recipe.infrastructure.hook_library import add_hook_to_project
@@ -252,6 +257,7 @@ def _check_local_hook_project(local_hook_project: Path | None) -> None:
     metadata = read_hook_metadata(local_hook_project)
     if not metadata.hooks:
         return
+    validate_hook_project_contract(local_hook_project, metadata)
     if not (local_hook_project / "uv.lock").is_file():
         raise ValueError(f"hook project is missing uv.lock: {local_hook_project}")
     validate_hook_modules(local_hook_project, metadata)

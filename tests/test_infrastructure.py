@@ -9,6 +9,7 @@ import pytest
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 import untaped_recipe.infrastructure.hook_library as hook_library_module
+import untaped_recipe.infrastructure.recipe_library as recipe_library_module
 import untaped_recipe.infrastructure.ruamel_io as ruamel_io_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
@@ -226,10 +227,13 @@ def test_hook_init_stubs_use_type_checking_helper_annotations(
     project = HookLibrary(tmp_path / "library").init("check", kind=kind)
 
     source = next((project / "src").glob("*/hooks/check.py")).read_text()
+    pyproject = (project / "pyproject.toml").read_text()
     assert "from typing import TYPE_CHECKING" in source
     assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe.hook_api import HookHelpers" in source
+    assert "from untaped_recipe_hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
+    assert 'requires_hook_api = ">=0.8"' in pyproject
+    assert 'dev = ["untaped-recipe-hook-api>=0.8,<1"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:
@@ -242,16 +246,20 @@ def test_scoped_hook_stubs_use_type_checking_helper_annotations(
     monkeypatch: pytest.MonkeyPatch,
     kind: str,
 ) -> None:
+    monkeypatch.setattr(recipe_library_module, "lock_project", lambda project_root: None)
     project = RecipeLibrary(tmp_path / "library").init("demo", base_dir=tmp_path)
     monkeypatch.setattr(hook_library_module, "lock_project", lambda project_root: None)
 
     module = add_hook_to_project(project, "check", kind=kind)
 
     source = module.read_text()
+    pyproject = (project / "pyproject.toml").read_text()
     assert "from typing import TYPE_CHECKING" in source
     assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe.hook_api import HookHelpers" in source
+    assert "from untaped_recipe_hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
+    assert 'requires_hook_api = ">=0.8"' in pyproject
+    assert 'dev = ["untaped-recipe-hook-api>=0.8,<1"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:
@@ -280,12 +288,13 @@ def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None =
 
 
 def test_public_hook_api_exposes_dependency_light_yaml_option_types() -> None:
+    from untaped_recipe.hook_api import HOOK_API_VERSION, YamlDumpOptions, YamlIndentOptions
     from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
-    from untaped_recipe.hook_api import YamlDumpOptions, YamlIndentOptions
 
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
+    assert HOOK_API_VERSION == "0.8.0"
     assert options["indent"]["sequence"] == 4
     assert ExternalHookHelpers.__name__ == "HookHelpers"
 

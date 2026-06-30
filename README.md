@@ -87,8 +87,13 @@ Supported hook forms are:
 Use `untaped-recipe hook init <hook-name>` to scaffold a global uv hook project.
 Use `untaped-recipe recipe hook init <recipe> <hook>` or
 `untaped-recipe pack hook init <pack> <hook>` for local hooks.
-Generated hooks use `TYPE_CHECKING` imports from `untaped_recipe.hook_api` for
-editor discovery without requiring `untaped-recipe` at hook runtime.
+Generated hooks use `TYPE_CHECKING` imports from `untaped_recipe_hook_api` for
+editor discovery through the type-only `untaped-recipe-hook-api` dev dependency.
+Hook projects must not depend on the full `untaped-recipe` engine at runtime;
+the installed CLI provides the worker and helper implementation. Runtime hook
+dependencies belong in `[project].dependencies`, and type-only authoring
+dependencies belong in `[dependency-groups].dev` because workers execute with
+`uv run --locked --no-dev`.
 Use `untaped-recipe hook run <hook> --target <dir>` to invoke one hook against
 an explicit fixture without writing target files.
 
@@ -224,7 +229,7 @@ uv run ruff check --fix
 uv run ruff format
 uv run mypy
 uv run pytest
-uv build
+uv build --all-packages
 ```
 
 See [AGENTS.md](./AGENTS.md) for architecture rules and product contracts.

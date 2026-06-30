@@ -238,7 +238,7 @@ External transform hooks expose:
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers
+    from untaped_recipe_hook_api import HookHelpers
 
 
 def transform(
@@ -258,7 +258,7 @@ External validate hooks expose:
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers
+    from untaped_recipe_hook_api import HookHelpers
 
 
 def validate(
@@ -270,12 +270,22 @@ def validate(
 ) -> dict | None | str: ...
 ```
 
-Validate hooks may return a compatible verdict dict, `None` for pass, a string
-for fail, or a `Verdict`-like object with `model_dump()` if the hook project
-chooses to depend on `untaped-recipe`. Prefer explicit `helpers.pass_()`,
-`helpers.warn()`, and `helpers.fail()` in shipped examples. Built-in hooks may
-use the engine's concrete `HookHelpers` and `Verdict` types directly.
-The public `untaped_recipe.hook_api.HookHelpers` protocol models external
+Validate hooks may return a compatible verdict dict, `None` for pass, or a
+string for fail. Prefer explicit `helpers.pass_()`, `helpers.warn()`, and
+`helpers.fail()` in shipped examples. Built-in hooks may use the engine's
+concrete `HookHelpers` and `Verdict` types directly.
+External hook typing lives in the separate `untaped-recipe-hook-api` package
+and imports as `untaped_recipe_hook_api`. Hook projects may use that package as
+a dev dependency for editor discovery, but must not depend on the full
+`untaped-recipe` engine at runtime. External uv workers run with `uv run
+--locked --no-dev`, so hook runtime dependencies belong in
+`[project].dependencies`; type-only authoring dependencies belong in
+`[dependency-groups].dev`. Hook projects can declare
+`[tool.untaped_recipe].requires_hook_api` to fail fast when the installed CLI's
+helper API is too old. The engine keeps
+`untaped_recipe.hook_api` as a compatibility re-export for engine-side imports,
+but scaffolded external hooks should import `untaped_recipe_hook_api`.
+The public `untaped_recipe_hook_api.HookHelpers` protocol models external
 worker helpers, where verdict helpers return dict-shaped verdicts. Keep the
 application-layer `HookHelpersPort` separate for in-process built-ins, where
 verdict helpers return `Verdict`. External `helpers.dump_yaml(data, options=...)`
@@ -293,7 +303,7 @@ uv run ruff check --fix
 uv run ruff format
 uv run mypy
 uv run pytest
-uv build
+uv build --all-packages
 git diff --check --cached
 ```
 

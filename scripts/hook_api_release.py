@@ -116,6 +116,8 @@ def smoke_hook_init(
         if find_links is not None:
             env["UV_FIND_LINKS"] = str(find_links.resolve())
         if no_index:
+            # uv lock does not honor UV_NO_INDEX, so point the default index at an empty
+            # local directory while still allowing UV_FIND_LINKS to provide the wheel.
             empty_index = temp_root / "empty-index"
             empty_index.mkdir()
             env["UV_DEFAULT_INDEX"] = empty_index.as_uri()
@@ -157,13 +159,16 @@ def publish_hook_api(version: str, *, publish_url: str | None = None) -> None:
 
 
 def _is_hook_api_artifact_version(path: Path, version: str) -> bool:
-    try:
-        if path.name.endswith(".whl"):
+    if path.name.endswith(".whl"):
+        try:
             name, parsed_version, _build, _tags = parse_wheel_filename(path.name)
-        else:
+        except InvalidWheelFilename:
+            return False
+    else:
+        try:
             name, parsed_version = parse_sdist_filename(path.name)
-    except InvalidSdistFilename, InvalidWheelFilename:
-        return False
+        except InvalidSdistFilename:
+            return False
     return canonicalize_name(name) == PACKAGE_NAME and parsed_version == Version(version)
 
 

@@ -111,6 +111,7 @@ def test_scoped_hook_init_rolls_back_on_lock_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(recipe_library_module, "lock_project", lambda project_root: None)
     project = RecipeLibrary(tmp_path / "library").init("demo", base_dir=tmp_path)
     before = (project / "pyproject.toml").read_text()
 
@@ -210,65 +211,213 @@ def test_hook_library_init_cleans_up_partial_project_on_lock_failure(
 
     monkeypatch.setattr(hook_library_module, "lock_project", fail_lock)
 
-    with pytest.raises(ValueError, match="untaped-recipe-hook-api"):
+    with pytest.raises(ValueError, match="untaped-recipe"):
         library.init("check")
 
     assert not (tmp_path / "library" / "hooks" / "check").exists()
     assert library.list() == []
 
 
-def test_hook_library_init_locks_scaffold_with_local_hook_api_index(
+def test_build_package_wheel_writes_recipe_wheel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hook_api_release = _release_module()
+    release = _release_module()
     dist_dir = tmp_path / "dist"
-    hook_api_release.build_hook_api_wheel(dist_dir)
-    monkeypatch.setenv("UV_FIND_LINKS", str(dist_dir))
-    monkeypatch.setenv("UV_NO_INDEX", "1")
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    release.build_package_wheel(dist_dir)
 
-    project = HookLibrary(tmp_path / "library").init("check")
-
-    lock = (project / "uv.lock").read_text()
-    assert "untaped-recipe-hook-api" in lock
-    assert "0.8.0" in lock
+    assert list(dist_dir.glob("untaped_recipe-0.8.0-*.whl"))
 
 
-def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(tmp_path: Path) -> None:
-    hook_api_release = _release_module()
+def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release_module()
     dist_dir = tmp_path / "dist"
-    hook_api_release.build_hook_api_wheel(dist_dir)
+    dist_dir.mkdir()
+    calls: list[tuple[list[str], Path, dict[str, str] | None]] = []
 
-    hook_api_release.smoke_hook_init(find_links=dist_dir, no_index=True)
+    def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+        assert env is not None
+        calls.append((command, cwd, env))
+        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
+        hook = library / "hooks" / "hook_api_smoke"
+        hook.mkdir(parents=True)
+        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+
+    monkeypatch.setattr(release, "_run", fake_run)
+
+    release.smoke_hook_init("0.8.0", find_links=dist_dir)
+
+    assert calls
+    command, cwd, env = calls[0]
+    assert cwd != Path(release.ROOT)
+    assert "--no-project" in command
+    assert "--project" not in command
+    assert "untaped-recipe==0.8.0" in command
+    assert command[-4:] == ["untaped-recipe", "hook", "init", "hook_api_smoke"]
+    assert env is not None
+    assert env["UV_FIND_LINKS"] == str(dist_dir.resolve())
 
 
 def test_release_smoke_hook_init_resolves_relative_local_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hook_api_release = _release_module()
+    release = _release_module()
     dist_dir = tmp_path / "dist"
-    hook_api_release.build_hook_api_wheel(dist_dir)
+    dist_dir.mkdir()
+    captured_find_links: list[str] = []
+
+    def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+        del command, cwd
+        assert env is not None
+        captured_find_links.append(env["UV_FIND_LINKS"])
+        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
+        hook = library / "hooks" / "hook_api_smoke"
+        hook.mkdir(parents=True)
+        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+
+    monkeypatch.setattr(release, "_run", fake_run)
     monkeypatch.chdir(tmp_path)
 
-    hook_api_release.smoke_hook_init(find_links=Path("dist"), no_index=True)
+    release.smoke_hook_init("0.8.0", find_links=Path("dist"))
+
+    assert captured_find_links == [str(dist_dir.resolve())]
 
 
-def test_release_publish_hook_api_filters_artifacts_by_version(
+def test_release_smoke_hook_init_uses_published_index_and_isolated_env(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hook_api_release = _release_module()
-    dist = Path(hook_api_release.ROOT) / "dist"
+    release = _release_module()
+    calls: list[tuple[list[str], Path, dict[str, str] | None]] = []
+    monkeypatch.setenv("VIRTUAL_ENV", str(Path(release.ROOT) / ".venv"))
+    monkeypatch.setenv("PYTHONPATH", str(Path(release.ROOT) / "src"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+
+    def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+        assert env is not None
+        calls.append((command, cwd, env))
+        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
+        hook = library / "hooks" / "hook_api_smoke"
+        hook.mkdir(parents=True)
+        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+
+    monkeypatch.setattr(release, "_run", fake_run)
+
+    release.smoke_hook_init("0.8.0", index_url="https://test.pypi.org/simple/")
+
+    assert calls
+    command, cwd, env = calls[0]
+    assert cwd != Path(release.ROOT)
+    assert "--no-project" in command
+    assert "--project" not in command
+    assert "untaped-recipe==0.8.0" in command
+    assert env is not None
+    assert "VIRTUAL_ENV" not in env
+    assert "PYTHONPATH" not in env
+    assert env["UV_CACHE_DIR"] == str(cwd / "uv-cache")
+    assert env["UV_INDEX"] == "https://test.pypi.org/simple/"
+    assert env["UV_INDEX_STRATEGY"] == "unsafe-best-match"
+
+
+def test_release_verify_sdk_published_uses_isolated_uv_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release_module()
+    calls: list[tuple[list[str], Path, dict[str, str] | None]] = []
+    monkeypatch.setenv("VIRTUAL_ENV", str(Path(release.ROOT) / ".venv"))
+    monkeypatch.setenv("PYTHONPATH", str(Path(release.ROOT) / "src"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str] | None = None,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> object:
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        calls.append((command, cwd, env))
+        return release.subprocess.CompletedProcess(command, 0, stdout="2.4.0\n", stderr="")
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+
+    release.verify_sdk_published()
+
+    assert calls
+    command, cwd, env = calls[0]
+    assert cwd != Path(release.ROOT)
+    assert "--with" in command
+    assert "untaped>=2.4.0,<3" in command
+    assert env is not None
+    assert "VIRTUAL_ENV" not in env
+    assert "PYTHONPATH" not in env
+    assert env["UV_CACHE_DIR"] == str(cwd / "uv-cache")
+
+
+def test_release_wait_published_uses_isolated_uv_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release_module()
+    calls: list[tuple[list[str], Path, dict[str, str] | None]] = []
+    monkeypatch.setenv("VIRTUAL_ENV", str(Path(release.ROOT) / ".venv"))
+    monkeypatch.setenv("PYTHONPATH", str(Path(release.ROOT) / "src"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str] | None = None,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> object:
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        calls.append((command, cwd, env))
+        return release.subprocess.CompletedProcess(command, 0, stdout="0.8.0\n", stderr="")
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+
+    release.wait_published("0.8.0", timeout_seconds=1)
+
+    assert calls
+    command, cwd, env = calls[0]
+    assert cwd != Path(release.ROOT)
+    assert "--with" in command
+    assert "untaped-recipe==0.8.0" in command
+    assert env is not None
+    assert "VIRTUAL_ENV" not in env
+    assert "PYTHONPATH" not in env
+    assert env["UV_CACHE_DIR"] == str(cwd / "uv-cache")
+
+
+def test_release_publish_package_filters_artifacts_by_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release_module()
+    dist = Path(release.ROOT) / "dist"
     published: list[list[str]] = []
 
-    matching_wheel = dist / "untaped_recipe_hook_api-0.8.0-py3-none-any.whl"
-    matching_sdist = dist / "untaped_recipe_hook_api-0.8.0.tar.gz"
-    stale_wheel = dist / "untaped_recipe_hook_api-0.7.0-py3-none-any.whl"
-    unrelated = dist / "untaped_recipe-0.8.0-py3-none-any.whl"
+    matching_wheel = dist / "untaped_recipe-0.8.0-py3-none-any.whl"
+    matching_sdist = dist / "untaped_recipe-0.8.0.tar.gz"
+    stale_wheel = dist / "untaped_recipe-0.7.0-py3-none-any.whl"
+    unrelated = dist / "untaped_recipe_hook_api-0.8.0-py3-none-any.whl"
 
     def fake_glob(pattern: str) -> list[Path]:
-        assert pattern == "untaped_recipe_hook_api-0.8.0*"
+        assert pattern == "untaped_recipe-0.8.0*"
         return [matching_wheel, matching_sdist, stale_wheel, unrelated]
 
     def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
@@ -276,9 +425,9 @@ def test_release_publish_hook_api_filters_artifacts_by_version(
         published.append(command)
 
     monkeypatch.setattr(type(dist), "glob", lambda self, pattern: fake_glob(pattern))
-    monkeypatch.setattr(hook_api_release, "_run", fake_run)
+    monkeypatch.setattr(release, "_run", fake_run)
 
-    hook_api_release.publish_hook_api("0.8.0")
+    release.publish_package("0.8.0")
 
     assert published == [
         [
@@ -293,8 +442,8 @@ def test_release_publish_hook_api_filters_artifacts_by_version(
 
 
 def _release_module() -> object:
-    module_path = Path(__file__).parents[1] / "scripts" / "hook_api_release.py"
-    spec = importlib.util.spec_from_file_location("hook_api_release", module_path)
+    module_path = Path(__file__).parents[1] / "scripts" / "release.py"
+    spec = importlib.util.spec_from_file_location("release", module_path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -316,10 +465,10 @@ def test_hook_init_stubs_use_type_checking_helper_annotations(
     pyproject = (project / "pyproject.toml").read_text()
     assert "from typing import TYPE_CHECKING" in source
     assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe_hook_api import HookHelpers" in source
+    assert "from untaped_recipe.hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
     assert 'requires_hook_api = ">=0.8"' in pyproject
-    assert 'dev = ["untaped-recipe-hook-api>=0.8,<1"]' in pyproject
+    assert 'dev = ["untaped-recipe>=0.8"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:
@@ -342,10 +491,10 @@ def test_scoped_hook_stubs_use_type_checking_helper_annotations(
     pyproject = (project / "pyproject.toml").read_text()
     assert "from typing import TYPE_CHECKING" in source
     assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe_hook_api import HookHelpers" in source
+    assert "from untaped_recipe.hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
     assert 'requires_hook_api = ">=0.8"' in pyproject
-    assert 'dev = ["untaped-recipe-hook-api>=0.8,<1"]' in pyproject
+    assert 'dev = ["untaped-recipe>=0.8"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:
@@ -373,7 +522,7 @@ def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None =
     (root / "uv.lock").write_text("version = 1\n")
 
 
-def test_public_hook_api_exposes_dependency_light_yaml_option_types() -> None:
+def test_public_hook_api_exposes_yaml_option_types() -> None:
     from untaped_recipe.hook_api import HOOK_API_VERSION, YamlDumpOptions, YamlIndentOptions
     from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
 

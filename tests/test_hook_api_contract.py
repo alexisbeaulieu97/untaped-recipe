@@ -1,4 +1,4 @@
-"""Tests for the public hook authoring API contract package."""
+"""Tests for the public hook authoring API contract."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from untaped_recipe.infrastructure import hook_library
 
 
 def _release_module() -> object:
-    module_path = Path(__file__).parents[1] / "scripts" / "hook_api_release.py"
-    spec = importlib.util.spec_from_file_location("hook_api_release", module_path)
+    module_path = Path(__file__).parents[1] / "scripts" / "release.py"
+    spec = importlib.util.spec_from_file_location("release", module_path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -19,8 +19,8 @@ def _release_module() -> object:
     return module
 
 
-def test_hook_api_contract_package_exposes_helper_types() -> None:
-    from untaped_recipe_hook_api import (
+def test_public_hook_api_exposes_helper_types() -> None:
+    from untaped_recipe.hook_api import (
         HOOK_API_VERSION,
         HookHelpers,
         YamlDumpOptions,
@@ -36,23 +36,23 @@ def test_hook_api_contract_package_exposes_helper_types() -> None:
 
 
 def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
-    from untaped_recipe_hook_api import HOOK_API_VERSION
+    from untaped_recipe._version import PACKAGE_VERSION
+    from untaped_recipe.hook_api import HOOK_API_VERSION
 
     root = Path(__file__).parents[1]
-    root_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
-    hook_api_version = tomllib.loads(
-        (root / "packages" / "hook-api" / "pyproject.toml").read_text()
-    )["project"]["version"]
-    major_minor = ".".join(HOOK_API_VERSION.split(".")[:2])
-    project_requirement, dev_requirement = hook_library.hook_api_requirements(HOOK_API_VERSION)
-
-    assert root_version == hook_api_version == HOOK_API_VERSION
-    assert f">={major_minor}" == project_requirement == hook_library._HOOK_API_PROJECT_REQUIREMENT
-    assert (
-        (f"untaped-recipe-hook-api>={major_minor},<1")
-        == dev_requirement
-        == hook_library._HOOK_API_DEV_REQUIREMENT
+    package_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    package_major_minor = ".".join(PACKAGE_VERSION.split(".")[:2])
+    contract_major_minor = ".".join(HOOK_API_VERSION.split(".")[:2])
+    project_requirement, dev_requirement = hook_library.hook_api_requirements(
+        package_version=PACKAGE_VERSION,
+        hook_api_version=HOOK_API_VERSION,
     )
+
+    assert package_version == PACKAGE_VERSION
+    assert f">={contract_major_minor}" == project_requirement
+    assert f"untaped-recipe>={package_major_minor}" == dev_requirement
+    assert project_requirement == hook_library._HOOK_API_PROJECT_REQUIREMENT
+    assert dev_requirement == hook_library._HOOK_API_DEV_REQUIREMENT
 
 
 def test_release_script_verifies_version_parity() -> None:

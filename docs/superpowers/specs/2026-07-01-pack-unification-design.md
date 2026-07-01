@@ -13,7 +13,7 @@ projects, packs, and hook projects — each with its own library module
 (`recipe_library.py`, `pack_library.py`, `hook_library.py`, ~900 LoC combined), its own
 CLI namespace, and its own docs. The shapes are almost identical: a directory with a
 `pyproject.toml` carrying `[tool.untaped_recipe]` metadata. The triplication makes the
-tool heavier to learn, the sharing story fragmented, and the CLI surface ~25
+tool heavier to learn, the sharing story fragmented, and the CLI surface 32 leaf
 subcommands.
 
 Separately, a hook's kind (`transform` | `validate`) is declared twice — in the hook
@@ -92,10 +92,11 @@ One `PackLibrary` replaces the three library modules.
 
 - Layout: `<library_root>/packs/<pack-name>/` (installed copy of the pack directory).
 - Install-source tracking lives in a library-level index, `<library_root>/packs.toml`
-  (pack name → source path or git URL + rev), never in sidecar files inside pack
-  directories — installed packs stay byte-identical to their source so re-sharing an
-  edited pack never leaks library bookkeeping. The index is bookkeeping for a future
-  `update` command; `update` itself is out of scope for 0.9.0.
+  (pack name → source path or git URL + rev + the pack's `[project].version` at add
+  time), never in sidecar files inside pack directories — installed packs stay
+  byte-identical to their source so re-sharing an edited pack never leaks library
+  bookkeeping. The index is bookkeeping for a future `update` command; `update` itself
+  is out of scope for 0.9.0.
 - Library packs remain editable in place (parity with today's `hook edit`).
 
 ## Resolution
@@ -128,8 +129,8 @@ packs because packs are the only unit:
 | `add <path\|git-url> [--rev R] [--name N] [--force]` | install a pack into the library |
 | `remove <pack> --yes` | uninstall |
 | `list [--hooks\|--packs]` | recipes by default (with source pack); hook and pack views |
-| `show <ref>` | pack, recipe, or hook detail |
-| `check <pack\|path>` | validate manifest, recipes, hook wiring (AST scan) |
+| `show <ref>` | structured pack, recipe, or hook detail (see below) |
+| `check [pack\|path]` | validate manifest, recipes, hook wiring (AST scan); no args = whole library |
 | `edit <ref>` | open the relevant file |
 | `hook run <ref> ...` | unchanged debugging verb (verb-selection rule above) |
 | `apply <recipe-ref\|path> ...` | unchanged |
@@ -138,6 +139,34 @@ packs because packs are the only unit:
 `new <kind>` is the single creation pattern, reusing qualified names. Personal one-off
 hooks get no special case: make a personal pack (`new pack mine`) — it is instantly
 shareable like any other.
+
+### Structured `show`
+
+`show` stops dumping raw file text. For a recipe it renders the description, an
+inputs table (name, type, required, default, description, sensitive), a step summary,
+and the hooks the recipe uses; for a hook, the exported verbs and module path; for a
+pack, its recipes and hooks with one-line descriptions.
+Together with the `add` confirmation this is how a user evaluates a pack someone else
+shared before trusting it. (Recipe declared inputs already carry type, default,
+required, description, and sensitive metadata — `show` finally surfaces them.)
+
+### Library doctor
+
+`check` with no arguments validates the whole library: every installed pack passes the
+normal pack checks, and `packs.toml` agrees with `packs/` (an index entry whose
+directory is missing, or a pack directory absent from the index, is reported). This
+reuses the per-pack check machinery; it exists because manual edits under the library
+root are supported (`edit`), so drift is possible.
+
+### Structured output kinds
+
+Unification also consolidates the emit record kinds (a breaking change for pipe
+consumers, shipped with 0.9):
+
+- Kept: `recipe.outcome`, `recipe.backup`, `recipe.hook_run`, `recipe.recipe`,
+  `recipe.hook`, `recipe.pack`, `recipe.check`.
+- Deleted: `recipe.pack_check` and `recipe.pack_recipe` (their commands collapse into
+  `check` and `list`/`show`).
 
 ### Sharing
 
@@ -170,8 +199,16 @@ tests/<recipe-name>/<case-name>/
 
 ## Wave 3: hygiene and invariants (rides along anywhere)
 
-- The step/template renderer fails loudly on anything that is not a bare known input
-  name, so the `{{ }}` syntax shared with input-`from` Jinja cannot silently mislead.
+- Template steps gain `unknown_tokens: error | keep` (default `error`). Today unknown
+  *bare* input names already fail, but non-bare `{{ ... }}` tokens (`{{ a.b }}`,
+  filters) silently pass through — a trap for users expecting Jinja, yet load-bearing
+  for templates that emit GitHub Actions (`${{ github.ref }}`) or Helm
+  (`{{ .Values.x }}`) files. Under `error`, any `{{ ... }}` token that is not a bare
+  known input name fails planning, and the error names the offending token and points
+  at `unknown_tokens: keep`. Under `keep`, unknown tokens pass through verbatim while
+  known inputs still render. Constraint: the renderer exists in two copies
+  (`domain/templates.py` and the stdlib-only `hook_worker.py`); the change lands in
+  both, pinned by a parity test.
 - AGENTS.md gains permanent invariants:
   1. Control flow never enters the recipe schema; a decision is a hook.
   2. Planning is the only execution; writes are a flush of the plan buffer.
@@ -179,6 +216,11 @@ tests/<recipe-name>/<case-name>/
   4. Builtins stay minimal; typed uv hook packs are the extension story.
   5. The hook boundary stays pure data (stdlib-only worker, JSON protocol, no runtime
      import of untaped-recipe in hooks).
+  6. Pipe composability is a protected feature: `apply --stdin` ingests untaped
+     NDJSON envelopes (kind tags, `target_path`), and input `from` expressions can
+     read the piped `record` — other untaped tools' output drives recipes.
+- The recipe file schema stays `version: 1` in the 0.9 wave — the breaking changes
+  are in manifests, the library, and the CLI, not in recipe.yml.
 
 ## Migration
 

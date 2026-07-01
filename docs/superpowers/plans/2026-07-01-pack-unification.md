@@ -188,7 +188,7 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
   - `PACK_PROJECT_PREFIX = "untaped-recipe-"`
   - `pack_name_from_project(project_name: str) -> str` — canonicalizes (PEP 503 dashes), strips the prefix; a bare `untaped-recipe` or empty remainder raises `ValueError`.
   - `RecipeEntry(path: str)`, `HookEntry(module: str)` (Pydantic, `extra="forbid"` — a `kind` key fails validation, which yields the Task 2 error at the metadata layer)
-  - `PackManifest(name: str, requires_hook_api: str | None, recipes: dict[str, RecipeEntry], hooks: dict[str, HookEntry])` with `PackManifest.from_pyproject(project_root: Path) -> PackManifest` (both tables optional; missing `[tool.untaped_recipe]` raises `ValueError` naming the file)
+  - `PackManifest(name: str, version: str, requires_hook_api: str | None, recipes: dict[str, RecipeEntry], hooks: dict[str, HookEntry])` with `PackManifest.from_pyproject(project_root: Path) -> PackManifest` (both tables optional; missing `[tool.untaped_recipe]` raises `ValueError` naming the file; `version` comes from `[project].version`, defaulting to `"0"` when absent)
   - `PackRef(pack: str | None, name: str)` with `parse_ref(text: str) -> PackRef` — splits on the first `/`; refs containing path separators beyond one `/`, `..`, or empty segments raise `ValueError`.
 
 - [ ] **Step 1:** Write failing tests covering: prefix stripping (`untaped-recipe-ansible` → `ansible`), underscore/dash canonicalization, bare-prefix rejection, manifest parse with both/one/no tables, `kind` in a hook row rejected, `parse_ref("ansible/set_owner")`, `parse_ref("set_owner")` (pack=None), `parse_ref("a/b/c")` rejected.
@@ -206,13 +206,13 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 **Interfaces:**
 - Consumes: `PackManifest`, `pack_name_from_project`, `PackRef` from Task 4; `hook_exports` from Task 1.
 - Produces `PackLibrary` with:
-  - `__init__(self, *, library_root: Path)` — packs live at `library_root / "packs" / name`; index at `library_root / "packs.toml"` mapping name → `{ source = "<path-or-url>", rev = "<rev-or-empty>" }`
+  - `__init__(self, *, library_root: Path)` — packs live at `library_root / "packs" / name`; index at `library_root / "packs.toml"` mapping name → `{ source = "<path-or-url>", rev = "<rev-or-empty>", version = "<[project].version at add time>" }`
   - `add(self, source_dir: Path, *, source: str, rev: str | None, name: str | None, force: bool) -> PackManifest` — validates the manifest, checks `requires_hook_api`, copies the directory (mirroring the copy/validation behavior in today's `HookLibrary.add`), errors on existing name without `force` (message names the pack and suggests `--force`/`--name`), writes the index entry
   - `remove(self, name: str) -> None`
   - `packs(self) -> list[PackManifest]`
   - `find_recipe(self, ref: PackRef) -> tuple[PackManifest, RecipeEntry]` and `find_hook(self, ref: PackRef) -> tuple[PackManifest, HookEntry]` — bare-name matches across >1 pack raise `ValueError` listing every `pack/name` candidate; zero matches raise `ValueError("recipe not found: ...")` / `("hook not found: ...")`
 
-- [ ] **Step 1:** Failing tests: add a fixture pack then `find_recipe`/`find_hook` by bare and qualified name; two packs sharing a hook name → ambiguity error listing `a/x` and `b/x`; add duplicate name → error, `force=True` replaces; `remove` deletes dir + index row; index round-trips source and rev.
+- [ ] **Step 1:** Failing tests: add a fixture pack then `find_recipe`/`find_hook` by bare and qualified name; two packs sharing a hook name → ambiguity error listing `a/x` and `b/x`; add duplicate name → error, `force=True` replaces; `remove` deletes dir + index row; index round-trips source, rev, and version.
 - [ ] **Step 2:** FAIL run.
 - [ ] **Step 3:** Implement. Write `packs.toml` with `tomlkit` if already a dependency, else emit minimal TOML by hand (check `pyproject.toml` first; do not add a dependency without checking). Copy semantics: `shutil.copytree` after validation, excluding `.git`.
 - [ ] **Step 4:** Tests + mypy green.
@@ -263,15 +263,52 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 
 **Interfaces:**
 - Consumes: everything above. `apply <ref|path>`: a path (contains `/` AND exists on disk, or ends `.yml`) is loaded directly; otherwise `parse_ref` + `PackLibrary.find_recipe`.
-- Produces: final CLI surface exactly as the spec table (`new`, `add`, `remove`, `check`, `edit`, `list`, `show`, `hook run`, `apply`, `backup`, `config`).
+- Produces: final CLI surface exactly as the spec table (`new`, `add`, `remove`, `check`, `edit`, `list`, `show`, `hook run`, `apply`, `backup`, `config`). Emit record kinds consolidate to exactly: `recipe.outcome`, `recipe.backup`, `recipe.hook_run`, `recipe.recipe`, `recipe.hook`, `recipe.pack`, `recipe.check` — `recipe.pack_check` and `recipe.pack_recipe` die with their commands (breaking for pipe consumers; called out in the Task 13 migration note).
 
-- [ ] **Step 1:** Write failing CLI tests for: `list` (recipes with pack column), `list --hooks`, `show pack`, `show pack/recipe`, `check <pack>` (runs manifest + AST export validation for every wired step), ambiguous `apply set_owner`-style ref error text.
+- [ ] **Step 1:** Write failing CLI tests for: `list` (recipes with pack column), `list --hooks`, `show pack`, `show pack/recipe`, `check <pack>` (runs manifest + AST export validation for every wired step), ambiguous `apply set_owner`-style ref error text. Add one test pinning the surviving kind names: grep-style assertion that the `kind=` values passed to `emit`/`render_rows` across `src/untaped_recipe/cli/` equal the seven-kind set above (import each command module's constant or scan the source tree — mirror however existing tests pin emit kinds, `grep -rn "recipe\." tests/ | grep kind` first).
 - [ ] **Step 2:** FAIL run.
 - [ ] **Step 3:** Implement; migrate resolution inside `HookResolver` to consult `PackLibrary` instead of `<library_root>/hooks`; delete the five dead modules and every import of them; rewrite their tests against the new surface (behavior parity: everything `recipe check`/`pack check` verified before must still be verified by `check`).
 - [ ] **Step 4:** Full suite + mypy + `uv run pre-commit run --all-files --show-diff-on-failure` green.
 - [ ] **Step 5:** Commit: `git commit -m "feat!: flatten CLI to the pack surface; single library resolution"`.
 
-### Task 9: Versions, release tooling, parity tests
+### Task 9: Structured `show`
+
+**Files:**
+- Modify: `src/untaped_recipe/cli/commands.py` (the `show` command from Task 8)
+- Create: `src/untaped_recipe/cli/detail.py` (pure record builders, no I/O beyond reading the recipe file)
+- Test: `tests/test_show_detail.py`
+
+**Interfaces:**
+- Consumes: `PackLibrary.find_recipe`/`find_hook`/`packs` (Task 5), `Recipe`/`InputSpec` from `domain/recipe.py`, `hook_exports` (Task 1).
+- Produces record builders emitted via the SDK `emit` (single-object detail view):
+  - `recipe_detail(ref: str, recipe: Recipe, path: Path) -> dict` — keys: `ref`, `description`, `inputs` (list of `{name, type, required, default, description, sensitive}` from `InputSpec`), `steps` (list of `{type, file_or_files, hook}` summaries), `hooks` (sorted unique hook names referenced by steps), `path`
+  - `hook_detail(ref: str, entry: HookEntry, exports: frozenset[str], module_file: Path) -> dict` — keys: `ref`, `module`, `exports` (sorted list), `path`
+  - `pack_detail(manifest: PackManifest, root: Path) -> dict` — keys: `name`, `version`, `recipes` (name + first line of each recipe's description), `hooks` (name + exports), `path`
+- `show` never dumps raw file text; `edit <ref>` remains the way to open the file.
+
+- [ ] **Step 1:** Failing tests: build a fixture pack whose recipe declares a typed input (`owner`, type str, required, description, one `sensitive` input) — `recipe_detail` returns the inputs list with all six keys and redacts nothing (redaction is a preview concern; `show` displays the *spec*, not values); `hook_detail` reports `exports` from the AST scan; `pack_detail` lists recipes and hooks. CLI test: `show <pack>/<recipe> --format json` emits one `recipe.recipe` record containing the `inputs` array.
+- [ ] **Step 2:** FAIL run.
+- [ ] **Step 3:** Implement `cli/detail.py`; wire `show` to dispatch on what the ref resolves to (pack name alone → `pack_detail`; recipe ref → `recipe_detail`; hook ref → `hook_detail`; ambiguity errors come from `PackLibrary` unchanged). Pass the pre-built dicts to `emit` (dict path preserves key pruning).
+- [ ] **Step 4:** Tests + mypy green.
+- [ ] **Step 5:** Commit: `git commit -m "feat: structured show renders inputs, steps, and hook exports"`.
+
+### Task 10: Library doctor — `check` with no arguments
+
+**Files:**
+- Modify: `src/untaped_recipe/cli/commands.py` (`check` argument becomes optional), `src/untaped_recipe/infrastructure/pack_store.py` (index/dir reconciliation helper)
+- Test: `tests/test_pack_store.py`, CLI check tests
+
+**Interfaces:**
+- Consumes: `PackLibrary.packs()` and the per-pack check machinery from Task 8.
+- Produces: `PackLibrary.reconcile(self) -> list[str]` returning problem strings, exactly: `f"pack '{name}' is in packs.toml but missing from packs/"` and `f"pack directory '{name}' is not recorded in packs.toml"`. `check` with no args runs `reconcile()` plus the normal check on every installed pack, emits one `recipe.check` record per finding (with a `pack` field), and exits non-zero if anything failed.
+
+- [ ] **Step 1:** Failing tests: library with two packs, one index row pointing at a deleted dir, one orphan dir → `reconcile()` returns both exact strings; CLI `check` (no args) exits non-zero and reports both plus per-pack results; healthy library exits 0.
+- [ ] **Step 2:** FAIL run.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Tests + mypy green.
+- [ ] **Step 5:** Commit: `git commit -m "feat: no-arg check validates the whole library and its index"`.
+
+### Task 11: Versions, release tooling, parity tests
 
 **Files:**
 - Modify: `pyproject.toml` (0.9.0), `src/untaped_recipe/_version.py`, `src/untaped_recipe/hook_api.py` (HOOK_API_VERSION 0.9.0), `scripts/release.py` (`smoke-hook-init` → `smoke-new`: `new pack hook_api_smoke` + `new hook hook_api_smoke/probe` via the installed CLI; verify-versions floors `>=0.9` / `>=0.9,<1`), parity tests in `tests/test_infrastructure.py` / `tests/test_hook_api_contract.py`
@@ -282,26 +319,38 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 3:** `uv run python scripts/release.py verify-versions 0.9.0` passes; full suite green.
 - [ ] **Step 4:** Commit: `git commit -m "chore!: 0.9.0 versions, capped hook API floor, new-based release smoke"`.
 
-### Task 10: Strict template renderer
+### Task 12: Template token policy — `unknown_tokens: error | keep`
+
+Context: today, unknown *bare* input names already raise, but non-bare tokens
+(`{{ a.b }}`, `{{ x | upper }}`) silently pass through. That pass-through is
+load-bearing for templates emitting GitHub Actions (`${{ github.ref }}`) or Helm
+(`{{ .Values.x }}`) files, and a trap for users expecting Jinja. Default becomes
+strict, with a per-step escape hatch.
 
 **Files:**
-- Modify: the shared `{{ name }}` renderer used by template steps and `helpers.render_template` (implementation lives in `hook_worker.py` lines ~26-53 and its engine-side twin — locate the engine copy with `grep -rn "render_template" src/`)
-- Test: `tests/test_hook_worker.py` + template-step tests
+- Modify: `src/untaped_recipe/domain/recipe.py` (`TemplateStep` gains the field), `src/untaped_recipe/domain/templates.py`, `src/untaped_recipe/hook_worker.py` (the stdlib-only twin renderer, lines ~26-53), `src/untaped_recipe/application/apply_recipe.py` (thread the step field into the render call), `src/untaped_recipe/builtins/hooks/yaml_edit.py` (`_render_value` forwards an optional top-level `unknown_tokens` args key, default `"error"`)
+- Test: template-step tests, `tests/test_hook_worker.py`, new `tests/test_template_parity.py`
 
-- [ ] **Step 1:** Failing tests: `{{ unknown }}` raises naming the placeholder and listing known inputs; `{{ name | upper }}` (any non-identifier content between braces) raises `"template placeholders accept a bare input name only; Jinja filters/expressions are not supported here"`; happy path unchanged.
+**Interfaces:**
+- Both renderer copies gain the same signature: `render_template(template: str, inputs: Mapping[str, object], *, unknown_tokens: str = "error") -> str` (values `"error"` | `"keep"`; anything else raises `ValueError`).
+- Under `"error"`: a bare unknown name keeps today's error (`f"template input {name!r} is not defined"`); any other `{{ ... }}` token raises `ValueError(f"template token {token!r} is not a bare input name; set unknown_tokens: keep to pass it through")`. Token discovery: every non-greedy `\{\{.*?\}\}` match that does not match the bare-identifier pattern.
+- Under `"keep"`: known inputs render; every other token (bare-unknown included) passes through verbatim — today's behavior.
+- `TemplateStep.unknown_tokens: Literal["error", "keep"] = "error"`; `helpers.render_template` exposes the same keyword (hook API addition, covered by the Task 11 HOOK_API_VERSION bump).
+
+- [ ] **Step 1:** Failing tests (run the same table against BOTH copies in `tests/test_template_parity.py` — import `domain.templates.render_template` and the `hook_worker` copy, assert identical output or identical exception text per case): `{{ owner }}` with owner defined renders in both modes; `{{ owner }}` undefined raises "is not defined" under `error`, passes through under `keep`; `${{ github.ref }}` raises the "set unknown_tokens: keep" error naming `'{{ github.ref }}'` under `error`, survives verbatim under `keep`; `{{ .Values.x }}` same; invalid mode string raises. Plus a `TemplateStep` schema test: field defaults to `"error"`, rejects other values, and a template-step apply test showing a workflow-file template plans cleanly with `unknown_tokens: keep`.
 - [ ] **Step 2:** FAIL run.
-- [ ] **Step 3:** Implement identically in both copies (the worker is stdlib-only — the logic must stay dependency-free; keep the two implementations byte-similar and cross-referenced by comment, as the worker cannot import engine modules).
-- [ ] **Step 4:** Green; commit: `git commit -m "feat: template renderer fails loudly on unknown or non-bare placeholders"`.
+- [ ] **Step 3:** Implement identically in both copies (the worker is stdlib-only and cannot import engine modules — keep the two implementations byte-similar and cross-referenced by comment; the parity test is the drift guard). Thread the step field in `apply_recipe.py` and the args key in `yaml_edit.py`.
+- [ ] **Step 4:** Full suite + mypy green; commit: `git commit -m "feat!: template steps default to strict tokens with unknown_tokens: keep opt-out"`.
 
-### Task 11: Docs, invariants, migration note
+### Task 13: Docs, invariants, migration note
 
 **Files:**
 - Modify: `README.md`, `AGENTS.md`, `docs/recipes.md`, `docs/hooks.md`
 - Create: `docs/packs.md`; changelog/release-notes migration note
 
-- [ ] **Step 1:** Write `docs/packs.md` (pack concept, manifest example from the spec, sharing via `add <path|git-url>`, qualified names, resolution + ambiguity rule). Rewrite `docs/hooks.md` for the function-name contract and dual-verb hooks; delete kind-migration prose. Update `README.md` command table.
-- [ ] **Step 2:** Add the five permanent invariants to `AGENTS.md` verbatim from the spec §"Wave 3": no control flow in the recipe schema; planning is the only execution; no state/inventory; builtins minimal; pure-data hook boundary.
-- [ ] **Step 3:** Migration note (changelog): manifests drop `kind`; library moves under `packs/`; floors `>=0.9,<1`; CLI renames table (old verb → new verb).
+- [ ] **Step 1:** Write `docs/packs.md` (pack concept, manifest example from the spec, sharing via `add <path|git-url>`, qualified names, resolution + ambiguity rule). Rewrite `docs/hooks.md` for the function-name contract and dual-verb hooks; delete kind-migration prose. Update `README.md` command table. Document `unknown_tokens: error | keep` in `docs/recipes.md` with the GitHub Actions/Helm example.
+- [ ] **Step 2:** Add the six permanent invariants to `AGENTS.md` verbatim from the spec §"Wave 3": no control flow in the recipe schema; planning is the only execution; no state/inventory; builtins minimal; pure-data hook boundary; pipe composability (untaped envelope ingestion via `apply --stdin` + `record` in input `from`) is a protected feature.
+- [ ] **Step 3:** Migration note (changelog): manifests drop `kind`; library moves under `packs/`; floors `>=0.9,<1`; CLI renames table (old verb → new verb); emit kinds `recipe.pack_check`/`recipe.pack_recipe` removed (pipe consumers rekey on `recipe.check`/`recipe.recipe`); template steps now strict by default (`unknown_tokens: keep` restores pass-through); recipe.yml schema itself is unchanged (`version: 1`).
 - [ ] **Step 4:** `uv run pre-commit run --all-files --show-diff-on-failure` green (docs formatting). Commit: `git commit -m "docs: pack unification docs, invariants, migration note"`.
 - [ ] **Step 5:** Full release gate from Global Constraints, then open the PR (release itself follows `docs/release.md` after review).
 
@@ -309,5 +358,5 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 
 ## Self-review notes
 
-- Spec coverage: identity/manifest (T4), hook contract + AST check (T1-T2), dual-verb + `hook run` (T3), library + index + ambiguity (T5), sharing front doors + confirm (T6), `new` scaffolding + floors (T7), CLI flattening + resolution + deletions (T8), versions/release smoke (T9), strict renderer (T10), invariants/docs/migration (T11). Wave 2 (test harness) is intentionally out — separate plan against the 0.9.0 codebase.
+- Spec coverage: identity/manifest (T4), hook contract + AST check (T1-T2), dual-verb + `hook run` (T3), library + index/version + ambiguity (T5), sharing front doors + confirm (T6), `new` scaffolding + floors (T7), CLI flattening + resolution + emit-kind consolidation + deletions (T8), structured `show` (T9), library doctor (T10), versions/release smoke (T11), `unknown_tokens` template policy + parity test (T12), invariants/docs/migration (T13). Wave 2 (test harness) is intentionally out — separate plan against the 0.9.0 codebase.
 - Known deliberate deference: exact fixture-helper names in existing test files and post-PR-#17 line numbers are re-read at execution (Task 0 Step 3 covers this); interfaces and error strings above are the contract.

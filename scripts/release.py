@@ -34,10 +34,8 @@ SDK_REQUIREMENT = "untaped>=2.4.0,<3"
 def verify_versions(expected_version: str) -> None:
     """Require package and hook API scaffold version sources to be consistent."""
     root_version = _project_version(ROOT / "pyproject.toml")
-    project_requirement, dev_requirement = hook_library.hook_api_requirements(
-        package_version=PACKAGE_VERSION,
-        hook_api_version=HOOK_API_VERSION,
-    )
+    project_requirement = f">={_major_minor(HOOK_API_VERSION)}"
+    dev_requirement = f"{PACKAGE_NAME}>={_major_minor(expected_version)}"
 
     checks = [
         ("root pyproject", root_version, expected_version),
@@ -242,6 +240,10 @@ def _isolated_uv_env(temp_root: Path) -> dict[str, str]:
 
 def _project_version(path: Path) -> str:
     return str(tomllib.loads(path.read_text())["project"]["version"])
+
+
+def _major_minor(version: str) -> str:
+    return ".".join(version.split(".")[:2])
 
 
 def _run(

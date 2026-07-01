@@ -237,7 +237,7 @@ def test_pack_recipe_remove_handles_valid_bare_toml_keys(tmp_path: Path) -> None
         "[project]\n"
         'name = "untaped-recipe-pack-ansible"\n'
         'version = "0.1.0"\n\n'
-        'requires-python = ">=3.14"\n'
+        'requires-python = ">=3.14,<3.15"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe]\n"
         'pack = "ansible"\n\n'

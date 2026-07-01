@@ -6,12 +6,13 @@ import shutil
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as installed_package_version
 from pathlib import Path
 from typing import Literal
 
 import tomlkit
 from tomlkit import TOMLDocument
-from untaped_recipe_hook_api import HOOK_API_VERSION
 
 from untaped_recipe.domain.hook_project import (
     dependency_name,
@@ -25,19 +26,31 @@ from untaped_recipe.domain.hook_project import (
 )
 from untaped_recipe.domain.paths import is_explicit_path, safe_library_name
 from untaped_recipe.domain.project_toml import read_toml_document, toml_table
+from untaped_recipe.hook_api import HOOK_API_VERSION
 from untaped_recipe.infrastructure.uv_project import lock_project
 
 
-def hook_api_requirements(version: str) -> tuple[str, str]:
-    """Return the hook API project floor and authoring dependency for ``version``."""
-    major_minor = ".".join(version.split(".")[:2])
-    return f">={major_minor}", f"untaped-recipe-hook-api>={major_minor},<1"
+def hook_api_requirements(*, package_version: str, hook_api_version: str) -> tuple[str, str]:
+    """Return the hook API project floor and authoring dependency."""
+    package_major_minor = ".".join(package_version.split(".")[:2])
+    hook_api_major_minor = ".".join(hook_api_version.split(".")[:2])
+    return f">={hook_api_major_minor}", f"untaped-recipe>={package_major_minor}"
 
 
-_HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements(HOOK_API_VERSION)
+def _package_version() -> str:
+    try:
+        return installed_package_version("untaped-recipe")
+    except PackageNotFoundError:
+        return HOOK_API_VERSION
+
+
+_HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements(
+    package_version=_package_version(),
+    hook_api_version=HOOK_API_VERSION,
+)
 _HOOK_API_LOCK_HINT = (
-    "untaped-recipe-hook-api must be reachable from PyPI/TestPyPI or a configured uv source "
-    "while scaffolding typed hooks"
+    "untaped-recipe must be reachable from PyPI/TestPyPI or a configured uv source while "
+    "scaffolding typed hooks"
 )
 
 
@@ -102,7 +115,7 @@ class HookLibrary:
             "[project]\n"
             f'name = "untaped-recipe-hooks-{project_name}"\n'
             'version = "0.1.0"\n'
-            'requires-python = ">=3.14"\n'
+            'requires-python = ">=3.14,<3.15"\n'
             "dependencies = []\n\n"
             "[dependency-groups]\n"
             f'dev = ["{_HOOK_API_DEV_REQUIREMENT}"]\n\n'
@@ -265,7 +278,7 @@ _HOOK_STUB_PREAMBLE = (
     "from typing import TYPE_CHECKING\n"
     "\n"
     "if TYPE_CHECKING:\n"
-    "    from untaped_recipe_hook_api import HookHelpers\n"
+    "    from untaped_recipe.hook_api import HookHelpers\n"
     "\n"
     "\n"
 )
@@ -309,7 +322,7 @@ def _ensure_hook_authoring_metadata(doc: TOMLDocument) -> None:
         groups["dev"] = [_HOOK_API_DEV_REQUIREMENT]
     elif not isinstance(dev, list):
         raise ValueError("[dependency-groups].dev must be an array")
-    elif not _has_dependency(dev, "untaped-recipe-hook-api"):
+    elif not _has_dependency(dev, "untaped-recipe"):
         dev.append(_HOOK_API_DEV_REQUIREMENT)
 
     tool = toml_table(doc, "tool", "tool", create=True)

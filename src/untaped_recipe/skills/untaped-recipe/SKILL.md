@@ -131,19 +131,19 @@ plain directories.
   `[tool.untaped_recipe.hooks]` metadata. Use
   `untaped-recipe hook init <name>` to scaffold a reusable global hook.
 - Scaffolded hooks use `TYPE_CHECKING` imports from
-  `untaped_recipe_hook_api.HookHelpers` so editors can discover helper methods
-  through the type-only `untaped-recipe-hook-api` dev dependency. That public
-  protocol models external worker helpers; `pass_`, `warn`, and `fail` return
-  dict-shaped verdicts.
+  `untaped_recipe.hook_api.HookHelpers` so editors can discover helper methods
+  through the dev-only `untaped-recipe` dependency. That public protocol models
+  external worker helpers; `pass_`, `warn`, and `fail` return dict-shaped
+  verdicts.
 - Hook projects may declare `[tool.untaped_recipe].requires_hook_api` to fail
   fast when the installed CLI's helper API is too old. The scaffold adds this
-  marker and the `untaped-recipe-hook-api` dev dependency automatically.
+  marker and the `untaped-recipe` dev dependency automatically.
 - Hook scaffolding refreshes `uv.lock`, so it needs package-index access or a
-  configured uv source for `untaped-recipe-hook-api`.
-- Do not add the full `untaped-recipe` engine to a hook project's runtime
-  dependencies. The installed CLI owns the worker and helper implementation,
-  and hook workers run with `uv run --locked --no-dev`; packages imported by
-  hook code at runtime must be in `[project].dependencies`.
+  configured uv source for `untaped-recipe`.
+- Do not add `untaped-recipe` to a hook project's runtime dependencies. The
+  installed CLI owns the worker and helper implementation, and hook workers run
+  with `uv run --locked --no-dev`; packages imported by hook code at runtime
+  must be in `[project].dependencies`.
 - External helper `dump_yaml(data, options=...)` accepts plain dict formatting
   options: `width`, `preserve_quotes`, nested `indent` keys `mapping`,
   `sequence`, and `offset`, `block_seq_indent`, `explicit_start`, and

@@ -68,7 +68,7 @@ def _write_hook_project(
         "[project]\n"
         f'name = "{root.name}-hooks"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
+        'requires-python = ">=3.14,<3.15"\n'
         "dependencies = []\n\n"
         f"{recipe_metadata}"
         "[tool.untaped_recipe.hooks]\n"
@@ -2490,7 +2490,7 @@ def test_recipe_check_rejects_step_hook_kind_mismatch(tmp_path: Path) -> None:
         "[project]\n"
         'name = "recipe-hooks"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
+        'requires-python = ">=3.14,<3.15"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.recipes]\n"
         '"demo" = { path = "recipe.yml" }\n\n'

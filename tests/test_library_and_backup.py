@@ -62,7 +62,7 @@ def _write_recipe_project(root: Path, *, recipe_id: str) -> None:
         "[project]\n"
         f'name = "untaped-recipe-{root.name}"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
+        'requires-python = ">=3.14,<3.15"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.recipes]\n"
         f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'
@@ -115,7 +115,7 @@ def _write_hook_project(
         "[project]\n"
         'name = "project-hooks"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
+        'requires-python = ">=3.14,<3.15"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n"
         f'"{hook_name}" = {{ kind = "transform", module = "{package}.hooks.{hook_name}" }}\n'

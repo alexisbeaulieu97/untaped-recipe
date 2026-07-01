@@ -13,7 +13,8 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 from pydantic import BaseModel, ConfigDict, field_validator
-from untaped_recipe_hook_api import HOOK_API_VERSION
+
+from untaped_recipe.hook_api import HOOK_API_VERSION
 
 _DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 HookKind = Literal["transform", "validate"]
@@ -159,7 +160,7 @@ def validate_hook_project_contract(project_root: Path, metadata: HookProjectMeta
         if dependency_name(dependency) == "untaped-recipe":
             raise ValueError(
                 "hook project must not depend on untaped-recipe at runtime; "
-                "add untaped-recipe-hook-api to dependency-groups.dev instead: "
+                "add untaped-recipe to dependency-groups.dev instead: "
                 f"{project_root}"
             )
     if metadata.requires_hook_api is None:

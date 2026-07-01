@@ -238,7 +238,7 @@ External transform hooks expose:
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe_hook_api import HookHelpers
+    from untaped_recipe.hook_api import HookHelpers
 
 
 def transform(
@@ -258,7 +258,7 @@ External validate hooks expose:
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe_hook_api import HookHelpers
+    from untaped_recipe.hook_api import HookHelpers
 
 
 def validate(
@@ -274,41 +274,40 @@ Validate hooks may return a compatible verdict dict, `None` for pass, or a
 string for fail. Prefer explicit `helpers.pass_()`, `helpers.warn()`, and
 `helpers.fail()` in shipped examples. Built-in hooks may use the engine's
 concrete `HookHelpers` and `Verdict` types directly.
-External hook typing lives in the separate `untaped-recipe-hook-api` package
-and imports as `untaped_recipe_hook_api`. Hook projects may use that package as
-a dev dependency for editor discovery, but must not depend on the full
-`untaped-recipe` engine at runtime. External uv workers run with `uv run
---locked --no-dev`, so hook runtime dependencies belong in
-`[project].dependencies`; type-only authoring dependencies belong in
-`[dependency-groups].dev`. Hook projects can declare
-`[tool.untaped_recipe].requires_hook_api` to fail fast when the installed CLI's
-helper API is too old. The engine keeps
-`untaped_recipe.hook_api` as a compatibility re-export for engine-side imports,
-but scaffolded external hooks should import `untaped_recipe_hook_api`.
-The public `untaped_recipe_hook_api.HookHelpers` protocol models external
-worker helpers, where verdict helpers return dict-shaped verdicts. Keep the
-application-layer `HookHelpersPort` separate for in-process built-ins, where
-verdict helpers return `Verdict`. External `helpers.dump_yaml(data, options=...)`
-accepts plain dict options for width, quote preservation, indent, block sequence
-indent, and explicit document start/end; worker and in-process defaults are
+External hook typing lives in `untaped_recipe.hook_api`. Hook projects may use
+`untaped-recipe` as a dev dependency for editor discovery, but must not depend
+on `untaped-recipe` at runtime. External uv workers run with `uv run --locked
+--no-dev`, so hook runtime dependencies belong in `[project].dependencies`;
+type-only authoring dependencies belong in `[dependency-groups].dev`. Hook
+projects can declare `[tool.untaped_recipe].requires_hook_api` to fail fast
+when the installed CLI's helper API is too old. The public
+`untaped_recipe.hook_api.HookHelpers` protocol models external worker helpers,
+where verdict helpers return dict-shaped verdicts. Keep the application-layer
+`HookHelpersPort` separate for in-process built-ins, where verdict helpers
+return `Verdict`. External `helpers.dump_yaml(data, options=...)` accepts plain
+dict options for width, quote preservation, indent, block sequence indent, and
+explicit document start/end; worker and in-process defaults are
 `preserve_quotes=True` and `width=4096`. Unsupported option keys must be
 rejected rather than ignored.
 
 ## Release Workflow
 
-Use `.github/workflows/release.yml` for releases that include the hook API
-contract package. The workflow publishes `untaped-recipe-hook-api` to TestPyPI
-or PyPI through Trusted Publishing, verifies scaffold locking against the target
-index, and only creates the production GitHub release/tag after PyPI
-verification passes. The production `pypi` GitHub environment should be
-protected with required reviewers.
+Use `.github/workflows/release.yml` for PyPI releases. The workflow publishes
+`untaped-recipe` to TestPyPI or PyPI through Trusted Publishing, verifies
+scaffold locking against the target index, and only creates the production
+GitHub release/tag after PyPI verification passes. The production `pypi`
+GitHub environment should be protected with required reviewers.
+The SDK package `untaped` must be published to PyPI first; remove the temporary
+`tool.uv.sources.untaped` git source and relock before publishing
+`untaped-recipe`. The release workflow checks that `untaped>=2.4.0,<3` resolves
+from PyPI before publishing `untaped-recipe`.
 
-Do not manually create a GitHub release/tag for a version whose hook API package
-has not been published and verified. PyPI versions are permanently burned once
+Do not manually create a GitHub release/tag for a version whose PyPI package has
+not been published and verified. PyPI versions are permanently burned once
 uploaded; if publish succeeds but post-publish verification never passes, bump
-the patch version in root `pyproject.toml`, `packages/hook-api/pyproject.toml`,
-`HOOK_API_VERSION`, and the derived scaffold floor before retrying. See
-`docs/release.md` for the runbook.
+the package patch version before retrying. Bump `HOOK_API_VERSION` and the
+derived `requires_hook_api` scaffold floor only when the helper contract changes.
+See `docs/release.md` for the runbook.
 
 ## Development Workflow
 
@@ -319,7 +318,7 @@ uv run ruff check --fix
 uv run ruff format
 uv run mypy
 uv run pytest
-uv build --all-packages
+uv build
 git diff --check --cached
 ```
 

@@ -270,7 +270,7 @@ def _scaffold_recipe_project(*, project_root: Path, recipe_id: str) -> None:
         "[project]\n"
         f'name = "untaped-recipe-{recipe_id}"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14,<3.15"\n'
+        'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.recipes]\n"
         f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'

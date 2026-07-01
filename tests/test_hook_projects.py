@@ -65,7 +65,7 @@ def _write_hook_project(
         "[project]\n"
         f'name = "{root.name}"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14,<3.15"\n'
+        'requires-python = ">=3.14"\n'
         f"dependencies = [{dependency_rows}]\n\n"
         f"{tool_table}"
         "[tool.untaped_recipe.hooks]\n"

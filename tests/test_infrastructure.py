@@ -67,7 +67,7 @@ def _write_recipe_project(root: Path, *, recipe_id: str) -> None:
         "[project]\n"
         f'name = "untaped-recipe-{recipe_id}"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14,<3.15"\n'
+        'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.recipes]\n"
         f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'
@@ -136,7 +136,7 @@ def test_hook_library_add_rejects_empty_or_mixed_namespace_projects(tmp_path: Pa
         "[project]\n"
         'name = "empty-hooks"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14,<3.15"\n'
+        'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n"
     )
@@ -252,8 +252,12 @@ def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(
     release.smoke_hook_init("0.8.0", find_links=dist_dir)
 
     assert calls
-    _command, cwd, env = calls[0]
+    command, cwd, env = calls[0]
     assert cwd != Path(release.ROOT)
+    assert "--no-project" in command
+    assert "--project" not in command
+    assert "untaped-recipe==0.8.0" in command
+    assert command[-4:] == ["untaped-recipe", "hook", "init", "hook_api_smoke"]
     assert env is not None
     assert env["UV_FIND_LINKS"] == str(dist_dir.resolve())
 
@@ -282,6 +286,42 @@ def test_release_smoke_hook_init_resolves_relative_local_index(
     release.smoke_hook_init("0.8.0", find_links=Path("dist"))
 
     assert captured_find_links == [str(dist_dir.resolve())]
+
+
+def test_release_smoke_hook_init_uses_published_index_and_isolated_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release_module()
+    calls: list[tuple[list[str], Path, dict[str, str] | None]] = []
+    monkeypatch.setenv("VIRTUAL_ENV", str(Path(release.ROOT) / ".venv"))
+    monkeypatch.setenv("PYTHONPATH", str(Path(release.ROOT) / "src"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+
+    def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+        assert env is not None
+        calls.append((command, cwd, env))
+        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
+        hook = library / "hooks" / "hook_api_smoke"
+        hook.mkdir(parents=True)
+        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+
+    monkeypatch.setattr(release, "_run", fake_run)
+
+    release.smoke_hook_init("0.8.0", index_url="https://test.pypi.org/simple/")
+
+    assert calls
+    command, cwd, env = calls[0]
+    assert cwd != Path(release.ROOT)
+    assert "--no-project" in command
+    assert "--project" not in command
+    assert "untaped-recipe==0.8.0" in command
+    assert env is not None
+    assert "VIRTUAL_ENV" not in env
+    assert "PYTHONPATH" not in env
+    assert env["UV_CACHE_DIR"] == str(cwd / "uv-cache")
+    assert env["UV_INDEX"] == "https://test.pypi.org/simple/"
+    assert env["UV_INDEX_STRATEGY"] == "unsafe-best-match"
 
 
 def test_release_verify_sdk_published_uses_isolated_uv_environment(
@@ -321,7 +361,7 @@ def test_release_verify_sdk_published_uses_isolated_uv_environment(
     assert env is not None
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONPATH" not in env
-    assert env["UV_CACHE_DIR"] == str(tmp_path / "uv-cache")
+    assert env["UV_CACHE_DIR"] == str(cwd / "uv-cache")
 
 
 def test_release_wait_published_uses_isolated_uv_environment(
@@ -361,7 +401,7 @@ def test_release_wait_published_uses_isolated_uv_environment(
     assert env is not None
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONPATH" not in env
-    assert env["UV_CACHE_DIR"] == str(tmp_path / "uv-cache")
+    assert env["UV_CACHE_DIR"] == str(cwd / "uv-cache")
 
 
 def test_release_publish_package_filters_artifacts_by_version(
@@ -474,7 +514,7 @@ def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None =
         "[project]\n"
         'name = "shared-hooks"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14,<3.15"\n'
+        'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n"
         f'"{hook_name}" = {{ kind = "transform", module = "{package}.hooks.{module_leaf}" }}\n'

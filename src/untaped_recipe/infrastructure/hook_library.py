@@ -6,14 +6,13 @@ import shutil
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as installed_package_version
 from pathlib import Path
 from typing import Literal
 
 import tomlkit
 from tomlkit import TOMLDocument
 
+from untaped_recipe._version import PACKAGE_VERSION
 from untaped_recipe.domain.hook_project import (
     dependency_name,
     hook_module_file,
@@ -37,15 +36,8 @@ def hook_api_requirements(*, package_version: str, hook_api_version: str) -> tup
     return f">={hook_api_major_minor}", f"untaped-recipe>={package_major_minor}"
 
 
-def _package_version() -> str:
-    try:
-        return installed_package_version("untaped-recipe")
-    except PackageNotFoundError:
-        return HOOK_API_VERSION
-
-
 _HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements(
-    package_version=_package_version(),
+    package_version=PACKAGE_VERSION,
     hook_api_version=HOOK_API_VERSION,
 )
 _HOOK_API_LOCK_HINT = (
@@ -115,7 +107,7 @@ class HookLibrary:
             "[project]\n"
             f'name = "untaped-recipe-hooks-{project_name}"\n'
             'version = "0.1.0"\n'
-            'requires-python = ">=3.14,<3.15"\n'
+            'requires-python = ">=3.14"\n'
             "dependencies = []\n\n"
             "[dependency-groups]\n"
             f'dev = ["{_HOOK_API_DEV_REQUIREMENT}"]\n\n'

@@ -81,7 +81,7 @@ def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:
         "[project]\n"
         'name = "recipe-hooks"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14,<3.15"\n'
+        'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n" + "\n".join(hook_rows) + "\n"
     )

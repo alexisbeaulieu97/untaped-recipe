@@ -305,9 +305,10 @@ from PyPI before publishing `untaped-recipe`.
 Do not manually create a GitHub release/tag for a version whose PyPI package has
 not been published and verified. PyPI versions are permanently burned once
 uploaded; if publish succeeds but post-publish verification never passes, bump
-the package patch version before retrying. Bump `HOOK_API_VERSION` and the
-derived `requires_hook_api` scaffold floor only when the helper contract changes.
-See `docs/release.md` for the runbook.
+the package patch version in root `pyproject.toml` and
+`src/untaped_recipe/_version.py` before retrying. Bump `HOOK_API_VERSION` and
+the derived `requires_hook_api` scaffold floor only when the helper contract
+changes. See `docs/release.md` for the runbook.
 
 ## Development Workflow
 

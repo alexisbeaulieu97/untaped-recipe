@@ -36,17 +36,19 @@ def test_public_hook_api_exposes_helper_types() -> None:
 
 
 def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
+    from untaped_recipe._version import PACKAGE_VERSION
     from untaped_recipe.hook_api import HOOK_API_VERSION
 
     root = Path(__file__).parents[1]
     package_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
-    package_major_minor = ".".join(package_version.split(".")[:2])
+    package_major_minor = ".".join(PACKAGE_VERSION.split(".")[:2])
     contract_major_minor = ".".join(HOOK_API_VERSION.split(".")[:2])
     project_requirement, dev_requirement = hook_library.hook_api_requirements(
-        package_version=package_version,
+        package_version=PACKAGE_VERSION,
         hook_api_version=HOOK_API_VERSION,
     )
 
+    assert package_version == PACKAGE_VERSION
     assert f">={contract_major_minor}" == project_requirement
     assert f"untaped-recipe>={package_major_minor}" == dev_requirement
     assert project_requirement == hook_library._HOOK_API_PROJECT_REQUIREMENT

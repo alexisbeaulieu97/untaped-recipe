@@ -51,6 +51,7 @@ Recovery is to bump the package patch version and rerun the workflow. Bump
 the helper contract changes.
 
 - root `pyproject.toml`
+- `src/untaped_recipe/_version.py`
 
 Do not retry a burned version.
 

@@ -259,7 +259,7 @@ def _scaffold_pack_project(*, project_root: Path, pack_id: str) -> None:
         "[project]\n"
         f'name = "untaped-recipe-pack-{pack_id}"\n'
         'version = "0.1.0"\n'
-        'requires-python = ">=3.14,<3.15"\n'
+        'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe]\n"
         f'pack = "{pack_id}"\n'

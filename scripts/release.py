@@ -20,6 +20,7 @@ from packaging.utils import (
 )
 from packaging.version import Version
 
+from untaped_recipe._version import PACKAGE_VERSION
 from untaped_recipe.hook_api import HOOK_API_VERSION
 from untaped_recipe.infrastructure import hook_library
 
@@ -34,12 +35,13 @@ def verify_versions(expected_version: str) -> None:
     """Require package and hook API scaffold version sources to be consistent."""
     root_version = _project_version(ROOT / "pyproject.toml")
     project_requirement, dev_requirement = hook_library.hook_api_requirements(
-        package_version=expected_version,
+        package_version=PACKAGE_VERSION,
         hook_api_version=HOOK_API_VERSION,
     )
 
     checks = [
         ("root pyproject", root_version, expected_version),
+        ("PACKAGE_VERSION", PACKAGE_VERSION, expected_version),
         (
             "scaffold requires_hook_api floor",
             hook_library._HOOK_API_PROJECT_REQUIREMENT,
@@ -93,23 +95,13 @@ def wait_published(
     delay = 5
     command = _uv_install_check_command(version, index_url=index_url)
     last_error = ""
-    with tempfile.TemporaryDirectory(prefix="untaped-recipe-install-check-") as temp:
-        temp_root = Path(temp)
-        env = _isolated_uv_env(temp_root)
-        while time.monotonic() < deadline:
-            completed = subprocess.run(
-                command,
-                cwd=temp_root,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if completed.returncode == 0:
-                return
-            last_error = completed.stderr.strip() or completed.stdout.strip()
-            time.sleep(delay)
-            delay = min(delay * 2, 30)
+    while time.monotonic() < deadline:
+        completed = _run_uv_check_once(command)
+        if completed.returncode == 0:
+            return
+        last_error = completed.stderr.strip() or completed.stdout.strip()
+        time.sleep(delay)
+        delay = min(delay * 2, 30)
     raise SystemExit(f"{PACKAGE_NAME}=={version} was not available before timeout\n{last_error}")
 
 
@@ -123,13 +115,13 @@ def smoke_hook_init(
     with tempfile.TemporaryDirectory(prefix="untaped-recipe-smoke-") as temp:
         temp_root = Path(temp)
         library = temp_root / "library"
-        env = os.environ.copy()
+        env = _isolated_uv_env(temp_root)
         env["UNTAPED_CONFIG"] = str(temp_root / "config.yml")
         env["UNTAPED_RECIPE__LIBRARY_ROOT"] = str(library)
-        env.setdefault("UV_CACHE_DIR", str(temp_root / "uv-cache"))
-        env["UV_NO_PROGRESS"] = "1"
         if index_url is not None:
             env["UV_INDEX"] = index_url
+            # Release smokes may install the package-under-test from TestPyPI
+            # while resolving its dependencies from PyPI.
             env["UV_INDEX_STRATEGY"] = "unsafe-best-match"
         if find_links is not None:
             env["UV_FIND_LINKS"] = str(find_links.resolve())
@@ -138,9 +130,11 @@ def smoke_hook_init(
             [
                 "uv",
                 "run",
-                "--project",
-                str(ROOT),
-                "--frozen",
+                "--no-project",
+                "--refresh-package",
+                PACKAGE_NAME,
+                "--with",
+                f"{PACKAGE_NAME}=={version}",
                 "untaped-recipe",
                 "hook",
                 "init",
@@ -241,7 +235,7 @@ def _isolated_uv_env(temp_root: Path) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONPATH", None)
-    env.setdefault("UV_CACHE_DIR", str(temp_root / "uv-cache"))
+    env["UV_CACHE_DIR"] = str(temp_root / "uv-cache")
     env["UV_NO_PROGRESS"] = "1"
     return env
 

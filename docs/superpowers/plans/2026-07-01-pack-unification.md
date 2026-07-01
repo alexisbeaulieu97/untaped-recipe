@@ -177,7 +177,29 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Tests + mypy green.
 - [ ] **Step 5:** Commit: `git commit -m "feat: hook run infers verb from exports; --kind disambiguates dual hooks"`.
 
-### Task 4: Pack domain model — identity, manifest, refs
+### Task 4: Collapse the hook-executor port pair
+
+Context: `application/ports.py` defines `HookExecutorPort` (1 implementation, 1
+caller, no test double) and `HookDebugExecutorPort` (same implementation) with
+parallel `transform`/`transform_for_debug` and `validate`/`validate_for_debug`
+methods; `HookExecutor` already funnels both through private `_transform`/`_validate`
+with a `capture_diagnostics` flag, and normal apply builds debug results with
+`diagnostics=""`. Two protocols over one flag is pure indirection.
+
+**Files:**
+- Modify: `src/untaped_recipe/application/ports.py`, `src/untaped_recipe/infrastructure/hook_executor.py`, `src/untaped_recipe/application/apply_recipe.py` (caller), `src/untaped_recipe/application/run_hook.py` (caller)
+- Test: the existing executor/apply/run-hook test modules (`grep -rl "HookDebugExecutorPort\|transform_for_debug" tests/` for the full list)
+
+**Interfaces:**
+- Produces: a single `HookExecutorPort` whose `transform(...)` and `validate(...)` keep their current parameter lists plus a keyword-only `capture_diagnostics: bool = False`, returning the existing debug-result types (content/verdict + `diagnostics: str`, empty when not captured). `HookDebugExecutorPort` and both `*_for_debug` methods are deleted. `ApplyRecipe` ignores `diagnostics`; `RunHook` passes `capture_diagnostics=True`.
+- Exact current return-type names are re-read at execution (Task 0 Step 3); the contract is: one protocol, one flag, no `*_for_debug` names anywhere in `src/` or `tests/` afterwards.
+
+- [ ] **Step 1:** Adjust the `run_hook` test double (`_DebugExecutor` in `tests/test_run_hook.py`) to the single-protocol shape and add a test asserting `ApplyRecipe`'s executor calls default to `capture_diagnostics=False` (spy executor recording the kwarg). Run — FAIL.
+- [ ] **Step 2:** Merge the protocols in `ports.py`; fold `transform_for_debug`/`validate_for_debug` into `transform`/`validate` in `hook_executor.py` (the private `_transform`/`_validate` already take the flag — this is mostly deleting the public duplication); update both callers.
+- [ ] **Step 3:** `grep -rn "for_debug\|HookDebugExecutorPort" src/ tests/` returns nothing; full suite + mypy green.
+- [ ] **Step 4:** Commit: `git commit -m "refactor: single hook-executor port with capture_diagnostics flag"`.
+
+### Task 5: Pack domain model — identity, manifest, refs
 
 **Files:**
 - Create: `src/untaped_recipe/domain/pack.py`
@@ -197,14 +219,14 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Tests + mypy green.
 - [ ] **Step 5:** Commit: `git commit -m "feat: pack domain model (identity, manifest, qualified refs)"`.
 
-### Task 5: PackLibrary — one library, packs.toml index, ambiguity-as-error
+### Task 6: PackLibrary — one library, packs.toml index, ambiguity-as-error
 
 **Files:**
-- Create: `src/untaped_recipe/infrastructure/pack_store.py` (replaces the librarian roles of `recipe_library.py`, `pack_library.py`, `hook_library.py`; those are deleted in Task 8 once nothing imports them)
+- Create: `src/untaped_recipe/infrastructure/pack_store.py` (replaces the librarian roles of `recipe_library.py`, `pack_library.py`, `hook_library.py`; those are deleted in Task 9 once nothing imports them)
 - Test: `tests/test_pack_store.py`
 
 **Interfaces:**
-- Consumes: `PackManifest`, `pack_name_from_project`, `PackRef` from Task 4; `hook_exports` from Task 1.
+- Consumes: `PackManifest`, `pack_name_from_project`, `PackRef` from Task 5; `hook_exports` from Task 1.
 - Produces `PackLibrary` with:
   - `__init__(self, *, library_root: Path)` — packs live at `library_root / "packs" / name`; index at `library_root / "packs.toml"` mapping name → `{ source = "<path-or-url>", rev = "<rev-or-empty>", version = "<[project].version at add time>" }`
   - `add(self, source_dir: Path, *, source: str, rev: str | None, name: str | None, force: bool) -> PackManifest` — validates the manifest, checks `requires_hook_api`, copies the directory (mirroring the copy/validation behavior in today's `HookLibrary.add`), errors on existing name without `force` (message names the pack and suggests `--force`/`--name`), writes the index entry
@@ -218,7 +240,7 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Tests + mypy green.
 - [ ] **Step 5:** Commit: `git commit -m "feat: unified PackLibrary with packs.toml source index"`.
 
-### Task 6: `add` front doors — path and git URL, with confirmation
+### Task 7: `add` front doors — path and git URL, with confirmation
 
 **Files:**
 - Modify: `src/untaped_recipe/infrastructure/pack_store.py` (fetch helper), `src/untaped_recipe/cli/commands.py` (new `add` command)
@@ -233,7 +255,7 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Tests + mypy green.
 - [ ] **Step 5:** Commit: `git commit -m "feat: add packs from paths or git URLs with confirmation"`.
 
-### Task 7: `new pack|recipe|hook` scaffolding
+### Task 8: `new pack|recipe|hook` scaffolding
 
 **Files:**
 - Create: `src/untaped_recipe/infrastructure/pack_scaffold.py` (port `_scaffold`, `_hook_stub`, `hook_api_requirements`, and the recipe scaffold out of `hook_library.py`/`recipe_library.py`)
@@ -254,7 +276,7 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Tests + mypy green.
 - [ ] **Step 5:** Commit: `git commit -m "feat: unified new pack/recipe/hook scaffolding"`.
 
-### Task 8: CLI flattening + apply/resolution integration + delete old libraries
+### Task 9: CLI flattening + apply/resolution integration + delete old libraries
 
 **Files:**
 - Modify: `src/untaped_recipe/cli/commands.py` (composition root: top-level `add/remove/list/show/check/edit`; `list` default = recipes with source pack, `--hooks`/`--packs` views), `cli/hook_commands.py` (shrinks to `hook run`), `application/apply_recipe.py` + `application/run_bulk.py` + `infrastructure/hook_resolver.py` (hook resolution order: recipe's own pack → library via `PackLibrary.find_hook` → builtins), `settings.py` (library_root unchanged; drop settings for removed namespaces if any)
@@ -263,7 +285,7 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 
 **Interfaces:**
 - Consumes: everything above. `apply <ref|path>`: a path (contains `/` AND exists on disk, or ends `.yml`) is loaded directly; otherwise `parse_ref` + `PackLibrary.find_recipe`.
-- Produces: final CLI surface exactly as the spec table (`new`, `add`, `remove`, `check`, `edit`, `list`, `show`, `hook run`, `apply`, `backup`, `config`). Emit record kinds consolidate to exactly: `recipe.outcome`, `recipe.backup`, `recipe.hook_run`, `recipe.recipe`, `recipe.hook`, `recipe.pack`, `recipe.check` — `recipe.pack_check` and `recipe.pack_recipe` die with their commands (breaking for pipe consumers; called out in the Task 13 migration note).
+- Produces: final CLI surface exactly as the spec table (`new`, `add`, `remove`, `check`, `edit`, `list`, `show`, `hook run`, `apply`, `backup`, `config`). Emit record kinds consolidate to exactly: `recipe.outcome`, `recipe.backup`, `recipe.hook_run`, `recipe.recipe`, `recipe.hook`, `recipe.pack`, `recipe.check` — `recipe.pack_check` and `recipe.pack_recipe` die with their commands (breaking for pipe consumers; called out in the Task 16 migration note).
 
 - [ ] **Step 1:** Write failing CLI tests for: `list` (recipes with pack column), `list --hooks`, `show pack`, `show pack/recipe`, `check <pack>` (runs manifest + AST export validation for every wired step), ambiguous `apply set_owner`-style ref error text. Add one test pinning the surviving kind names: grep-style assertion that the `kind=` values passed to `emit`/`render_rows` across `src/untaped_recipe/cli/` equal the seven-kind set above (import each command module's constant or scan the source tree — mirror however existing tests pin emit kinds, `grep -rn "recipe\." tests/ | grep kind` first).
 - [ ] **Step 2:** FAIL run.
@@ -271,15 +293,15 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Full suite + mypy + `uv run pre-commit run --all-files --show-diff-on-failure` green.
 - [ ] **Step 5:** Commit: `git commit -m "feat!: flatten CLI to the pack surface; single library resolution"`.
 
-### Task 9: Structured `show`
+### Task 10: Structured `show`
 
 **Files:**
-- Modify: `src/untaped_recipe/cli/commands.py` (the `show` command from Task 8)
+- Modify: `src/untaped_recipe/cli/commands.py` (the `show` command from Task 9)
 - Create: `src/untaped_recipe/cli/detail.py` (pure record builders, no I/O beyond reading the recipe file)
 - Test: `tests/test_show_detail.py`
 
 **Interfaces:**
-- Consumes: `PackLibrary.find_recipe`/`find_hook`/`packs` (Task 5), `Recipe`/`InputSpec` from `domain/recipe.py`, `hook_exports` (Task 1).
+- Consumes: `PackLibrary.find_recipe`/`find_hook`/`packs` (Task 6), `Recipe`/`InputSpec` from `domain/recipe.py`, `hook_exports` (Task 1).
 - Produces record builders emitted via the SDK `emit` (single-object detail view):
   - `recipe_detail(ref: str, recipe: Recipe, path: Path) -> dict` — keys: `ref`, `description`, `inputs` (list of `{name, type, required, default, description, sensitive}` from `InputSpec`), `steps` (list of `{type, file_or_files, hook}` summaries), `hooks` (sorted unique hook names referenced by steps), `path`
   - `hook_detail(ref: str, entry: HookEntry, exports: frozenset[str], module_file: Path) -> dict` — keys: `ref`, `module`, `exports` (sorted list), `path`
@@ -292,14 +314,14 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Tests + mypy green.
 - [ ] **Step 5:** Commit: `git commit -m "feat: structured show renders inputs, steps, and hook exports"`.
 
-### Task 10: Library doctor — `check` with no arguments
+### Task 11: Library doctor — `check` with no arguments
 
 **Files:**
 - Modify: `src/untaped_recipe/cli/commands.py` (`check` argument becomes optional), `src/untaped_recipe/infrastructure/pack_store.py` (index/dir reconciliation helper)
 - Test: `tests/test_pack_store.py`, CLI check tests
 
 **Interfaces:**
-- Consumes: `PackLibrary.packs()` and the per-pack check machinery from Task 8.
+- Consumes: `PackLibrary.packs()` and the per-pack check machinery from Task 9.
 - Produces: `PackLibrary.reconcile(self) -> list[str]` returning problem strings, exactly: `f"pack '{name}' is in packs.toml but missing from packs/"` and `f"pack directory '{name}' is not recorded in packs.toml"`. `check` with no args runs `reconcile()` plus the normal check on every installed pack, emits one `recipe.check` record per finding (with a `pack` field), and exits non-zero if anything failed.
 
 - [ ] **Step 1:** Failing tests: library with two packs, one index row pointing at a deleted dir, one orphan dir → `reconcile()` returns both exact strings; CLI `check` (no args) exits non-zero and reports both plus per-pack results; healthy library exits 0.
@@ -308,7 +330,47 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 4:** Tests + mypy green.
 - [ ] **Step 5:** Commit: `git commit -m "feat: no-arg check validates the whole library and its index"`.
 
-### Task 11: Versions, release tooling, parity tests
+### Task 12: `backup restore` through `batch_apply`
+
+Context: restore overwrites working-tree files but currently runs with no
+confirmation, preview, or progress (`cli/backup_commands.py:62` calls
+`BackupStore.restore` directly), while `apply` gets all three from
+`batch_apply(destructive=True)` (see `_execute_plans` in `cli/commands.py` for the
+call shape to mirror). `--force` means "bypass the changed-since-backup hash guard"
+and must stay independent of confirmation.
+
+**Files:**
+- Modify: `src/untaped_recipe/infrastructure/backup.py` (add a plan seam), `src/untaped_recipe/cli/backup_commands.py` (`restore` command)
+- Test: `tests/test_backup.py` (or wherever `BackupStore` tests live — `grep -rl "BackupStore" tests/`), backup CLI tests
+
+**Interfaces:**
+- Produces: `BackupStore.plan_restore(backup_id: str, *, force: bool) -> list[RestoreItem]` where `RestoreItem` is a frozen dataclass `(path: Path, action: str)` with `action` in `{"restore", "create", "delete"}` (mirroring what `restore` already decides per file), raising the existing changed-since-backup error when `force=False` — i.e. the plan performs the hash checks up front so nothing fails mid-apply. `restore(...)` gains an `items:` fast path or is refactored so the CLI applies exactly the planned items.
+- CLI: `restore <id> [--force] [--yes]` — prints the per-file preview rows (`path`, `action`), confirms via `batch_apply(destructive=True, assume_yes=yes, ...)` with one item per file, refuses piped stdin without `--yes` (same policy as other destructive verbs), reports progress, exits non-zero if any item failed.
+
+- [ ] **Step 1:** Failing tests: `plan_restore` on a bundle returns the expected `(path, action)` rows; changed-file without `force` raises before anything is written; CLI `restore` without `--yes` on a non-tty aborts with the standard refuse message; with `--yes` restores and exits 0; a failing item yields exit 1.
+- [ ] **Step 2:** FAIL run.
+- [ ] **Step 3:** Implement; keep `BackupStore.restore`'s internals as the single write path (the CLI iterates planned items through `batch_apply`, each executing the store's per-file restore). Success message via `ui.message`, not raw `echo`.
+- [ ] **Step 4:** Tests + mypy green.
+- [ ] **Step 5:** Commit: `git commit -m "feat!: backup restore previews and confirms like apply"`.
+
+### Task 13: UiContext plumbing + dead-code trim
+
+Context: several outputs bypass the SDK's quiet/verbose gating, planning has no
+progress feedback, stdin reading duplicates an SDK helper, and three dead spots
+survive from earlier iterations. All the touched files were already rewritten or
+reorganized by Tasks 9-12, so this lands last among the code tasks.
+
+**Files:**
+- Modify: `src/untaped_recipe/cli/preview.py` (summary via `ui.message`; `_render_stderr_table` → `render_rows` + `echo(..., err=True)`, deleting the themed `ui_context` workaround), `src/untaped_recipe/application/run_bulk.py` (optional `on_progress: Callable[[int, int], None] | None = None` parameter invoked per planned target — a plain callback, keeping `untaped.api` out of the application layer exactly like `PromptFunc`), `src/untaped_recipe/cli/commands.py` (thread `ui.progress` into `run_bulk`; replace the manual stdin loop with the SDK `read_stdin`), `src/untaped_recipe/cli/hook_commands.py` (`_print_hook_diagnostics`/`_print_hook_failure` → `echo(..., err=True)`/`ui.message` consistently), `src/untaped_recipe/application/apply_recipe.py` (delete the never-varied `template_renderer` constructor parameter; extract the transform-file existence/`is_file`/`read_text` validation shared with `run_hook.py` into one helper), `src/untaped_recipe/application/run_hook.py` (use the shared helper), `src/untaped_recipe/application/targets.py` (delete never-read `Target.kind` and `Target.lineno`; `record` stays — input `from` Jinja reads it)
+- Test: affected test modules; add one test asserting the preview summary is suppressed under `--quiet` and one asserting hook diagnostics still print under `--quiet` (diagnostics are data, not chrome)
+
+- [ ] **Step 1:** Failing tests first for the two quiet-gating behaviors above; adjust any tests constructing `Target(kind=..., lineno=...)`.
+- [ ] **Step 2:** FAIL run.
+- [ ] **Step 3:** Implement all changes; `grep -rn "template_renderer\|\.kind\b" src/untaped_recipe/application/targets.py src/untaped_recipe/application/apply_recipe.py` shows no dead remnants (the worker-protocol wire field named `kind` in `worker_protocol.py` is unrelated and stays).
+- [ ] **Step 4:** Full suite + mypy + pre-commit green.
+- [ ] **Step 5:** Commit: `git commit -m "refactor: quiet-gated preview, planning progress, SDK stdin, dead code removed"`.
+
+### Task 14: Versions, release tooling, parity tests
 
 **Files:**
 - Modify: `pyproject.toml` (0.9.0), `src/untaped_recipe/_version.py`, `src/untaped_recipe/hook_api.py` (HOOK_API_VERSION 0.9.0), `scripts/release.py` (`smoke-hook-init` → `smoke-new`: `new pack hook_api_smoke` + `new hook hook_api_smoke/probe` via the installed CLI; verify-versions floors `>=0.9` / `>=0.9,<1`), parity tests in `tests/test_infrastructure.py` / `tests/test_hook_api_contract.py`
@@ -319,7 +381,7 @@ Flesh each `...` out with the fixture helpers already used by neighboring tests 
 - [ ] **Step 3:** `uv run python scripts/release.py verify-versions 0.9.0` passes; full suite green.
 - [ ] **Step 4:** Commit: `git commit -m "chore!: 0.9.0 versions, capped hook API floor, new-based release smoke"`.
 
-### Task 12: Template token policy — `unknown_tokens: error | keep`
+### Task 15: Template token policy — `unknown_tokens: error | keep`
 
 Context: today, unknown *bare* input names already raise, but non-bare tokens
 (`{{ a.b }}`, `{{ x | upper }}`) silently pass through. That pass-through is
@@ -335,14 +397,14 @@ strict, with a per-step escape hatch.
 - Both renderer copies gain the same signature: `render_template(template: str, inputs: Mapping[str, object], *, unknown_tokens: str = "error") -> str` (values `"error"` | `"keep"`; anything else raises `ValueError`).
 - Under `"error"`: a bare unknown name keeps today's error (`f"template input {name!r} is not defined"`); any other `{{ ... }}` token raises `ValueError(f"template token {token!r} is not a bare input name; set unknown_tokens: keep to pass it through")`. Token discovery: every non-greedy `\{\{.*?\}\}` match that does not match the bare-identifier pattern.
 - Under `"keep"`: known inputs render; every other token (bare-unknown included) passes through verbatim — today's behavior.
-- `TemplateStep.unknown_tokens: Literal["error", "keep"] = "error"`; `helpers.render_template` exposes the same keyword (hook API addition, covered by the Task 11 HOOK_API_VERSION bump).
+- `TemplateStep.unknown_tokens: Literal["error", "keep"] = "error"`; `helpers.render_template` exposes the same keyword (hook API addition, covered by the Task 14 HOOK_API_VERSION bump).
 
 - [ ] **Step 1:** Failing tests (run the same table against BOTH copies in `tests/test_template_parity.py` — import `domain.templates.render_template` and the `hook_worker` copy, assert identical output or identical exception text per case): `{{ owner }}` with owner defined renders in both modes; `{{ owner }}` undefined raises "is not defined" under `error`, passes through under `keep`; `${{ github.ref }}` raises the "set unknown_tokens: keep" error naming `'{{ github.ref }}'` under `error`, survives verbatim under `keep`; `{{ .Values.x }}` same; invalid mode string raises. Plus a `TemplateStep` schema test: field defaults to `"error"`, rejects other values, and a template-step apply test showing a workflow-file template plans cleanly with `unknown_tokens: keep`.
 - [ ] **Step 2:** FAIL run.
 - [ ] **Step 3:** Implement identically in both copies (the worker is stdlib-only and cannot import engine modules — keep the two implementations byte-similar and cross-referenced by comment; the parity test is the drift guard). Thread the step field in `apply_recipe.py` and the args key in `yaml_edit.py`.
 - [ ] **Step 4:** Full suite + mypy green; commit: `git commit -m "feat!: template steps default to strict tokens with unknown_tokens: keep opt-out"`.
 
-### Task 13: Docs, invariants, migration note
+### Task 16: Docs, invariants, migration note
 
 **Files:**
 - Modify: `README.md`, `AGENTS.md`, `docs/recipes.md`, `docs/hooks.md`
@@ -358,5 +420,5 @@ strict, with a per-step escape hatch.
 
 ## Self-review notes
 
-- Spec coverage: identity/manifest (T4), hook contract + AST check (T1-T2), dual-verb + `hook run` (T3), library + index/version + ambiguity (T5), sharing front doors + confirm (T6), `new` scaffolding + floors (T7), CLI flattening + resolution + emit-kind consolidation + deletions (T8), structured `show` (T9), library doctor (T10), versions/release smoke (T11), `unknown_tokens` template policy + parity test (T12), invariants/docs/migration (T13). Wave 2 (test harness) is intentionally out — separate plan against the 0.9.0 codebase.
+- Spec coverage: hook contract + AST check (T1-T2), dual-verb + `hook run` (T3), executor-port collapse (T4), identity/manifest (T5), library + index/version + ambiguity (T6), sharing front doors + confirm (T7), `new` scaffolding + floors (T8), CLI flattening + resolution + emit-kind consolidation + deletions (T9), structured `show` (T10), library doctor (T11), restore-through-batch_apply (T12), UiContext plumbing + dead-code trim (T13), versions/release smoke (T14), `unknown_tokens` template policy + parity test (T15), invariants/docs/migration (T16). Wave 2 (test harness) is intentionally out — separate plan against the 0.9.0 codebase; hardening bugfixes (encoding/newline, worker lifecycle, input semantics) live in `2026-07-01-hardening-0.8.1.md` and execute BEFORE this plan.
 - Known deliberate deference: exact fixture-helper names in existing test files and post-PR-#17 line numbers are re-read at execution (Task 0 Step 3 covers this); interfaces and error strings above are the contract.

@@ -134,7 +134,7 @@ packs because packs are the only unit:
 | `edit <ref>` | open the relevant file |
 | `hook run <ref> ...` | unchanged debugging verb (verb-selection rule above) |
 | `apply <recipe-ref\|path> ...` | unchanged |
-| `backup ...` | unchanged |
+| `backup ...` | `restore` gains apply-parity confirmation (below); `list`/`show` unchanged |
 
 `new <kind>` is the single creation pattern, reusing qualified names. Personal one-off
 hooks get no special case: make a personal pack (`new pack mine`) — it is instantly
@@ -167,6 +167,16 @@ consumers, shipped with 0.9):
   `recipe.hook`, `recipe.pack`, `recipe.check`.
 - Deleted: `recipe.pack_check` and `recipe.pack_recipe` (their commands collapse into
   `check` and `list`/`show`).
+
+### Backup restore parity
+
+`backup restore` is destructive (it overwrites working-tree files) yet today runs
+with no confirmation, preview, or progress, while `apply` gets all three from the
+SDK's `batch_apply(destructive=True)`. Restore routes through the same helper: it
+previews the files it will overwrite, asks for confirmation (`--yes` to skip),
+reports progress, and exits through the standard outcome path. `--force` keeps its
+existing, separate meaning — bypass the changed-since-backup hash guard — and does
+not imply `--yes`.
 
 ### Sharing
 
@@ -221,6 +231,19 @@ tests/<recipe-name>/<case-name>/
      read the piped `record` — other untaped tools' output drives recipes.
 - The recipe file schema stays `version: 1` in the 0.9 wave — the breaking changes
   are in manifests, the library, and the CLI, not in recipe.yml.
+- Hook-executor port collapse: `HookExecutorPort` and `HookDebugExecutorPort` are
+  parallel protocols over one implementation with doubled `*_for_debug` methods; they
+  merge into a single protocol with a `capture_diagnostics` flag.
+- Output plumbing goes through `UiContext` so the SDK root flags actually apply:
+  the preview summary and hook diagnostics stop using raw `echo`/`sys.stderr` (they
+  currently ignore `--quiet`), the hand-built themed table in preview switches to
+  `render_rows`, the planning phase gains progress reporting (a callback parameter on
+  the bulk runner, threaded from the CLI — the SDK stays out of the application
+  layer, same pattern as `PromptFunc`), and stdin target reading reuses the SDK's
+  `read_stdin`.
+- Dead code deleted: the never-varied `template_renderer` injection parameter, the
+  never-read `Target.kind`/`Target.lineno` fields, and the transform-file validation
+  duplicated between planning and the debug runner.
 
 ## Migration
 
@@ -230,6 +253,30 @@ Sole-user migration, no compat shims, no migration command:
   `packs/`; hook manifests drop `kind`; `requires_hook_api` floors bump to
   `>=0.9,<1`; scaffolded dev-dep floors bump to `untaped-recipe>=0.9`.
 - A short migration note in the changelog covers the manual steps.
+
+## Deferred: SDK extraction candidates
+
+Not part of 0.9. This list seeds a future untaped-SDK redesign spec, which will pair
+it with a fresh sweep of the other tools for bubble-up candidates before deciding the
+SDK surface. Recorded here so the audit findings survive until that brainstorm.
+
+- **Move**: the transactional file writer (`infrastructure/file_writer.py` — staged
+  temp files, ordered `os.replace`, reverse rollback). Near-zero coupling; any future
+  write-capable tool wants exactly this. Move it only after the 0.8.1
+  encoding/newline hardening lands, so the SDK inherits the corrected version.
+- **Move (small)**: the unified-diff helper (`infrastructure/diff.py`) plus the
+  `+N -M` line-stat counting duplicated in preview.
+- **Extract later**: the backup bundle store (`infrastructure/backup.py`) — generic
+  in spirit, but its on-disk metadata is recipe-shaped; generalize the entry model
+  first. Pairs naturally with the file writer.
+- **Extract later**: the sandboxed Jinja evaluator core (`infrastructure/
+  input_jinja.py` — SandboxedEnvironment, AST allowlist, blow-up guards) as a
+  safe-eval primitive; the `{target, record}` allowlist and scalar contract stay
+  recipe-side.
+- **Trivial**: `load_yaml_mapping_file` (`cli/common.py`) — every tool with a
+  `--vars file.yml` flag reimplements it.
+- **Keep**: input resolution (`application/inputs.py`) — the pattern is common but
+  the implementation is recipe-domain through and through.
 
 ## Non-goals
 

@@ -188,6 +188,12 @@ installing a pack installs trusted code, and that should be visible.
 
 ## Wave 2 (0.10.0): recipe test harness
 
+Expanded into a full design at
+`docs/superpowers/specs/2026-07-02-recipe-test-harness-design.md`, which supersedes
+this sketch where they differ (notably: the `expected.diff` golden variant is
+dropped — `expected/` trees are the only format). The sketch below is kept for the
+original context.
+
 `untaped-recipe test [pack|recipe-ref]` runs golden-fixture cases that live inside
 the pack:
 

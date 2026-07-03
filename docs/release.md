@@ -11,10 +11,8 @@ the GitHub release/tag for PyPI-backed versions.
 
 Publish the `untaped` SDK to PyPI first; `untaped-recipe` depends on
 `untaped>=2.4.0,<3` and release smokes intentionally resolve that dependency
-from PyPI. Once the SDK is available, remove the temporary
-`tool.uv.sources.untaped` git source and relock before publishing
-`untaped-recipe`. The release workflow verifies that SDK dependency before
-publishing `untaped-recipe`.
+from PyPI. The release workflow verifies that SDK dependency before publishing
+`untaped-recipe`.
 
 Create the `untaped-recipe` project on PyPI and TestPyPI, then add Trusted
 Publishers for this repository:

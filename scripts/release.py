@@ -35,7 +35,7 @@ def verify_versions(expected_version: str) -> None:
     """Require package and hook API scaffold version sources to be consistent."""
     root_version = _project_version(ROOT / "pyproject.toml")
     project_requirement = f">={_major_minor(HOOK_API_VERSION)}"
-    dev_requirement = f"{PACKAGE_NAME}>={_major_minor(expected_version)}"
+    dev_requirement = f"{PACKAGE_NAME}>={_major_minor(expected_version)},<1"
 
     checks = [
         ("root pyproject", root_version, expected_version),

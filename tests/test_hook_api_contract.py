@@ -50,7 +50,7 @@ def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
 
     assert package_version == PACKAGE_VERSION
     assert f">={contract_major_minor}" == project_requirement
-    assert f"untaped-recipe>={package_major_minor}" == dev_requirement
+    assert f"untaped-recipe>={package_major_minor},<1" == dev_requirement
     assert project_requirement == hook_library._HOOK_API_PROJECT_REQUIREMENT
     assert dev_requirement == hook_library._HOOK_API_DEV_REQUIREMENT
 

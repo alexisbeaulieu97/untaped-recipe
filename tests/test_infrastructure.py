@@ -414,7 +414,7 @@ def test_release_publish_package_filters_artifacts_by_version(
     matching_wheel = dist / "untaped_recipe-0.8.0-py3-none-any.whl"
     matching_sdist = dist / "untaped_recipe-0.8.0.tar.gz"
     stale_wheel = dist / "untaped_recipe-0.7.0-py3-none-any.whl"
-    unrelated = dist / "untaped_recipe_hook_api-0.8.0-py3-none-any.whl"
+    unrelated = dist / "unrelated_package-0.8.0-py3-none-any.whl"
 
     def fake_glob(pattern: str) -> list[Path]:
         assert pattern == "untaped_recipe-0.8.0*"
@@ -467,8 +467,9 @@ def test_hook_init_stubs_use_type_checking_helper_annotations(
     assert "if TYPE_CHECKING:" in source
     assert "from untaped_recipe.hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
+    assert 'requires-python = ">=3.14,<3.15"' in pyproject
     assert 'requires_hook_api = ">=0.8"' in pyproject
-    assert 'dev = ["untaped-recipe>=0.8"]' in pyproject
+    assert 'dev = ["untaped-recipe>=0.8,<1"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:
@@ -494,7 +495,7 @@ def test_scoped_hook_stubs_use_type_checking_helper_annotations(
     assert "from untaped_recipe.hook_api import HookHelpers" in source
     assert 'helpers: "HookHelpers"' in source
     assert 'requires_hook_api = ">=0.8"' in pyproject
-    assert 'dev = ["untaped-recipe>=0.8"]' in pyproject
+    assert 'dev = ["untaped-recipe>=0.8,<1"]' in pyproject
     if kind == "validate":
         assert "return helpers.pass_()" in source
     else:

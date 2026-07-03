@@ -297,10 +297,9 @@ Use `.github/workflows/release.yml` for PyPI releases. The workflow publishes
 scaffold locking against the target index, and only creates the production
 GitHub release/tag after PyPI verification passes. The production `pypi`
 GitHub environment should be protected with required reviewers.
-The SDK package `untaped` must be published to PyPI first; remove the temporary
-`tool.uv.sources.untaped` git source and relock before publishing
-`untaped-recipe`. The release workflow checks that `untaped>=2.4.0,<3` resolves
-from PyPI before publishing `untaped-recipe`.
+The SDK package `untaped` must be published to PyPI first. The release workflow
+checks that `untaped>=2.4.0,<3` resolves from PyPI before publishing
+`untaped-recipe`.
 
 Do not manually create a GitHub release/tag for a version whose PyPI package has
 not been published and verified. PyPI versions are permanently burned once

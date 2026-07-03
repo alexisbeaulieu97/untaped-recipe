@@ -33,7 +33,7 @@ def hook_api_requirements(*, package_version: str, hook_api_version: str) -> tup
     """Return the hook API project floor and authoring dependency."""
     package_major_minor = ".".join(package_version.split(".")[:2])
     hook_api_major_minor = ".".join(hook_api_version.split(".")[:2])
-    return f">={hook_api_major_minor}", f"untaped-recipe>={package_major_minor}"
+    return f">={hook_api_major_minor}", f"untaped-recipe>={package_major_minor},<1"
 
 
 _HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements(
@@ -107,7 +107,7 @@ class HookLibrary:
             "[project]\n"
             f'name = "untaped-recipe-hooks-{project_name}"\n'
             'version = "0.1.0"\n'
-            'requires-python = ">=3.14"\n'
+            'requires-python = ">=3.14,<3.15"\n'
             "dependencies = []\n\n"
             "[dependency-groups]\n"
             f'dev = ["{_HOOK_API_DEV_REQUIREMENT}"]\n\n'

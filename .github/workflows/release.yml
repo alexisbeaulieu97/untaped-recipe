@@ -58,7 +58,10 @@ jobs:
         run: uv sync --frozen
 
       - name: Verify version parity
-        run: uv run python scripts/hook_api_release.py verify-versions "${{ inputs.version }}"
+        run: uv run python scripts/release.py verify-versions "${{ inputs.version }}"
+
+      - name: Verify SDK is available on PyPI
+        run: uv run python scripts/release.py verify-sdk-published
 
       - name: Pre-commit hooks
         run: uv run pre-commit run --all-files --show-diff-on-failure
@@ -73,42 +76,43 @@ jobs:
           COLUMNS: "200"
         run: uv run pytest
 
-      - name: Build packages
-        run: uv build --all-packages --no-sources
+      - name: Build package
+        run: uv build --no-sources
 
       - name: Smoke scaffold against local wheel
         run: |
-          uv run python scripts/hook_api_release.py smoke-hook-init \
-            --find-links dist \
-            --no-index
+          uv run python scripts/release.py smoke-hook-init \
+            "${{ inputs.version }}" \
+            --find-links dist
 
-      - name: Publish hook API package
+      - name: Publish package
         run: |
           if [ "${{ inputs.index }}" = "testpypi" ]; then
-            uv run python scripts/hook_api_release.py publish-hook-api \
+            uv run python scripts/release.py publish-package \
               "${{ inputs.version }}" \
               --publish-url https://test.pypi.org/legacy/
           else
-            uv run python scripts/hook_api_release.py publish-hook-api "${{ inputs.version }}"
+            uv run python scripts/release.py publish-package "${{ inputs.version }}"
           fi
 
-      - name: Wait for published hook API package
+      - name: Wait for published package
         run: |
           if [ "${{ inputs.index }}" = "testpypi" ]; then
-            uv run python scripts/hook_api_release.py wait-published \
+            uv run python scripts/release.py wait-published \
               "${{ inputs.version }}" \
               --index-url https://test.pypi.org/simple/
           else
-            uv run python scripts/hook_api_release.py wait-published "${{ inputs.version }}"
+            uv run python scripts/release.py wait-published "${{ inputs.version }}"
           fi
 
       - name: Smoke scaffold against published package
         run: |
           if [ "${{ inputs.index }}" = "testpypi" ]; then
-            uv run python scripts/hook_api_release.py smoke-hook-init \
+            uv run python scripts/release.py smoke-hook-init \
+              "${{ inputs.version }}" \
               --index-url https://test.pypi.org/simple/
           else
-            uv run python scripts/hook_api_release.py smoke-hook-init
+            uv run python scripts/release.py smoke-hook-init "${{ inputs.version }}"
           fi
 
       - name: Create GitHub release

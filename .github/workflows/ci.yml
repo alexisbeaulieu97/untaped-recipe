@@ -52,5 +52,5 @@ jobs:
           COLUMNS: "200"
         run: uv run pytest
 
-      - name: Build packages
-        run: uv build --all-packages
+      - name: Build package
+        run: uv build

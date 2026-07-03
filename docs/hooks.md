@@ -42,7 +42,7 @@ Hook metadata lives in `pyproject.toml`:
 
 ```toml
 [dependency-groups]
-dev = ["untaped-recipe-hook-api>=0.8,<1"]
+dev = ["untaped-recipe>=0.8"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.8"
@@ -64,16 +64,15 @@ must be migrated by adding the matching kind:
 "set_owner" = { kind = "transform", module = "untaped_recipe_hooks_set_owner.hooks.set_owner" }
 ```
 
-`untaped-recipe-hook-api` is a type-only authoring package. It gives editors and
-type checkers the `HookHelpers` protocol and YAML option types, but the runtime
-helper implementation still comes from the installed `untaped-recipe` CLI.
-Scaffolded hook projects put the contract package in `[dependency-groups].dev`
-and declare `[tool.untaped_recipe].requires_hook_api` so older CLIs fail before
-running the hook. Do not add `untaped-recipe` itself to `[project].dependencies`;
-that would let the hook environment shadow the launching CLI's worker internals,
-so checks and hook resolution reject it. Hook scaffolding runs `uv lock`, so it
-needs access to PyPI or a configured uv package source for
-`untaped-recipe-hook-api`.
+`untaped_recipe.hook_api` gives editors and type checkers the `HookHelpers`
+protocol and YAML option types, but the runtime helper implementation still
+comes from the installed `untaped-recipe` CLI. Scaffolded hook projects put
+`untaped-recipe` in `[dependency-groups].dev` for type discovery and declare
+`[tool.untaped_recipe].requires_hook_api` so older CLIs fail before running the
+hook. Do not add `untaped-recipe` to `[project].dependencies`; that would let
+the hook environment shadow the launching CLI's worker internals, so checks and
+hook resolution reject it. Hook scaffolding runs `uv lock`, so it needs access
+to PyPI or a configured uv package source for `untaped-recipe`.
 
 Recipe-local hooks use the same project shape inside a standalone recipe
 project:
@@ -164,7 +163,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe_hook_api import HookHelpers
+    from untaped_recipe.hook_api import HookHelpers
 
 
 def transform(
@@ -183,7 +182,7 @@ def transform(
 `target` and `file` are rebuilt as `Path` objects in the worker. `helpers` is a
 small worker helper object. The `TYPE_CHECKING` import gives editors the helper
 API without importing anything at hook runtime; type checkers resolve it from
-the `untaped-recipe-hook-api` dev dependency.
+the `untaped-recipe` dev dependency.
 
 ## Validate Hooks
 
@@ -194,7 +193,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from untaped_recipe_hook_api import HookHelpers
+    from untaped_recipe.hook_api import HookHelpers
 
 
 def validate(

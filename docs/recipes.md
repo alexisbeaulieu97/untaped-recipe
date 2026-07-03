@@ -86,7 +86,7 @@ Local hooks are declared in the same top-level `pyproject.toml`:
 
 ```toml
 [dependency-groups]
-dev = ["untaped-recipe-hook-api>=0.8,<1"]
+dev = ["untaped-recipe>=0.8"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.8"
@@ -128,11 +128,11 @@ updates the pack metadata.
 
 `recipe hook init` and `pack hook init` add local hook modules to the top-level
 project `src/` tree, update `[tool.untaped_recipe.hooks]`, and refresh
-`uv.lock`. They also add the type-only `untaped-recipe-hook-api` dev dependency
+`uv.lock`. They also add the dev-only `untaped-recipe` dependency for typing
 and a `requires_hook_api` floor for fast compatibility checks. Hook projects
-must not add the full `untaped-recipe` engine to runtime dependencies; the
-installed CLI owns the worker and helper implementation. Top-level `hook init`
-is for reusable global hooks only.
+must not add `untaped-recipe` to runtime dependencies; the installed CLI owns
+the worker and helper implementation. Top-level `hook init` is for reusable
+global hooks only.
 `hook run` invokes one resolved hook against explicit fixture context without
 running a full recipe or writing target files.
 

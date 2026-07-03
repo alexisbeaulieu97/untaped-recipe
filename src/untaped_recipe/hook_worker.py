@@ -72,7 +72,7 @@ class HookHelpers:
 
 
 if TYPE_CHECKING:
-    from untaped_recipe_hook_api import HookHelpers as ExternalHookHelpers
+    from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
 
     _external_helper_contract: ExternalHookHelpers = HookHelpers()
 

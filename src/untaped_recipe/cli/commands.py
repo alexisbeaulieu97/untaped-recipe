@@ -40,8 +40,10 @@ from untaped_recipe.cli.common import (
     report_config_errors,
     settings,
 )
+from untaped_recipe.cli.detail import hook_detail, pack_detail, recipe_detail
 from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.preview import PreviewMode, render_preview
+from untaped_recipe.domain.hook_exports import hook_exports
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
     read_hook_metadata,
@@ -378,7 +380,7 @@ def show_command(
         pack = _find_pack(library, ref_text)
         if pack is not None:
             emit(
-                _pack_row(pack, include_manifest_identity=True),
+                pack_detail(pack.name, pack.manifest, pack.root),
                 fmt=fmt,
                 columns=columns,
                 kind="recipe.pack",
@@ -392,15 +394,26 @@ def show_command(
                 hook_pack, hook = library.find_hook(ref)
             except ValueError:
                 raise recipe_error from None
+            module_file = hook_module_file(hook_pack.root, hook.module)
             emit(
-                _hook_row(hook_pack, ref.name, hook),
+                hook_detail(
+                    f"{hook_pack.name}/{ref.name}",
+                    hook,
+                    hook_exports(module_file),
+                    module_file,
+                ),
                 fmt=fmt,
                 columns=columns,
                 kind="recipe.hook",
             )
             return
+        recipe_path = recipe_pack.root / recipe.path
         emit(
-            _recipe_row(recipe_pack, ref.name, recipe),
+            recipe_detail(
+                f"{recipe_pack.name}/{ref.name}",
+                _load_recipe(recipe_path),
+                recipe_path,
+            ),
             fmt=fmt,
             columns=columns,
             kind="recipe.recipe",

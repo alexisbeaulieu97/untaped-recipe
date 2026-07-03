@@ -59,6 +59,7 @@ class PackManifest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
+    project_name: str
     version: str
     requires_hook_api: str | None = None
     recipes: dict[str, RecipeEntry]
@@ -107,6 +108,7 @@ class PackManifest(BaseModel):
         }
         return cls(
             name=pack_name_from_project(raw_name),
+            project_name=raw_name,
             version=raw_version,
             requires_hook_api=hook_metadata.requires_hook_api,
             recipes=recipe_entries,

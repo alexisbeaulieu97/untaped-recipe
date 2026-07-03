@@ -497,7 +497,7 @@ def test_apply_table_preview_renders_relative_sensitive_target_as_absolute(
     assert "secret" not in result.stderr
 
 
-def test_apply_quiet_mutes_post_run_info_but_not_preview(tmp_path: Path) -> None:
+def test_apply_quiet_mutes_preview_summary_and_post_run_info(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
         "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
@@ -513,11 +513,11 @@ def test_apply_quiet_mutes_post_run_info_but_not_preview(tmp_path: Path) -> None
     )
 
     assert result.exit_code == 0, result.output
-    assert "Recipe preview:" in result.stderr
+    assert "Recipe preview:" not in result.stderr
     assert "Recipe dry run:" not in result.stderr
 
 
-def test_apply_table_preview_stays_table_when_collection_view_is_list(
+def test_apply_table_preview_uses_configured_collection_view(
     tmp_path: Path,
     isolate_config: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -539,8 +539,8 @@ def test_apply_table_preview_stays_table_when_collection_view_is_list(
     )
 
     assert result.exit_code == 0, result.output
-    assert "path:" not in result.stderr
-    assert "│" in result.stderr
+    assert "path:" in result.stderr
+    assert "action: create" in result.stderr
     assert str(target / "out.txt") in result.stderr
 
 

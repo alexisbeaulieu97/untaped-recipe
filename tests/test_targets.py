@@ -16,8 +16,8 @@ def _env(kind: str | None, record: dict[str, object]) -> str:
 
 def test_resolves_bare_paths() -> None:
     assert resolve_target_lines([(1, "/tmp/a"), (2, "relative")]) == [
-        Target(path=Path("/tmp/a"), lineno=1),
-        Target(path=Path("relative"), lineno=2),
+        Target(path=Path("/tmp/a")),
+        Target(path=Path("relative")),
     ]
 
 
@@ -40,26 +40,18 @@ def test_resolves_pipe_target_paths_and_generic_path_fallback() -> None:
         Target(
             path=Path("/tmp/ws"),
             record={"path": "/tmp/ws"},
-            kind="workspace.workspace",
-            lineno=1,
         ),
         Target(
             path=Path("/tmp/ws/api"),
             record={"path": "/tmp/ws", "target_path": "/tmp/ws/api", "repo": "api"},
-            kind="workspace.repo",
-            lineno=2,
         ),
         Target(
             path=Path("/tmp/explicit"),
             record={"path": "/tmp/ws", "target_path": "/tmp/explicit"},
-            kind="other.kind",
-            lineno=3,
         ),
         Target(
             path=Path("/tmp/fallback"),
             record={"path": "/tmp/fallback"},
-            kind="other.kind",
-            lineno=4,
         ),
     ]
 
@@ -68,7 +60,7 @@ def test_foreign_records_with_repo_use_generic_path_fallback() -> None:
     record = {"path": "/tmp/checkout", "repo": "api"}
 
     assert resolve_target_lines([(1, _env("github.pr", record))]) == [
-        Target(path=Path("/tmp/checkout"), record=record, kind="github.pr", lineno=1)
+        Target(path=Path("/tmp/checkout"), record=record)
     ]
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from untaped_recipe.application.files import read_existing_text_file
 from untaped_recipe.application.ports import HookExecutorPort
 from untaped_recipe.domain.hook_project import HookKind
 from untaped_recipe.domain.paths import confined_path
@@ -213,8 +214,12 @@ def _transform_content(
             raise ValueError(f"--content-file file not found: {content_file}") from exc
     if content is not None:
         return content, resolved_file, file
-    if not resolved_file.exists():
-        raise ValueError(f"transform file not found: {file}")
-    if not resolved_file.is_file():
-        raise ValueError(f"transform path is not a file: {file}")
-    return resolved_file.read_text(encoding="utf-8", newline=""), resolved_file, file
+    return (
+        read_existing_text_file(
+            resolved_file,
+            missing=f"transform file not found: {file}",
+            not_file=f"transform path is not a file: {file}",
+        ),
+        resolved_file,
+        file,
+    )

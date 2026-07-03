@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from untaped.api import (
     emit,
     finish,
     parse_kv_pairs,
+    read_stdin,
     render_rows,
     ui_context,
 )
@@ -539,20 +539,26 @@ def _apply_context(
                 )
             )
         )
-        try:
-            plans = runner.plan(
-                recipe=loaded,
-                recipe_dir=recipe_path.parent,
-                local_hook_project=recipe_resolution.local_hook_project,
-                targets=targets,
-                inputs=inputs,
-                input_from=input_from,
-                interactive=interactive,
-                prompt=prompt,
-                parallel=workers,
-            )
-        except ValueError as exc:
-            raise ConfigError(str(exc)) from exc
+        ui = ui_context(strict=False)
+        with ui.progress("Planning targets") as progress:
+            try:
+                plans = runner.plan(
+                    recipe=loaded,
+                    recipe_dir=recipe_path.parent,
+                    local_hook_project=recipe_resolution.local_hook_project,
+                    targets=targets,
+                    inputs=inputs,
+                    input_from=input_from,
+                    interactive=interactive,
+                    prompt=prompt,
+                    parallel=workers,
+                    on_progress=lambda done, total: progress.update(
+                        f"{done}/{total}",
+                        fraction=done / total if total else None,
+                    ),
+                )
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from exc
     return ApplyContext(
         root=root,
         recipe=loaded,
@@ -979,15 +985,14 @@ def _targets(positional: list[Path], *, stdin: bool) -> TargetInput:
         raise ConfigError("provide targets as positional args or via --stdin, not both")
     if not stdin:
         return TargetInput([Target(path=path) for path in positional])
-    pairs: list[tuple[int, str]] = []
-    for lineno, line in enumerate(sys.stdin, start=1):
-        stripped = line.strip()
-        if stripped:
-            pairs.append((lineno, stripped))
-    if not pairs:
+    lines = read_stdin()
+    if not lines:
         raise ConfigError("no targets received on stdin")
     try:
-        return TargetInput(resolve_target_lines(pairs), stdin_records=True)
+        return TargetInput(
+            resolve_target_lines(list(enumerate(lines, start=1))),
+            stdin_records=True,
+        )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 

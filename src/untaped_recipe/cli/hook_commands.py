@@ -319,11 +319,11 @@ def _json_context(value: dict[str, object]) -> str:
 
 def _print_hook_diagnostics(diagnostics: str) -> None:
     if diagnostics:
-        sys.stderr.write(diagnostics.rstrip() + "\n")
+        echo(diagnostics.rstrip(), err=True)
 
 
 def _print_hook_failure(message: str) -> None:
-    sys.stderr.write(message.rstrip() + "\n")
+    echo(message.rstrip(), err=True)
 
 
 def _hook_timeout_seconds(override: float | None) -> float:

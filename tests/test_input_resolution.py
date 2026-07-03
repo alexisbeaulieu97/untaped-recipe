@@ -129,8 +129,6 @@ def test_resolve_target_inputs_uses_record_target_fallbacks_and_native_values() 
     target = Target(
         path=Path("/work/acme/api"),
         record={"repo": "inventory", "replicas": 0, "enabled": False, "label": ""},
-        kind="workspace.repo",
-        lineno=7,
     )
 
     result = _resolve(

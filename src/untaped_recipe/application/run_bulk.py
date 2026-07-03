@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -47,6 +48,7 @@ class RunBulkApply:
         interactive: bool = False,
         prompt: PromptFunc | None = None,
         parallel: int = 1,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> list[TargetPlan]:
         """Return a plan or error row for every target."""
         config = prepare_input_resolution(
@@ -60,18 +62,23 @@ class RunBulkApply:
         if interactive:
             parallel = 1
         if parallel <= 1 or len(targets) <= 1:
-            return [
-                self._plan_one(
-                    recipe,
-                    recipe_dir,
-                    local_hook_project,
-                    target,
-                    config,
-                    global_values,
+            plans: list[TargetPlan] = []
+            for index, target in enumerate(targets, start=1):
+                plans.append(
+                    self._plan_one(
+                        recipe,
+                        recipe_dir,
+                        local_hook_project,
+                        target,
+                        config,
+                        global_values,
+                    )
                 )
-                for target in targets
-            ]
+                if on_progress is not None:
+                    on_progress(index, len(targets))
+            return plans
         indexed_outcomes: list[tuple[int, TargetPlan]] = []
+        completed = 0
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             futures = {
                 pool.submit(
@@ -87,6 +94,9 @@ class RunBulkApply:
             }
             for future in as_completed(futures):
                 indexed_outcomes.append((futures[future], future.result()))
+                completed += 1
+                if on_progress is not None:
+                    on_progress(completed, len(targets))
         indexed_outcomes.sort(key=lambda item: item[0])
         return [outcome for _, outcome in indexed_outcomes]
 

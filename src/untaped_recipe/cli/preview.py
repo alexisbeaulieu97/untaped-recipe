@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import difflib
-import sys
 from pathlib import Path
 from typing import Literal
 
-from untaped.api import echo, ui_context
+from untaped.api import echo, render_rows, ui_context
 
 from untaped_recipe.application.inputs import has_sensitive_inputs
 from untaped_recipe.domain.plan import FileChange, TargetPlan
@@ -24,7 +23,7 @@ def render_preview(
     preview: PreviewMode,
 ) -> None:
     """Render the selected stderr preview for planned targets."""
-    echo(preview_summary(plans), err=True)
+    ui_context(strict=False).message("info", preview_summary(plans))
     if preview == "none":
         return
     if preview == "diff":
@@ -114,18 +113,7 @@ def _preview_groups(
 def _render_stderr_table(rows: list[dict[str, object]], *, columns: list[str]) -> None:
     if not rows:
         return
-    base_ui = ui_context(stdout=sys.stderr, stderr=sys.stderr, strict=False)
-    table_theme = base_ui.theme.model_copy(update={"collection_view": "table"})
-    rendered = ui_context(
-        theme=table_theme,
-        stdout=sys.stderr,
-        stderr=sys.stderr,
-        strict=False,
-    ).collection(
-        rows,
-        fmt="table",
-        columns=columns,
-    )
+    rendered = render_rows(rows, fmt="table", columns=columns)
     if rendered:
         echo(rendered, err=True)
 

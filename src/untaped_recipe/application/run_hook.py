@@ -40,6 +40,30 @@ class ValidateHookRun:
 HookRun = TransformHookRun | ValidateHookRun
 
 
+class AmbiguousHookVerbError(ValueError):
+    """Raised when hook exports need an explicit debug-run verb."""
+
+
+def select_verb(
+    exports: frozenset[str],
+    *,
+    file_given: bool,
+    kind: HookKind | None,
+) -> HookKind:
+    """Select which hook function to invoke for one debug run."""
+    if kind is not None:
+        return kind
+    if exports == frozenset({"transform"}):
+        return "transform"
+    if exports == frozenset({"validate"}):
+        return "validate"
+    if "transform" in exports and "validate" in exports:
+        if file_given:
+            return "transform"
+        raise AmbiguousHookVerbError("ambiguous hook verb")
+    raise ValueError("hook exports neither transform() nor validate()")
+
+
 class RunHook:
     """Run a resolved hook kind once without writing target files."""
 

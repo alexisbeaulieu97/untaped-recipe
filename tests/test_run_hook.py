@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from untaped_recipe.application.ports import HookDebugResult
-from untaped_recipe.application.run_hook import RunHook, TransformHookRun
+from untaped_recipe.application.run_hook import RunHook, TransformHookRun, select_verb
 from untaped_recipe.domain.plan import Verdict
 
 
@@ -141,3 +141,25 @@ def test_run_hook_missing_content_file_is_clean_value_error(tmp_path: Path) -> N
             inputs={},
             args={},
         )
+
+
+def test_select_verb_uses_single_export_without_kind() -> None:
+    assert select_verb(frozenset({"transform"}), file_given=False, kind=None) == "transform"
+    assert select_verb(frozenset({"validate"}), file_given=False, kind=None) == "validate"
+
+
+def test_select_verb_uses_file_to_disambiguate_dual_export() -> None:
+    assert select_verb(frozenset({"transform", "validate"}), file_given=True, kind=None) == (
+        "transform"
+    )
+
+
+def test_select_verb_requires_kind_or_file_for_dual_export() -> None:
+    with pytest.raises(ValueError, match="ambiguous hook verb"):
+        select_verb(frozenset({"transform", "validate"}), file_given=False, kind=None)
+
+
+def test_select_verb_uses_kind_to_disambiguate_dual_export() -> None:
+    assert select_verb(frozenset({"transform", "validate"}), file_given=False, kind="validate") == (
+        "validate"
+    )

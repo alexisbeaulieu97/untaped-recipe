@@ -2006,6 +2006,80 @@ def test_hook_run_validate_records_and_fail_exit(tmp_path: Path) -> None:
     assert failed_row["record"]["message"] == "not ready"
 
 
+def test_hook_run_dual_export_infers_or_requires_kind(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="dual",
+        module_name="dual",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return 'transformed'\n\n"
+            "def validate(*, inputs, target, args, helpers):\n"
+            "    return helpers.warn('validated')\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("before")
+
+    inferred_transform = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "dual",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+        ],
+    )
+    ambiguous = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "dual",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+        ],
+    )
+    explicit_validate = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "dual",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--kind",
+            "validate",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert inferred_transform.exit_code == 0, inferred_transform.output
+    assert inferred_transform.stdout == "transformed"
+    assert ambiguous.exit_code != 0
+    assert (
+        "hook 'dual' exports both transform() and validate(); pass --kind or --file"
+        in ambiguous.output
+    )
+    assert explicit_validate.exit_code == 0, explicit_validate.output
+    row = json.loads(explicit_validate.stdout)
+    assert row["kind"] == "validate"
+    assert row["status"] == "warn"
+    assert row["message"] == "validated"
+
+
 def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
     hook_project = tmp_path / "hooks"
     marker = tmp_path / "marker"

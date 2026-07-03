@@ -42,18 +42,22 @@ from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.pack_commands import app as pack_app
 from untaped_recipe.cli.preview import PreviewMode, render_preview
 from untaped_recipe.cli.recipe_commands import app as recipe_app
-from untaped_recipe.domain.pack import PackManifest
+from untaped_recipe.domain.pack import PackManifest, parse_ref
+from untaped_recipe.domain.paths import safe_library_name
 from untaped_recipe.domain.plan import TargetPlan
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolver, RecipeLibrary
 from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
+from untaped_recipe.infrastructure import pack_scaffold
 from untaped_recipe.infrastructure.pack_store import PackLibrary as UnifiedPackLibrary
 from untaped_recipe.infrastructure.pack_store import fetch_pack_source, is_git_url
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 app = create_app(name="recipe", help="Apply reusable local recipes to plain directories.")
+new_app = create_app(name="new", help="Scaffold recipe packs, recipes, and hooks.")
+app.command(new_app, name="new")
 app.command(recipe_app, name="recipe")
 app.command(pack_app, name="pack")
 app.command(hook_app, name="hook")
@@ -89,6 +93,41 @@ class TargetInput:
 
     targets: list[Target]
     stdin_records: bool = False
+
+
+@new_app.command(name="pack")
+def new_pack_command(name: Annotated[str, Parameter(help="Pack name.")], /) -> None:
+    """Scaffold a recipe pack."""
+    with report_config_errors():
+        pack_name = safe_library_name(name, field="pack")
+        path = pack_scaffold.scaffold_pack(Path.cwd() / pack_name, pack_name)
+        echo(str(path))
+
+
+@new_app.command(name="recipe")
+def new_recipe_command(ref: Annotated[str, Parameter(help="<pack>/<recipe>.")], /) -> None:
+    """Scaffold a recipe inside a pack."""
+    with report_config_errors():
+        pack_dir, name = _new_pack_child(ref)
+        path = pack_scaffold.scaffold_recipe(pack_dir, name)
+        echo(str(path))
+
+
+@new_app.command(name="hook")
+def new_hook_command(
+    ref: Annotated[str, Parameter(help="<pack>/<hook>.")],
+    /,
+    *,
+    kind: Annotated[
+        Literal["transform", "validate"],
+        Parameter(name="--kind", help="Hook callable stub kind."),
+    ] = "transform",
+) -> None:
+    """Scaffold a hook inside a pack."""
+    with report_config_errors():
+        pack_dir, name = _new_pack_child(ref)
+        path = pack_scaffold.scaffold_hook(pack_dir, name, kind=kind)
+        echo(str(path))
 
 
 @app.command(name="apply")
@@ -344,6 +383,26 @@ def _render_pack_add_preview(installed_name: str, manifest: PackManifest) -> Non
     hooks = ", ".join(sorted(manifest.hooks)) or "(none)"
     echo(f"Recipes: {recipes}", err=True)
     echo(f"Hooks: {hooks}", err=True)
+
+
+def _new_pack_child(ref_text: str) -> tuple[Path, str]:
+    if _is_explicit_new_path(ref_text):
+        path = Path(ref_text).expanduser()
+        if not path.name or path.parent == Path("."):
+            raise ValueError("qualified refs must use <pack>/<name>")
+        return path.parent, path.name
+    ref = parse_ref(ref_text)
+    if ref.pack is None:
+        raise ValueError("qualified refs must use <pack>/<name>")
+    installed_name = safe_library_name(ref.pack, field="pack")
+    for installed in UnifiedPackLibrary(library_root=library_root()).packs():
+        if installed.name == installed_name:
+            return installed.root, ref.name
+    raise ValueError(f"pack not found: {ref.pack}")
+
+
+def _is_explicit_new_path(value: str) -> bool:
+    return value.startswith(("/", "./", "../", "~"))
 
 
 def _load_recipe(recipe_path: Path) -> Recipe:

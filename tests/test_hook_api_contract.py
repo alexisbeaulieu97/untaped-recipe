@@ -58,14 +58,14 @@ def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
 def test_release_script_verifies_version_parity() -> None:
     module = _release_module()
 
-    module.verify_versions("0.8.0")
+    module.verify_versions("0.8.1")
 
 
 def test_release_script_rejects_version_mismatch() -> None:
     module = _release_module()
 
     try:
-        module.verify_versions("0.8.1")
+        module.verify_versions("0.8.0")
     except SystemExit as exc:
         assert exc.code == 1
     else:

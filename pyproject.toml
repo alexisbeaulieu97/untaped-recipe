@@ -1,6 +1,6 @@
 [project]
 name = "untaped-recipe"
-version = "0.8.0"
+version = "0.8.1"
 description = "Apply reusable local recipes across plain directories."
 readme = "README.md"
 authors = [

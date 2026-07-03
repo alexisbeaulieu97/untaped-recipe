@@ -39,7 +39,13 @@ class HookHelpers(Protocol):
     def fail(self, message: str) -> dict[str, str]:
         """Return a failing validation verdict."""
 
-    def render_template(self, template: str, inputs: dict[str, object]) -> str:
+    def render_template(
+        self,
+        template: str,
+        inputs: dict[str, object],
+        *,
+        unknown_tokens: str = "error",
+    ) -> str:
         """Render simple recipe placeholders."""
 
     def load_yaml(self, content: str) -> object:

@@ -202,6 +202,42 @@ def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -
     assert "name: api" in "\n".join(change.after or "" for change in plan.changes)
 
 
+def test_apply_recipe_template_step_can_keep_non_bare_tokens(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "workflow.yml").write_text(
+        "name: ci\non: push\nref: ${{ github.ref }}\nowner: {{ owner }}\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"owner": {"type": "str", "required": True}},
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "workflow.yml",
+                    "dest": ".github/workflows/ci.yml",
+                    "unknown_tokens": "keep",
+                }
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        target=target,
+        inputs={"owner": "platform"},
+    )
+
+    assert plan.status == "planned"
+    assert plan.changes[0].after == (
+        "name: ci\non: push\nref: ${{ github.ref }}\nowner: platform\n"
+    )
+
+
 def test_apply_recipe_failing_validate_aborts_target_without_changes(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()

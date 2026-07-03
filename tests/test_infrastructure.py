@@ -423,6 +423,31 @@ def test_hook_helpers_and_builtin_yaml_edit_preserve_round_trip_yaml(tmp_path: P
     assert "enabled: true" in empty
 
 
+def test_builtin_yaml_edit_forwards_unknown_token_policy(tmp_path: Path) -> None:
+    helpers = HookHelpers()
+    args = {
+        "unknown_tokens": "keep",
+        "edits": [
+            {
+                "op": "set",
+                "path": ["ref"],
+                "value": "${{ github.ref }}",
+            }
+        ],
+    }
+
+    result = yaml_edit.transform(
+        "{}\n",
+        inputs={},
+        target=tmp_path,
+        file=tmp_path / "config.yml",
+        args=args,
+        helpers=helpers,
+    )
+
+    assert "ref: ${{ github.ref }}" in result
+
+
 def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()

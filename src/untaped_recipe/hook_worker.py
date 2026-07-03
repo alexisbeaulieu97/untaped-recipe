@@ -23,7 +23,9 @@ if __package__:
 else:  # pragma: no cover - used when executed as a script in a hook env.
     from yaml_options import apply_yaml_dump_options  # type: ignore[import-not-found,no-redef]
 
-_PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+_TOKEN_RE = re.compile(r"{{.*?}}")
+_BARE_TOKEN_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+_UNKNOWN_TOKEN_MODES = {"error", "keep"}
 
 
 class HookHelpers:
@@ -41,16 +43,35 @@ class HookHelpers:
         """Return a failing validation verdict."""
         return {"status": "fail", "message": message}
 
-    def render_template(self, template: str, inputs: dict[str, object]) -> str:
+    def render_template(
+        self,
+        template: str,
+        inputs: dict[str, object],
+        *,
+        unknown_tokens: str = "error",
+    ) -> str:
         """Render simple `{{ input }}` placeholders."""
+        if unknown_tokens not in _UNKNOWN_TOKEN_MODES:
+            raise ValueError("unknown_tokens must be 'error' or 'keep'")
 
         def replace(match: re.Match[str]) -> str:
-            key = match.group(1)
-            if key not in inputs:
-                raise ValueError(f"missing template input: {key}")
-            return str(inputs[key])
+            token = match.group(0)
+            bare_token = _BARE_TOKEN_RE.fullmatch(token)
+            if bare_token is not None:
+                key = bare_token.group(1)
+                if key in inputs:
+                    return str(inputs[key])
+                if unknown_tokens == "keep":
+                    return token
+                raise ValueError(f"template input {key!r} is not defined")
+            if unknown_tokens == "keep":
+                return token
+            raise ValueError(
+                f"template token {token!r} is not a bare input name; "
+                "set unknown_tokens: keep to pass it through"
+            )
 
-        return _PLACEHOLDER_RE.sub(replace, template)
+        return _TOKEN_RE.sub(replace, template)
 
     def load_yaml(self, content: str) -> object:
         """Round-trip-load YAML content if ruamel.yaml is installed in the hook project."""

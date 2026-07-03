@@ -109,6 +109,7 @@ class ApplyRecipe:
         buffer[step.dest] = render_template(
             source.read_text(encoding="utf-8", newline=""),
             inputs,
+            unknown_tokens=step.unknown_tokens,
         )
 
     def _plan_copy(self, step: CopyStep, recipe_dir: Path, buffer: dict[Path, str | None]) -> None:

@@ -17,6 +17,7 @@ from untaped.api import (
     create_app,
     echo,
     emit,
+    finish,
     parse_kv_pairs,
     render_rows,
     ui_context,
@@ -310,8 +311,7 @@ def _run_validate(
     _print_hook_diagnostics(execution.diagnostics)
     record = _validate_record(execution.hook, target=execution.target, verdict=execution.verdict)
     emit(record, fmt=fmt or "table", columns=columns, kind="recipe.hook_run")
-    if execution.verdict.failed:
-        raise SystemExit(1)
+    finish(execution.verdict.failed)
 
 
 def _local_hook_project(project: Path | None) -> Path | None:

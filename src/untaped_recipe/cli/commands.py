@@ -19,6 +19,7 @@ from untaped.api import (
     clamp_parallel,
     create_app,
     echo,
+    finish,
     parse_kv_pairs,
     render_rows,
     ui_context,
@@ -207,8 +208,7 @@ def apply_command(
         _render_result_summary(context.plans, outcome, check=check, dry_run=dry_run)
         has_errors = any(plan.status == "error" for plan in context.plans)
         has_drift = check and any(plan.status != "error" and plan.changes for plan in context.plans)
-        if has_errors or outcome.outcome.any_failed or has_drift:
-            raise SystemExit(1)
+        finish(has_errors or outcome.outcome.any_failed or has_drift)
 
 
 def _apply_context(

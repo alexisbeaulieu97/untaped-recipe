@@ -26,6 +26,8 @@ pytestmark = pytest.mark.usefixtures("isolate_config")
 
 
 class _DeclineUi:
+    stdin = object()
+
     def confirm(self, message: str, *, default: bool = False) -> bool:
         return False
 
@@ -516,7 +518,7 @@ def test_apply_decline_renders_cancelled_summary_without_writing(
     target = tmp_path / "target"
     target.mkdir()
 
-    monkeypatch.setattr("untaped.batch._stdin_is_interactive", lambda: True)
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
     monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
     result = CliInvoker().invoke(
         app,

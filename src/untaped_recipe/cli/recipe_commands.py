@@ -13,6 +13,7 @@ from untaped.api import (
     batch_apply,
     create_app,
     echo,
+    finish,
     render_rows,
     ui_context,
 )
@@ -111,8 +112,7 @@ def check_command(
         rendered = render_rows([row], fmt=fmt, columns=columns, kind="recipe.check")
         if rendered:
             echo(rendered)
-        if row["status"] == "error":
-            raise SystemExit(1)
+        finish(row["status"] == "error")
 
 
 @app.command(name="remove")

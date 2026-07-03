@@ -63,9 +63,7 @@ def _write_hook_project(
         if kind is None:
             hook_row_values.append(f'"{public_name}" = {{ module = "{module}" }}')
         else:
-            hook_row_values.append(
-                f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}'
-            )
+            hook_row_values.append(f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}')
     hook_rows = "\n".join(hook_row_values)
     dependency_rows = ", ".join(json.dumps(dependency) for dependency in dependencies or [])
     tool_table = (
@@ -121,21 +119,13 @@ def test_hook_project_metadata_validates_pyproject_hook_table() -> None:
 
     with pytest.raises(ValueError, match="invalid hook name"):
         HookProjectMetadata.from_pyproject(
-            {
-                "tool": {
-                    "untaped_recipe": {
-                        "hooks": {"bad-name": {"module": "pkg.hook"}}
-                    }
-                }
-            }
+            {"tool": {"untaped_recipe": {"hooks": {"bad-name": {"module": "pkg.hook"}}}}}
         )
 
     with pytest.raises(ValueError, match="module is required"):
-        HookProjectMetadata.from_pyproject(
-            {"tool": {"untaped_recipe": {"hooks": {"check": {}}}}}
-        )
+        HookProjectMetadata.from_pyproject({"tool": {"untaped_recipe": {"hooks": {"check": {}}}}})
 
-    with pytest.raises(ValueError, match="kind was removed in 0.9"):
+    with pytest.raises(ValueError, match=r"kind was removed in 0\.9"):
         HookProjectMetadata.from_pyproject(
             {
                 "tool": {
@@ -155,7 +145,7 @@ def test_manifest_kind_is_rejected(tmp_path: Path) -> None:
         kind="transform",
     )
 
-    with pytest.raises(ValueError, match="kind was removed in 0.9"):
+    with pytest.raises(ValueError, match=r"kind was removed in 0\.9"):
         HookProjectMetadata.from_pyproject(
             {
                 "tool": {
@@ -170,7 +160,7 @@ def test_manifest_kind_is_rejected(tmp_path: Path) -> None:
                 }
             }
         )
-    with pytest.raises(ValueError, match="kind was removed in 0.9"):
+    with pytest.raises(ValueError, match=r"kind was removed in 0\.9"):
         read_hook_metadata(project_root)
 
 

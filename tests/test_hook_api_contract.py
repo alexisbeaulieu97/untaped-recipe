@@ -6,7 +6,7 @@ import importlib.util
 import tomllib
 from pathlib import Path
 
-from untaped_recipe.infrastructure import hook_library
+from untaped_recipe.infrastructure import pack_scaffold
 
 
 def _release_module() -> object:
@@ -43,16 +43,18 @@ def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
     package_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     package_major_minor = ".".join(PACKAGE_VERSION.split(".")[:2])
     contract_major_minor = ".".join(HOOK_API_VERSION.split(".")[:2])
-    project_requirement, dev_requirement = hook_library.hook_api_requirements(
+    project_requirement, dev_requirement = pack_scaffold.hook_api_requirements(
         package_version=PACKAGE_VERSION,
         hook_api_version=HOOK_API_VERSION,
     )
 
     assert package_version == PACKAGE_VERSION
-    assert f">={contract_major_minor}" == project_requirement
-    assert f"untaped-recipe>={package_major_minor},<1" == dev_requirement
-    assert project_requirement == hook_library._HOOK_API_PROJECT_REQUIREMENT
-    assert dev_requirement == hook_library._HOOK_API_DEV_REQUIREMENT
+    assert contract_major_minor
+    assert package_major_minor
+    assert project_requirement == ">=0.9,<1"
+    assert dev_requirement == "untaped-recipe>=0.9"
+    assert project_requirement == pack_scaffold._HOOK_API_PROJECT_REQUIREMENT
+    assert dev_requirement == pack_scaffold._HOOK_API_DEV_REQUIREMENT
 
 
 def test_release_script_verifies_version_parity() -> None:

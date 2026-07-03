@@ -32,6 +32,22 @@ class HookApiContract(Protocol):
         """Runtime dependencies declared by the metadata."""
 
 
+class HookModuleDefinitionContract(Protocol):
+    """Metadata fields needed to locate one hook module."""
+
+    @property
+    def module(self) -> str:
+        """Dotted Python module path for the hook."""
+
+
+class HookModuleContract(Protocol):
+    """Metadata fields needed to validate hook modules."""
+
+    @property
+    def hooks(self) -> Mapping[str, HookModuleDefinitionContract]:
+        """Hook definitions keyed by public hook name."""
+
+
 class HookDefinition(BaseModel):
     """One public hook entry in a hook project's pyproject metadata."""
 
@@ -147,7 +163,7 @@ def hook_module_file(project_root: Path, module: str) -> Path:
     return project_root / "src" / Path(*module.split(".")).with_suffix(".py")
 
 
-def validate_hook_modules(project_root: Path, metadata: HookProjectMetadata) -> None:
+def validate_hook_modules(project_root: Path, metadata: HookModuleContract) -> None:
     """Require every declared hook module to resolve to a file under ``src``."""
     for definition in metadata.hooks.values():
         module_file = hook_module_file(project_root, definition.module)

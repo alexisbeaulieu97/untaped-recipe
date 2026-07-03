@@ -242,8 +242,7 @@ def _run_git(args: list[str], *, cwd: Path | None = None) -> None:
         args,
         cwd=cwd,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if result.returncode != 0:

@@ -22,7 +22,7 @@ from packaging.version import Version
 
 from untaped_recipe._version import PACKAGE_VERSION
 from untaped_recipe.hook_api import HOOK_API_VERSION
-from untaped_recipe.infrastructure import hook_library
+from untaped_recipe.infrastructure import pack_scaffold
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "untaped-recipe"
@@ -34,18 +34,20 @@ SDK_REQUIREMENT = "untaped>=2.4.0,<3"
 def verify_versions(expected_version: str) -> None:
     """Require package and hook API scaffold version sources to be consistent."""
     root_version = _project_version(ROOT / "pyproject.toml")
-    project_requirement = f">={_major_minor(HOOK_API_VERSION)}"
-    dev_requirement = f"{PACKAGE_NAME}>={_major_minor(expected_version)},<1"
+    project_requirement, dev_requirement = pack_scaffold.hook_api_requirements(
+        package_version=expected_version,
+        hook_api_version=HOOK_API_VERSION,
+    )
 
     checks = [
         ("root pyproject", root_version, expected_version),
         ("PACKAGE_VERSION", PACKAGE_VERSION, expected_version),
         (
             "scaffold requires_hook_api floor",
-            hook_library._HOOK_API_PROJECT_REQUIREMENT,
+            pack_scaffold._HOOK_API_PROJECT_REQUIREMENT,
             project_requirement,
         ),
-        ("scaffold dev dependency", hook_library._HOOK_API_DEV_REQUIREMENT, dev_requirement),
+        ("scaffold dev dependency", pack_scaffold._HOOK_API_DEV_REQUIREMENT, dev_requirement),
     ]
     mismatches = [
         (label, actual, expected) for label, actual, expected in checks if actual != expected

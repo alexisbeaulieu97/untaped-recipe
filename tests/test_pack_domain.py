@@ -60,9 +60,7 @@ def test_pack_manifest_parses_recipes_hooks_and_project_metadata(tmp_path: Path)
 def test_pack_manifest_tables_are_optional_when_tool_table_exists(tmp_path: Path) -> None:
     _write_pyproject(
         tmp_path,
-        "[project]\n"
-        'name = "untaped-recipe-empty"\n\n'
-        "[tool.untaped_recipe]\n",
+        '[project]\nname = "untaped-recipe-empty"\n\n[tool.untaped_recipe]\n',
     )
 
     manifest = PackManifest.from_pyproject(tmp_path)
@@ -92,8 +90,7 @@ def test_pack_manifest_parses_one_table_without_the_other(tmp_path: Path) -> Non
 def test_pack_manifest_requires_tool_table(tmp_path: Path) -> None:
     _write_pyproject(
         tmp_path,
-        "[project]\n"
-        'name = "untaped-recipe-missing-tool"\n',
+        '[project]\nname = "untaped-recipe-missing-tool"\n',
     )
 
     with pytest.raises(ValueError, match=r"missing \[tool\.untaped_recipe\].*pyproject\.toml"):
@@ -110,7 +107,7 @@ def test_pack_manifest_rejects_hook_kind_with_shared_error(tmp_path: Path) -> No
         '"check" = { kind = "validate", module = "hooks.check" }\n',
     )
 
-    with pytest.raises(ValueError, match="kind was removed in 0.9"):
+    with pytest.raises(ValueError, match=r"kind was removed in 0\.9"):
         PackManifest.from_pyproject(tmp_path)
 
 

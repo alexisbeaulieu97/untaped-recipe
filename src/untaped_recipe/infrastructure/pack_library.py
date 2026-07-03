@@ -157,7 +157,7 @@ class PackLibrary:
         if recipe_path.parent.exists():
             raise ValueError(f"pack recipe directory already exists: {recipe_path.parent}")
         pyproject = project_root / "pyproject.toml"
-        before_pyproject = pyproject.read_text()
+        before_pyproject = pyproject.read_text(encoding="utf-8")
         try:
             recipe_path.parent.mkdir(parents=True)
             (recipe_path.parent / "templates").mkdir()
@@ -168,12 +168,13 @@ class PackLibrary:
                 "inputs: {}\n"
                 "steps: []\n"
                 "\n"
-                "# Add template, copy, transform, validate, or remove steps here.\n"
+                "# Add template, copy, transform, validate, or remove steps here.\n",
+                encoding="utf-8",
             )
             append_recipe_metadata(project_root, recipe_id, relative_path)
             lock_project(project_root)
         except Exception:
-            pyproject.write_text(before_pyproject)
+            pyproject.write_text(before_pyproject, encoding="utf-8")
             shutil.rmtree(recipe_path.parent, ignore_errors=True)
             raise
         return recipe_path
@@ -219,7 +220,7 @@ class PackLibrary:
         if backup_dir.exists():
             raise ValueError(f"temporary pack recipe removal path already exists: {backup_dir}")
         pyproject = project_root / "pyproject.toml"
-        before_pyproject = pyproject.read_text()
+        before_pyproject = pyproject.read_text(encoding="utf-8")
         moved = False
         try:
             remove_recipe_metadata(project_root, recipe_id)
@@ -227,7 +228,7 @@ class PackLibrary:
             moved = True
             lock_project(project_root)
         except Exception as exc:
-            pyproject.write_text(before_pyproject)
+            pyproject.write_text(before_pyproject, encoding="utf-8")
             if moved and backup_dir.exists():
                 if recipe_dir.exists():
                     raise ValueError(
@@ -262,5 +263,6 @@ def _scaffold_pack_project(*, project_root: Path, pack_id: str) -> None:
         'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe]\n"
-        f'pack = "{pack_id}"\n'
+        f'pack = "{pack_id}"\n',
+        encoding="utf-8",
     )

@@ -69,7 +69,12 @@ def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) 
 def show_command(name: Annotated[str, Parameter(help="Pack id or path.")], /) -> None:
     """Print a pack pyproject file."""
     with report_config_errors():
-        echo((PackLibrary(library_root()).resolve(name) / "pyproject.toml").read_text(), nl=False)
+        echo(
+            (PackLibrary(library_root()).resolve(name) / "pyproject.toml").read_text(
+                encoding="utf-8"
+            ),
+            nl=False,
+        )
 
 
 @app.command(name="add")
@@ -178,7 +183,10 @@ def recipe_show_command(
 ) -> None:
     """Print a recipe from a pack."""
     with report_config_errors():
-        echo(PackLibrary(library_root()).recipe_path(pack, recipe).read_text(), nl=False)
+        echo(
+            PackLibrary(library_root()).recipe_path(pack, recipe).read_text(encoding="utf-8"),
+            nl=False,
+        )
 
 
 @recipe_app.command(name="edit")

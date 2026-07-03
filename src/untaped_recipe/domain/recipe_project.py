@@ -92,7 +92,7 @@ def read_recipe_project_metadata(project_root: Path) -> RecipeProjectMetadata:
     if not pyproject.is_file():
         raise ValueError(f"recipe project must contain pyproject.toml: {project_root}")
     try:
-        data = tomllib.loads(pyproject.read_text())
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"invalid recipe project pyproject: {pyproject}") from exc
     return RecipeProjectMetadata.from_pyproject(data)
@@ -111,7 +111,7 @@ def append_recipe_metadata(project_root: Path, recipe_id: str, relative_path: Pa
     entry = tomlkit.inline_table()
     entry["path"] = relative_path.as_posix()
     recipes[recipe_id] = entry
-    pyproject.write_text(doc.as_string())
+    pyproject.write_text(doc.as_string(), encoding="utf-8")
 
 
 def remove_recipe_metadata(project_root: Path, recipe_id: str) -> None:
@@ -126,7 +126,7 @@ def remove_recipe_metadata(project_root: Path, recipe_id: str) -> None:
     if recipes is None or recipe_id not in recipes:
         raise ValueError(f"recipe not found in project metadata: {recipe_id}")
     del recipes[recipe_id]
-    pyproject.write_text(doc.as_string())
+    pyproject.write_text(doc.as_string(), encoding="utf-8")
 
 
 def _mapping(value: object, field: str) -> Mapping[str, object] | None:

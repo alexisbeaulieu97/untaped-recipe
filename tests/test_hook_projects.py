@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import suppress
 from io import StringIO
 from pathlib import Path
 from threading import Barrier, Event
@@ -357,9 +360,11 @@ def test_uv_hook_worker_excludes_dev_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
+    call_kwargs: list[dict[str, object]] = []
 
     def popen(args: list[str], **kwargs: object) -> _FakeProcess:
         calls.append(args)
+        call_kwargs.append(kwargs)
         return _FakeProcess(stdout="")
 
     monkeypatch.setattr(subprocess, "Popen", popen)
@@ -369,6 +374,7 @@ def test_uv_hook_worker_excludes_dev_dependencies(
     assert calls
     assert "--no-dev" in calls[0]
     assert calls[0].index("--no-dev") < calls[0].index("python")
+    assert call_kwargs[0]["start_new_session"] is True
 
 
 def test_uv_hook_worker_rejects_malformed_json_response(
@@ -411,7 +417,7 @@ def test_uv_hook_worker_times_out_and_closes_hung_process(
     assert fake.killed
 
 
-def test_uv_hook_worker_serializes_request_dates_as_strings(
+def test_uv_hook_worker_rejects_non_json_serializable_request_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -421,16 +427,43 @@ def test_uv_hook_worker_serializes_request_dates_as_strings(
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
     worker = UvHookWorker(tmp_path)
 
+    with pytest.raises(ValueError, match="is not JSON-serializable"):
+        worker.request(
+            {
+                "kind": "transform",
+                "module": "hooks.sample",
+                "args": {"day": dt.date(2026, 6, 19)},
+            }
+        )
+
+    assert fake.stdin.getvalue() == ""
+
+
+def test_uv_hook_worker_preserves_json_serializable_request_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload_args = {
+        "enabled": True,
+        "count": 2,
+        "labels": ["api", "worker"],
+        "options": {"mode": "strict", "empty": None},
+    }
+    fake = _FakeProcess(stdout='{"id": "1", "ok": true, "result": "after"}\n')
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
     result = worker.request(
         {
             "kind": "transform",
             "module": "hooks.sample",
-            "args": {"day": dt.date(2026, 6, 19)},
+            "args": payload_args,
         }
     )
 
+    sent = json.loads(fake.stdin.getvalue())
     assert result.result == "after"
-    assert '"day": "2026-06-19"' in fake.stdin.getvalue()
+    assert sent["args"] == payload_args
 
 
 def test_uv_hook_worker_discards_success_diagnostics_before_failure(
@@ -476,6 +509,47 @@ def test_uv_hook_worker_request_returns_result_and_diagnostics(
 
     assert result.result == "after"
     assert result.diagnostics == "success diagnostic"
+
+
+def test_uv_hook_worker_survives_non_utf8_stderr(tmp_path: Path) -> None:
+    _write_hook_project(
+        tmp_path,
+        hooks={"noisy": "project_hooks.hooks.noisy"},
+    )
+    module = tmp_path / "src" / "project_hooks" / "hooks" / "noisy.py"
+    module.write_text(
+        "import sys\n\n"
+        "def transform(content, *, inputs, target, file, args, helpers):\n"
+        "    sys.stderr.buffer.write(b'\\xff\\xfe\\n')\n"
+        "    sys.stderr.flush()\n"
+        "    return content\n"
+    )
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    (tmp_path / "uv.lock").unlink()
+    subprocess.run(["uv", "lock", "--project", str(tmp_path)], check=True, env=env)
+    target = tmp_path / "target"
+    target.mkdir()
+    worker = UvHookWorker(tmp_path)
+    try:
+        result = worker.request(
+            {
+                "kind": "transform",
+                "module": "project_hooks.hooks.noisy",
+                "content": "before",
+                "target": str(target),
+                "file": str(target / "config.txt"),
+                "inputs": {},
+                "args": {},
+            },
+            diagnostic_limit=None,
+            settle_seconds=0.1,
+        )
+    finally:
+        worker.close()
+
+    assert result.result == "before"
+    assert "\ufffd\ufffd" in result.diagnostics
 
 
 def test_uv_hook_worker_diagnostics_are_bounded(
@@ -748,6 +822,108 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
 
     assert len(workers) == 1
     assert workers[0].closed
+
+
+def test_uv_hook_worker_pool_close_survives_one_failing_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    barrier = Barrier(3)
+    workers: list[object] = []
+
+    class FakeWorker:
+        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+            self.project_root = project_root
+            self.closed = False
+            self.worker_id = len(workers) + 1
+            workers.append(self)
+
+        def request(
+            self,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
+            barrier.wait(timeout=5)
+            return HookWorkerCallResult(result=self.worker_id, diagnostics="")
+
+        def close(self) -> None:
+            self.closed = True
+            if self.worker_id == 2:
+                raise BrokenPipeError("worker stdin already closed")
+
+    monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
+    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    pool = UvHookWorkerPool(max_workers_per_project=3)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = [
+            result.result
+            for result in executor.map(lambda _: pool.request(ref, {"kind": "transform"}), range(3))
+        ]
+
+    assert sorted(results) == [1, 2, 3]
+    with pytest.raises(BrokenPipeError, match="worker stdin already closed"):
+        pool.close()
+    assert [worker.closed for worker in workers] == [True, True, True]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+def test_close_kills_the_whole_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "child.pid"
+    script = tmp_path / "ignore_term.py"
+    script.write_text(
+        "import pathlib\n"
+        "import signal\n"
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n\n"
+        "signal.signal(signal.SIGTERM, lambda *_: None)\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='utf-8')\n"
+        "while True:\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+
+    def start(self: UvHookWorker) -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            [sys.executable, str(script), str(marker)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            start_new_session=True,
+        )
+
+    monkeypatch.setattr(UvHookWorker, "_start", start)
+    worker = UvHookWorker(tmp_path)
+    pgid = os.getpgid(worker._process.pid)
+    try:
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists()
+
+        worker.close()
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)
+    finally:
+        with suppress(ProcessLookupError):
+            os.killpg(pgid, signal.SIGKILL)
 
 
 def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None:

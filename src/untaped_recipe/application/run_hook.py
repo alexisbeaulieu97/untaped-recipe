@@ -178,7 +178,11 @@ def _transform_content(
     resolved_file = confined_path(target, file, field="file")
     if content_file is not None:
         try:
-            return content_file.expanduser().read_text(), resolved_file, file
+            return (
+                content_file.expanduser().read_text(encoding="utf-8", newline=""),
+                resolved_file,
+                file,
+            )
         except OSError as exc:
             raise ValueError(f"--content-file file not found: {content_file}") from exc
     if content is not None:
@@ -187,4 +191,4 @@ def _transform_content(
         raise ValueError(f"transform file not found: {file}")
     if not resolved_file.is_file():
         raise ValueError(f"transform path is not a file: {file}")
-    return resolved_file.read_text(), resolved_file, file
+    return resolved_file.read_text(encoding="utf-8", newline=""), resolved_file, file

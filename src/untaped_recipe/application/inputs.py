@@ -158,11 +158,17 @@ def _resolve_one(
 ) -> object:
     if name in config.fixed_values:
         return config.fixed_values[name]
-    source = config.cli_sources.get(name)
-    if source is None and target is not None:
-        source = config.recipe_sources.get(name)
-    if source is not None and target is not None:
-        rendered = _derive_source_value(source, target)
+    cli_source = config.cli_sources.get(name)
+    if cli_source is not None and target is not None:
+        rendered = _derive_source_value(cli_source, target)
+        if rendered is UNRESOLVED:
+            raise ValueError(
+                f"--input-from for input {name!r} did not resolve for target: {target.path}"
+            )
+        return _coerce_derived_value(spec, rendered)
+    recipe_source = config.recipe_sources.get(name) if target is not None else None
+    if recipe_source is not None and target is not None:
+        rendered = _derive_source_value(recipe_source, target)
         if rendered is not UNRESOLVED:
             return _coerce_derived_value(spec, rendered)
     if config.interactive:

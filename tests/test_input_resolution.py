@@ -210,6 +210,47 @@ def test_resolve_target_inputs_treats_missing_required_target_input_as_target_er
         )
 
 
+def test_cli_input_from_that_does_not_resolve_is_an_error() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "owner": {
+                    "type": "str",
+                    "default": "platform",
+                    "from": "{{ target.name }}",
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="--input-from for input 'owner' did not resolve"):
+        _resolve(
+            recipe,
+            Target(path=Path("/work/acme/api")),
+            input_from={"owner": "{{ record.owner }}"},
+        )
+
+
+def test_recipe_from_still_falls_back_to_default() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "owner": {
+                    "type": "str",
+                    "default": "platform",
+                    "from": "{{ record.owner }}",
+                },
+            },
+        }
+    )
+
+    result = _resolve(recipe, Target(path=Path("/work/acme/api")))
+
+    assert result.values["owner"] == "platform"
+
+
 def test_input_resolution_rejects_cli_value_and_source_conflicts() -> None:
     with pytest.raises(ConfigError, match="cannot combine --var/--vars and --input-from"):
         _config(

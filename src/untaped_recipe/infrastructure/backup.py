@@ -68,7 +68,7 @@ class BackupDraft:
             }
             if change.before is not None:
                 backup_file = self.files_dir / f"{self._next_file_index}"
-                backup_file.write_text(change.before)
+                backup_file.write_text(change.before, encoding="utf-8", newline="")
                 self._next_file_index += 1
                 entry["backup_file"] = str(backup_file.relative_to(self.path))
             entries.append(entry)
@@ -88,7 +88,10 @@ class BackupDraft:
             "inputs": self.inputs,
             "files": self.entries,
         }
-        (self.path / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True))
+        (self.path / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
     def discard_if_empty(self) -> None:
         """Remove an unused bundle directory."""
@@ -144,7 +147,7 @@ class BackupStore:
         bundle = self._resolve(backup_id)
         bundle_dir = bundle.path
         metadata_path = bundle_dir / "metadata.json"
-        metadata = json.loads(metadata_path.read_text())
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         changes: list[FileChange] = []
         for entry in metadata["files"]:
             target = Path(entry["target"])
@@ -156,11 +159,14 @@ class BackupStore:
                     f"{path} changed since backup {backup_id}; pass --force to restore"
                 )
             backup_file = entry["backup_file"]
-            before = path.read_text() if path.is_file() else None
+            before = path.read_text(encoding="utf-8", newline="") if path.is_file() else None
             after = (
                 None
                 if backup_file is None
-                else confined_path(bundle_dir, Path(backup_file), field="backup_file").read_text()
+                else confined_path(bundle_dir, Path(backup_file), field="backup_file").read_text(
+                    encoding="utf-8",
+                    newline="",
+                )
             )
             changes.append(
                 FileChange(
@@ -175,7 +181,7 @@ class BackupStore:
     def metadata(self, backup_id: str) -> dict[str, object]:
         """Read raw metadata for a backup bundle."""
         bundle = self._resolve(backup_id)
-        metadata = json.loads((bundle.path / "metadata.json").read_text())
+        metadata = json.loads((bundle.path / "metadata.json").read_text(encoding="utf-8"))
         if not isinstance(metadata, dict):
             raise ValueError(f"invalid backup metadata: {backup_id}")
         return cast(dict[str, object], metadata)
@@ -200,7 +206,7 @@ class BackupStore:
 def _hash_text(content: str | None) -> str | None:
     if content is None:
         return None
-    return _hash_bytes(content.encode())
+    return _hash_bytes(content.encode("utf-8"))
 
 
 def _hash_bytes(content: bytes) -> str:

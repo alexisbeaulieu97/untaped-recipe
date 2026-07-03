@@ -111,13 +111,16 @@ class ApplyRecipe:
         source = confined_path(recipe_dir, step.template, field="template")
         if not source.is_file():
             raise ValueError(f"template not found: {step.template}")
-        buffer[step.dest] = self._render_template(source.read_text(), inputs)
+        buffer[step.dest] = self._render_template(
+            source.read_text(encoding="utf-8", newline=""),
+            inputs,
+        )
 
     def _plan_copy(self, step: CopyStep, recipe_dir: Path, buffer: dict[Path, str | None]) -> None:
         source = confined_path(recipe_dir, step.source, field="source")
         if not source.is_file():
             raise ValueError(f"copy source not found: {step.source}")
-        buffer[step.dest] = source.read_text()
+        buffer[step.dest] = source.read_text(encoding="utf-8", newline="")
 
     def _plan_remove(
         self,
@@ -150,7 +153,7 @@ class ApplyRecipe:
                 raise ValueError(f"transform file not found: {step.file}")
             if not path.is_file():
                 raise ValueError(f"transform path is not a file: {step.file}")
-            current = path.read_text()
+            current = path.read_text(encoding="utf-8", newline="")
         buffer[step.file] = self._hooks.transform(
             step.hook,
             current,
@@ -165,7 +168,7 @@ class ApplyRecipe:
         changes: list[FileChange] = []
         for relative, after in buffer.items():
             path = confined_path(target, relative, field="file")
-            before = path.read_text() if path.is_file() else None
+            before = path.read_text(encoding="utf-8", newline="") if path.is_file() else None
             if before == after:
                 continue
             changes.append(

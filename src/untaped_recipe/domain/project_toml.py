@@ -14,7 +14,7 @@ from tomlkit.exceptions import ParseError
 def read_toml_document(path: Path) -> TOMLDocument:
     """Read a pyproject TOML document for format-preserving edits."""
     try:
-        return tomlkit.loads(path.read_text())
+        return tomlkit.loads(path.read_text(encoding="utf-8"))
     except ParseError as exc:
         raise ValueError(f"invalid pyproject.toml: {path}") from exc
 

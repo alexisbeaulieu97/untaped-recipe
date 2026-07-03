@@ -100,3 +100,9 @@ def test_rejects_malformed_or_unusable_pipe_records() -> None:
 
     with pytest.raises(ValueError, match="line 1: record path is missing or blank"):
         resolve_target_lines([(1, _env("other.kind", {"name": "api"}))])
+
+
+@pytest.mark.parametrize("line", ["42", "[1]", '"api"'])
+def test_non_object_json_stdin_line_rejected(line: str) -> None:
+    with pytest.raises(ValueError, match="stdin line 1 is not a pipe record or a path"):
+        resolve_target_lines([(1, line)])

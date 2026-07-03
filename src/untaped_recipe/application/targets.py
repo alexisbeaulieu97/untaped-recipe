@@ -31,6 +31,8 @@ def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Target]:
                 raise ValueError(f"line {lineno}: invalid JSON: {exc.msg}") from exc
             targets.append(Target(path=Path(text), lineno=lineno))
             continue
+        if not isinstance(obj, dict):
+            raise ValueError(f"stdin line {lineno} is not a pipe record or a path: {text!r}")
         if not is_envelope_line(obj):
             targets.append(Target(path=Path(text), lineno=lineno))
             continue

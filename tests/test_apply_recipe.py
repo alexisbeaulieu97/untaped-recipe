@@ -10,6 +10,7 @@ import pytest
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.hook_worker import handle_request
+from untaped_recipe.infrastructure.file_writer import flush_changes
 from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_resolver import HookResolver, UvHookRef
@@ -233,6 +234,42 @@ def test_optional_transform_skips_missing_disk_files_with_warning(tmp_path: Path
     assert [str(change.relative_path) for change in plan.changes] == ["local.yml"]
     assert plan.changes[0].after == "---\nlocal.yml\n"
     assert plan.warnings == ("optional transform skipped missing file: site.yml",)
+
+
+def test_crlf_file_survives_transform_round_trip(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    _write_hook_project(
+        recipe_dir,
+        {
+            "append": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content + 'line three\\r\\n'\n"
+            )
+        },
+    )
+    target = tmp_path / "repo"
+    target.mkdir()
+    original = "line one\r\nline two\r\n"
+    expected = "line one\r\nline two\r\nline three\r\n"
+    (target / "config.txt").write_bytes(original.encode("utf-8"))
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "transform",
+                    "file": "config.txt",
+                    "hook": "append",
+                }
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+    flush_changes(plan.changes)
+
+    assert (target / "config.txt").read_bytes() == expected.encode("utf-8")
 
 
 def test_optional_transform_still_errors_after_explicit_remove(tmp_path: Path) -> None:

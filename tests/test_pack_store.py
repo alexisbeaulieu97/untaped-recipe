@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import tomllib
@@ -9,7 +10,12 @@ import tomllib
 import pytest
 
 from untaped_recipe.domain.pack import parse_ref
-from untaped_recipe.infrastructure.pack_store import InstalledPack, PackLibrary
+from untaped_recipe.infrastructure.pack_store import (
+    InstalledPack,
+    PackLibrary,
+    fetch_pack_source,
+    is_git_url,
+)
 
 
 def _write_pack(
@@ -172,3 +178,43 @@ def test_pack_library_index_round_trips_source_rev_and_version(tmp_path: Path) -
         "rev": "abc123",
         "version": "0.3.0",
     }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://example.test/pack.git", True),
+        ("git@example.test:pack.git", True),
+        ("ssh://example.test/pack.git", True),
+        ("file:///tmp/pack.git", False),
+        ("./local-pack", False),
+        ("ansible/playbook", False),
+    ],
+)
+def test_is_git_url_matches_supported_cli_prefixes(value: str, expected: bool) -> None:
+    assert is_git_url(value) is expected
+
+
+def test_fetch_pack_source_clones_local_file_url(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_pack(
+        repo,
+        manifest_name="ansible",
+        recipes={"playbook": "recipes/playbook/recipe.yml"},
+    )
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "--no-gpg-sign", "-m", "initial"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+
+    checkout = fetch_pack_source(repo.as_uri(), rev=None, dest=tmp_path / "checkout")
+
+    assert checkout == tmp_path / "checkout"
+    assert (checkout / "pyproject.toml").is_file()
+    assert (checkout / "recipes" / "playbook" / "recipe.yml").is_file()

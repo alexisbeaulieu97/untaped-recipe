@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,8 @@ from untaped_recipe.domain.hook_project import (
 from untaped_recipe.domain.pack import HookEntry, PackManifest, PackRef, RecipeEntry
 from untaped_recipe.domain.paths import safe_library_name
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
+
+_GIT_URL_PREFIXES = ("https://", "git@", "ssh://")
 
 
 @dataclass(frozen=True)
@@ -208,3 +211,41 @@ def _validate_pack(source_dir: Path, manifest: PackManifest) -> None:
 
 def _ref_text(ref: PackRef) -> str:
     return f"{ref.pack}/{ref.name}" if ref.pack is not None else ref.name
+
+
+def is_git_url(value: str) -> bool:
+    """Return true when the CLI should treat ``value`` as a git URL."""
+    return value.startswith(_GIT_URL_PREFIXES)
+
+
+def fetch_pack_source(url: str, *, rev: str | None, dest: Path) -> Path:
+    """Clone a pack source URL into ``dest`` and return the checkout path."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    clone_args = ["git", "clone", "--depth", "1"]
+    if rev is not None:
+        clone_args.extend(["--branch", rev])
+    clone_args.extend([url, str(dest)])
+    try:
+        _run_git(clone_args)
+    except ValueError:
+        if rev is None:
+            raise
+        if dest.exists():
+            shutil.rmtree(dest)
+        _run_git(["git", "clone", url, str(dest)])
+        _run_git(["git", "checkout", rev], cwd=dest)
+    return dest
+
+
+def _run_git(args: list[str], *, cwd: Path | None = None) -> None:
+    result = subprocess.run(
+        args,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "git command failed"
+        raise ValueError(message)

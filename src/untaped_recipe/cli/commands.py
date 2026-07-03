@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,12 +42,15 @@ from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.pack_commands import app as pack_app
 from untaped_recipe.cli.preview import PreviewMode, render_preview
 from untaped_recipe.cli.recipe_commands import app as recipe_app
+from untaped_recipe.domain.pack import PackManifest
 from untaped_recipe.domain.plan import TargetPlan
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolver, RecipeLibrary
 from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
+from untaped_recipe.infrastructure.pack_store import PackLibrary as UnifiedPackLibrary
+from untaped_recipe.infrastructure.pack_store import fetch_pack_source, is_git_url
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 app = create_app(name="recipe", help="Apply reusable local recipes to plain directories.")
@@ -211,6 +215,62 @@ def apply_command(
         finish(has_errors or outcome.outcome.any_failed or has_drift)
 
 
+@app.command(name="add")
+def add_command(
+    source: Annotated[str, Parameter(help="Pack project path or git URL.")],
+    /,
+    *,
+    rev: Annotated[str | None, Parameter(name="--rev", help="Git revision to install.")] = None,
+    name: Annotated[
+        str | None,
+        Parameter(name="--name", help="Installed pack identity override."),
+    ] = None,
+    force: Annotated[
+        bool,
+        Parameter(name="--force", negative="", help="Replace an existing installed pack."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
+    ] = False,
+) -> None:
+    """Install a recipe pack from a path or git URL."""
+    with report_config_errors(), tempfile.TemporaryDirectory() as temp_root:
+        source_dir = (
+            fetch_pack_source(source, rev=rev, dest=Path(temp_root) / "pack")
+            if is_git_url(source)
+            else Path(source).expanduser()
+        )
+        manifest = PackManifest.from_pyproject(source_dir)
+        installed_name = name or manifest.name
+        _render_pack_add_preview(installed_name, manifest)
+        library = UnifiedPackLibrary(library_root=library_root())
+
+        def _install(item: str) -> PackManifest:
+            del item
+            return library.add(
+                source_dir,
+                source=source,
+                rev=rev,
+                name=name,
+                force=force,
+            )
+
+        outcome = batch_apply(
+            [source],
+            _install,
+            verb="add",
+            noun="pack",
+            label=lambda item: installed_name,
+            describe=lambda item: {"name": installed_name, "source": item},
+            ui=ui_context(strict=False),
+            destructive=True,
+            assume_yes=yes,
+        )
+        if outcome.results:
+            echo(installed_name)
+
+
 def _apply_context(
     recipe: str,
     *,
@@ -276,6 +336,14 @@ def _apply_context(
         recipe_ref=recipe_resolution.ref,
         plans=plans,
     )
+
+
+def _render_pack_add_preview(installed_name: str, manifest: PackManifest) -> None:
+    echo(f"Pack: {installed_name}", err=True)
+    recipes = ", ".join(sorted(manifest.recipes)) or "(none)"
+    hooks = ", ".join(sorted(manifest.hooks)) or "(none)"
+    echo(f"Recipes: {recipes}", err=True)
+    echo(f"Hooks: {hooks}", err=True)
 
 
 def _load_recipe(recipe_path: Path) -> Recipe:

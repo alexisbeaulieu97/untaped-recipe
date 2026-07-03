@@ -82,6 +82,50 @@ def _write_minimal_lock(project_root: Path) -> None:
     (project_root / "uv.lock").write_text("version = 1\n")
 
 
+def _write_pack_project(root: Path) -> None:
+    hook_module = root / "src" / "demo_hooks" / "hooks" / "check.py"
+    hook_module.parent.mkdir(parents=True, exist_ok=True)
+    (root / "src" / "demo_hooks" / "__init__.py").write_text("")
+    (root / "src" / "demo_hooks" / "hooks" / "__init__.py").write_text("")
+    hook_module.write_text(
+        "def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n"
+    )
+    recipe = root / "recipes" / "demo" / "recipe.yml"
+    recipe.parent.mkdir(parents=True, exist_ok=True)
+    recipe.write_text("version: 1\nsteps: []\n")
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-demo"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe]\n"
+        'requires_hook_api = ">=0.8,<1"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        '"demo-recipe" = { path = "recipes/demo/recipe.yml" }\n\n'
+        "[tool.untaped_recipe.hooks]\n"
+        '"demo_hook" = { module = "demo_hooks.hooks.check" }\n'
+    )
+    (root / "uv.lock").write_text("version = 1\n")
+
+
+def test_add_pack_prints_recipes_and_hooks_before_confirm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
+    result = CliInvoker().invoke(app, ["add", str(pack)])
+
+    assert result.exit_code == 0, result.output
+    assert "demo-recipe" in result.stderr
+    assert "demo_hook" in result.stderr
+    assert not (library_root() / "packs" / "demo").exists()
+
+
 def test_apply_yes_writes_and_emits_json_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

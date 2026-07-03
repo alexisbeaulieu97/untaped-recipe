@@ -6,7 +6,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -18,6 +18,18 @@ from untaped_recipe.hook_api import HOOK_API_VERSION
 
 _DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 HookKind = Literal["transform", "validate"]
+
+
+class HookApiContract(Protocol):
+    """Metadata fields needed to validate hook API compatibility."""
+
+    @property
+    def requires_hook_api(self) -> str | None:
+        """Hook API specifier declared by the metadata."""
+
+    @property
+    def runtime_dependencies(self) -> tuple[str, ...]:
+        """Runtime dependencies declared by the metadata."""
 
 
 class HookDefinition(BaseModel):
@@ -143,7 +155,7 @@ def validate_hook_modules(project_root: Path, metadata: HookProjectMetadata) -> 
             raise ValueError(f"hook module file not found: {module_file}")
 
 
-def validate_hook_project_contract(project_root: Path, metadata: HookProjectMetadata) -> None:
+def validate_hook_project_contract(project_root: Path, metadata: HookApiContract) -> None:
     """Require hook projects to be compatible with the running helper API."""
     for dependency in metadata.runtime_dependencies:
         if dependency_name(dependency) == "untaped-recipe":

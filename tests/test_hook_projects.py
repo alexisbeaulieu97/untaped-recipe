@@ -526,7 +526,6 @@ def test_uv_hook_worker_survives_non_utf8_stderr(tmp_path: Path) -> None:
     )
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
-    env["UV_CACHE_DIR"] = "/private/tmp/untaped-recipe-uv-cache"
     (tmp_path / "uv.lock").unlink()
     subprocess.run(["uv", "lock", "--project", str(tmp_path)], check=True, env=env)
     target = tmp_path / "target"

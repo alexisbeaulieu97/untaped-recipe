@@ -422,20 +422,23 @@ def show_command(
 
 @app.command(name="check")
 def check_command(
-    ref_text: Annotated[str, Parameter(help="Installed pack, recipe ref, or explicit path.")],
+    ref_text: Annotated[
+        str | None,
+        Parameter(help="Installed pack, recipe ref, or explicit path."),
+    ] = None,
     /,
     *,
     fmt: FormatOption = "table",
     columns: ColumnsOption = None,
 ) -> None:
-    """Validate a pack or recipe without applying it to targets."""
+    """Validate a pack, recipe, or the whole installed library."""
     with report_config_errors():
         root = library_root()
-        row = _check_ref(root, ref_text)
-        rendered = render_rows([row], fmt=fmt, columns=columns, kind="recipe.check")
+        rows = _check_library(root) if ref_text is None else [_check_ref(root, ref_text)]
+        rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.check")
         if rendered:
             echo(rendered)
-        finish(row["status"] == "error")
+        finish(any(row["status"] == "error" for row in rows))
 
 
 @app.command(name="remove")
@@ -689,6 +692,30 @@ def _check_ref(root: Path, ref_text: str) -> dict[str, object]:
     ref = parse_ref(ref_text)
     pack, recipe = library.find_recipe(ref)
     return _check_recipe(root, pack.root / recipe.path, f"{pack.name}/{ref.name}", pack.root)
+
+
+def _check_library(root: Path) -> list[dict[str, object]]:
+    library = UnifiedPackLibrary(library_root=root)
+    rows = [_check_reconcile_problem(root, problem) for problem in library.reconcile()]
+    rows.extend(_check_pack(root, pack) for pack in library.packs())
+    return rows
+
+
+def _check_reconcile_problem(root: Path, problem: str) -> dict[str, object]:
+    name = _quoted_name(problem)
+    return {
+        "pack": name,
+        "status": "error",
+        "path": str(root / "packs" / name) if name else "",
+        "recipes": 0,
+        "hooks": 0,
+        "error": problem,
+    }
+
+
+def _quoted_name(message: str) -> str:
+    parts = message.split("'", maxsplit=2)
+    return parts[1] if len(parts) == 3 else ""
 
 
 def _local_pack(path: Path, manifest: PackManifest) -> InstalledPack:

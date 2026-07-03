@@ -125,6 +125,20 @@ class PackLibrary:
             )
         return installed
 
+    def reconcile(self) -> list[str]:
+        """Return index/directory consistency problems for the pack library."""
+        index = self._read_index()
+        problems: list[str] = []
+        for name in sorted(index):
+            if not (self.packs_dir / name).is_dir():
+                problems.append(f"pack '{name}' is in packs.toml but missing from packs/")
+        if not self.packs_dir.is_dir():
+            return problems
+        for root in sorted(self.packs_dir.iterdir(), key=lambda path: path.name):
+            if root.is_dir() and root.name not in index:
+                problems.append(f"pack directory '{root.name}' is not recorded in packs.toml")
+        return problems
+
     def find_recipe(self, ref: PackRef) -> tuple[InstalledPack, RecipeEntry]:
         """Resolve a bare or qualified recipe reference."""
         matches = [

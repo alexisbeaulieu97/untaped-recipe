@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,53 @@ def test_unified_check_pack_validates_recipe_hook_exports(tmp_path: Path) -> Non
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)[0]["status"] == "pass"
+
+
+def test_check_without_ref_reports_library_reconcile_and_pack_rows(tmp_path: Path) -> None:
+    good_source = tmp_path / "good-source"
+    stale_source = tmp_path / "stale-source"
+    _write_pack(good_source, manifest_name="good", recipes={"ok": "recipes/ok.yml"})
+    _write_pack(stale_source, manifest_name="stale", recipes={"old": "recipes/old.yml"})
+    _install_pack(good_source, name="good")
+    _install_pack(stale_source, name="stale")
+    shutil.rmtree(library_root() / "packs" / "stale")
+    _write_pack(
+        library_root() / "packs" / "orphan",
+        manifest_name="orphan",
+        recipes={"playbook": "recipes/playbook.yml"},
+    )
+
+    result = CliInvoker().invoke(app, ["check", "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    rows = json.loads(result.stdout)
+    errors = {row["error"] for row in rows if row["status"] == "error"}
+    assert errors == {
+        "pack 'stale' is in packs.toml but missing from packs/",
+        "pack directory 'orphan' is not recorded in packs.toml",
+    }
+    passes = {row["pack"] for row in rows if row["status"] == "pass"}
+    assert passes == {"good", "orphan"}
+
+
+def test_check_without_ref_healthy_library_exits_zero(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="ansible", recipes={"playbook": "recipes/playbook.yml"})
+    _install_pack(source)
+
+    result = CliInvoker().invoke(app, ["check", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == [
+        {
+            "pack": "ansible",
+            "status": "pass",
+            "path": str(library_root() / "packs" / "ansible"),
+            "recipes": 1,
+            "hooks": 0,
+            "error": "",
+        }
+    ]
 
 
 def test_apply_bare_ref_uses_library_even_when_matching_local_directory_exists(

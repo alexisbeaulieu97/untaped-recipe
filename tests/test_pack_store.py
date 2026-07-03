@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -177,6 +178,25 @@ def test_pack_library_index_round_trips_source_rev_and_version(tmp_path: Path) -
         "rev": "abc123",
         "version": "0.3.0",
     }
+
+
+def test_pack_library_reconcile_reports_stale_index_and_orphan_directory(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    stale_source = tmp_path / "stale-source"
+    _write_pack(source, manifest_name="ansible")
+    _write_pack(stale_source, manifest_name="stale")
+    library = PackLibrary(library_root=tmp_path / "library")
+    library.add(source, source=str(source), rev=None, name="recorded", force=False)
+    library.add(stale_source, source=str(stale_source), rev=None, name="stale", force=False)
+    shutil.rmtree(library.packs_dir / "stale")
+    _write_pack(library.packs_dir / "orphan", manifest_name="orphan")
+
+    assert library.reconcile() == [
+        "pack 'stale' is in packs.toml but missing from packs/",
+        "pack directory 'orphan' is not recorded in packs.toml",
+    ]
 
 
 @pytest.mark.parametrize(

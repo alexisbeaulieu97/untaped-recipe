@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
@@ -113,8 +115,15 @@ class UvHookWorkerPool:
         with self._lock:
             groups = tuple(self._groups.values())
             self._groups.clear()
+        first_error: Exception | None = None
         for group in groups:
-            group.close()
+            try:
+                group.close()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
 
     def _group_for(self, project_root: Path) -> _UvHookWorkerGroup:
         resolved = project_root.resolve()
@@ -184,8 +193,15 @@ class _UvHookWorkerGroup:
             self._workers.clear()
             self._idle.clear()
             self._condition.notify_all()
+        first_error: Exception | None = None
         for worker in workers:
-            worker.close()
+            try:
+                worker.close()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
 
     def _retire(self, worker: UvHookWorker) -> None:
         with self._condition:
@@ -352,16 +368,32 @@ class UvHookWorker:
     def close(self) -> None:
         """Terminate the worker process."""
         if self._process.stdin is not None:
-            self._process.stdin.close()
+            with suppress(OSError):
+                self._process.stdin.close()
         try:
             self._process.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            self._process.terminate()
+            self._signal_process(signal.SIGTERM)
             try:
                 self._process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                self._process.kill()
+                self._signal_process(signal.SIGKILL)
                 self._process.wait(timeout=2)
+
+    def _signal_process(self, sig: signal.Signals) -> None:
+        pid = getattr(self._process, "pid", None)
+        if pid is not None and hasattr(os, "getpgid") and hasattr(os, "killpg"):
+            try:
+                os.killpg(os.getpgid(pid), sig)
+                return
+            except ProcessLookupError:
+                return
+            except OSError:
+                pass
+        if sig == signal.SIGTERM:
+            self._process.terminate()
+        else:
+            self._process.kill()
 
     def _start(self) -> subprocess.Popen[str]:
         worker_path = Path(hook_worker.__file__).resolve()
@@ -393,6 +425,7 @@ class UvHookWorker:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                start_new_session=True,
             )
         except FileNotFoundError as exc:
             raise ValueError("uv executable not found for hook project execution") from exc

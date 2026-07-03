@@ -10,7 +10,7 @@ import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.domain.recipe import Recipe
-from untaped_recipe.infrastructure.backup import BackupStore
+from untaped_recipe.infrastructure.backup import BackupStore, RestoreItem
 from untaped_recipe.infrastructure.file_writer import flush_changes
 from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
 from untaped_recipe.infrastructure.pack_store import PackLibrary
@@ -129,6 +129,46 @@ def test_backup_store_records_and_restores_touched_files(tmp_path: Path) -> None
         store.restore(bundle.id)
     store.restore("latest", force=True)
     assert existing.read_text() == "before\n"
+
+
+def test_backup_store_plans_restore_actions_and_hash_guard(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    existing = target / "config.yml"
+    created = target / "new.txt"
+    removed = target / "old.txt"
+    existing.write_text("before\n")
+    removed.write_text("old\n")
+    store = BackupStore(tmp_path / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            ),
+            FileChange(target=target, relative_path=Path("new.txt"), before=None, after="new\n"),
+            FileChange(target=target, relative_path=Path("old.txt"), before="old\n", after=None),
+        ],
+    )
+    existing.write_text("after\n")
+    created.write_text("new\n")
+    removed.unlink()
+
+    assert store.plan_restore(bundle.id) == [
+        RestoreItem(path=existing, action="restore"),
+        RestoreItem(path=created, action="delete"),
+        RestoreItem(path=removed, action="create"),
+    ]
+
+    existing.write_text("user edit\n")
+    with pytest.raises(ValueError, match="changed since backup"):
+        store.plan_restore(bundle.id)
+    assert created.read_text() == "new\n"
+    assert not removed.exists()
 
 
 def test_backup_restore_of_crlf_file_does_not_false_trip_hash_guard(tmp_path: Path) -> None:

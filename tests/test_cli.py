@@ -2781,6 +2781,86 @@ def test_backup_commands_show_list_and_restore(tmp_path: Path) -> None:
     assert shown_json.exit_code == 0, shown_json.output
     assert json.loads(shown_json.stdout)["id"] == bundle.id
 
-    restored = invoker.invoke(app, ["backup", "restore", bundle.id])
+    restored = invoker.invoke(app, ["backup", "restore", bundle.id, "--yes"])
     assert restored.exit_code == 0, restored.output
     assert config.read_text() == "before\n"
+
+
+def test_backup_restore_refuses_non_tty_without_yes_and_restores_with_yes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    config = target / "config.yml"
+    config.write_text("before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            )
+        ],
+    )
+    config.write_text("after\n")
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: False)
+    invoker = CliInvoker()
+
+    refused = invoker.invoke(app, ["backup", "restore", bundle.id])
+    restored = invoker.invoke(app, ["backup", "restore", bundle.id, "--yes"])
+
+    assert refused.exit_code != 0
+    assert "requires --yes" in refused.output
+    assert restored.exit_code == 0, restored.output
+    assert config.read_text() == "before\n"
+
+
+def test_backup_restore_failing_item_exits_nonzero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    first = target / "one.txt"
+    second = target / "two.txt"
+    first.write_text("one-before\n")
+    second.write_text("two-before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("one.txt"),
+                before="one-before\n",
+                after="one-after\n",
+            ),
+            FileChange(
+                target=target,
+                relative_path=Path("two.txt"),
+                before="two-before\n",
+                after="two-after\n",
+            ),
+        ],
+    )
+    first.write_text("one-after\n")
+    second.write_text("two-after\n")
+    original_replace = file_writer_module.os.replace
+
+    def fail_second_replace(source: Path, dest: Path) -> None:
+        if Path(dest).name == "two.txt":
+            raise OSError("disk full")
+        original_replace(source, dest)
+
+    monkeypatch.setattr(file_writer_module.os, "replace", fail_second_replace)
+
+    result = CliInvoker().invoke(app, ["backup", "restore", bundle.id, "--yes"])
+
+    assert result.exit_code == 1, result.output
+    assert "disk full" in result.output

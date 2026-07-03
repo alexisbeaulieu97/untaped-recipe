@@ -464,7 +464,7 @@ def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> No
     )
     planner = ApplyRecipe(
         HookExecutor(
-            HookResolver(global_hooks=tmp_path / "global"),
+            HookResolver(),
             workers=UvHookWorkerPool(),
             helpers=HookHelpers(),
         )
@@ -529,7 +529,7 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )
@@ -597,7 +597,7 @@ def test_bulk_plan_resolves_per_target_inputs_and_preserves_duplicate_order(
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )
@@ -652,7 +652,7 @@ def test_bulk_plan_error_rows_preserve_resolved_input_display(
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )
@@ -686,7 +686,7 @@ def test_bulk_plan_input_resolution_errors_have_empty_inputs(tmp_path: Path) -> 
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )

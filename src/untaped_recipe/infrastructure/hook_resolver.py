@@ -13,7 +13,6 @@ from untaped_recipe.domain.hook_project import (
     HookProjectMetadata,
     hook_module_file,
     is_valid_dotted_name,
-    project_name_for_hook,
     read_hook_metadata,
     validate_hook_modules,
     validate_hook_project_contract,
@@ -56,11 +55,9 @@ class HookResolver:
     def __init__(
         self,
         *,
-        global_hooks: Path | None = None,
         library_root: Path | None = None,
         builtins: dict[str, BuiltinHook] | None = None,
     ) -> None:
-        self._global_hooks = global_hooks
         self._library_root = library_root
         self._builtins = builtins if builtins is not None else BUILTIN_HOOKS
         self._metadata_cache: dict[Path, HookProjectMetadata] = {}
@@ -79,19 +76,10 @@ class HookResolver:
         library_ref = self._resolve_library(name)
         if library_ref is not None:
             return library_ref
-        if self._global_hooks is not None:
-            global_ref = self._resolve_project(self._global_project_root(name), name)
-            if global_ref is not None:
-                return global_ref
         builtin = self._builtins.get(name)
         if builtin is not None:
             return BuiltinHookRef(name=name, exports=builtin.exports, module=builtin.module)
         raise ValueError(f"hook not found: {name}")
-
-    def _global_project_root(self, name: str) -> Path:
-        if self._global_hooks is None:
-            raise ValueError("global hook library is not configured")
-        return self._global_hooks / project_name_for_hook(name)
 
     def _resolve_qualified(self, name: str) -> HookRef:
         if name.startswith(("/", "./", "../", "~")):

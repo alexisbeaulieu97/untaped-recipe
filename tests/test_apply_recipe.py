@@ -46,7 +46,7 @@ class InlineWorkers:
 def _planner(tmp_path: Path):
     planner = ApplyRecipe(
         HookExecutor(
-            HookResolver(global_hooks=tmp_path / "global"),
+            HookResolver(),
             workers=InlineWorkers(),
             helpers=HookHelpers(),
         )

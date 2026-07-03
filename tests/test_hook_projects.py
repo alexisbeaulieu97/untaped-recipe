@@ -164,37 +164,20 @@ def test_manifest_kind_is_rejected(tmp_path: Path) -> None:
         read_hook_metadata(project_root)
 
 
-def test_hook_resolver_uses_recipe_local_global_namespaced_then_builtin(tmp_path: Path) -> None:
+def test_hook_resolver_uses_recipe_local_then_builtin(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
-    global_hooks = tmp_path / "library" / "hooks"
     _write_hook_project(
         recipe_dir,
         hooks={"pick": "local_hooks.hooks.pick"},
         package="local_hooks",
     )
-    _write_hook_project(
-        global_hooks / "pick",
-        hooks={"pick": "global_hooks.hooks.pick"},
-        package="global_hooks",
-    )
-    _write_hook_project(
-        global_hooks / "ansible",
-        hooks={"ansible.add_play_collections": "ansible_hooks.hooks.add_play_collections"},
-        package="ansible_hooks",
-    )
-    resolver = HookResolver(global_hooks=global_hooks)
+    resolver = HookResolver()
 
     local = resolver.resolve("pick", recipe_dir)
     assert isinstance(local, UvHookRef)
     assert local.project_root == recipe_dir
     assert local.module == "local_hooks.hooks.pick"
     assert local.exports == frozenset({"transform"})
-
-    global_ref = resolver.resolve("ansible.add_play_collections", recipe_dir)
-    assert isinstance(global_ref, UvHookRef)
-    assert global_ref.project_root == global_hooks / "ansible"
-    assert global_ref.module == "ansible_hooks.hooks.add_play_collections"
-    assert global_ref.exports == frozenset({"transform"})
 
     builtin = resolver.resolve("yaml_edit", recipe_dir)
     assert isinstance(builtin, BuiltinHookRef)
@@ -208,7 +191,7 @@ def test_resolver_carries_exports_from_ast_scan(tmp_path: Path) -> None:
         hooks={"check": "project_hooks.hooks.check"},
         exports=("validate",),
     )
-    resolver = HookResolver(global_hooks=tmp_path / "hooks")
+    resolver = HookResolver()
 
     ref = resolver.resolve("check", recipe_dir)
 
@@ -237,7 +220,7 @@ def test_hook_resolver_rejects_missing_lockfile(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match=r"missing uv\.lock"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_resolver_rejects_runtime_untaped_recipe_dependency(tmp_path: Path) -> None:
@@ -249,7 +232,7 @@ def test_hook_resolver_rejects_runtime_untaped_recipe_dependency(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="must not depend on untaped-recipe"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 @pytest.mark.parametrize(
@@ -271,7 +254,7 @@ def test_hook_resolver_rejects_pep508_runtime_untaped_recipe_dependencies(
     )
 
     with pytest.raises(ValueError, match="must not depend on untaped-recipe"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_project_metadata_rejects_invalid_dependency_declarations() -> None:
@@ -301,7 +284,7 @@ def test_hook_resolver_rejects_newer_required_hook_api(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="requires hook API >=99"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_resolver_ignores_unrelated_local_project_contract_for_builtin(
@@ -314,32 +297,10 @@ def test_hook_resolver_ignores_unrelated_local_project_contract_for_builtin(
         dependencies=["untaped-recipe>=0.8"],
     )
 
-    ref = HookResolver(global_hooks=tmp_path / "hooks").resolve("yaml_edit", recipe_dir)
+    ref = HookResolver().resolve("yaml_edit", recipe_dir)
 
     assert isinstance(ref, BuiltinHookRef)
     assert ref.name == "yaml_edit"
-
-
-def test_hook_resolver_ignores_unrelated_local_project_contract_for_global_hook(
-    tmp_path: Path,
-) -> None:
-    recipe_dir = tmp_path / "recipe"
-    global_hooks = tmp_path / "global" / "hooks"
-    _write_hook_project(
-        recipe_dir,
-        hooks={"local_only": "project_hooks.hooks.local_only"},
-        dependencies=["untaped-recipe>=0.8"],
-    )
-    _write_hook_project(
-        global_hooks / "shared",
-        hooks={"shared.check": "shared_hooks.hooks.check"},
-        package="shared_hooks",
-    )
-
-    ref = HookResolver(global_hooks=global_hooks).resolve("shared.check", recipe_dir)
-
-    assert isinstance(ref, UvHookRef)
-    assert ref.project_root == global_hooks / "shared"
 
 
 def test_hook_resolver_rejects_missing_declared_module_file(tmp_path: Path) -> None:
@@ -348,13 +309,13 @@ def test_hook_resolver_rejects_missing_declared_module_file(tmp_path: Path) -> N
     (recipe_dir / "src" / "project_hooks" / "hooks" / "check.py").unlink()
 
     with pytest.raises(ValueError, match="hook module file not found"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_resolver_caches_metadata_for_apply_lifetime(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"})
-    resolver = HookResolver(global_hooks=tmp_path / "hooks")
+    resolver = HookResolver()
 
     first = resolver.resolve("check", recipe_dir)
     (recipe_dir / "pyproject.toml").write_text("not toml = [\n")
@@ -378,7 +339,7 @@ def test_hook_resolver_validates_project_contract_once_per_metadata_cache(
         calls.append(project_root)
 
     monkeypatch.setattr(hook_resolver_module, "validate_hook_project_contract", validate)
-    resolver = HookResolver(global_hooks=tmp_path / "hooks")
+    resolver = HookResolver()
 
     resolver.resolve("check", recipe_dir)
     resolver.resolve("check", recipe_dir)
@@ -1032,7 +993,7 @@ def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None
             raise AssertionError("worker should not be used for built-ins")
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=ExplodingWorkers(),
         helpers=HookHelpers(),
     )
@@ -1069,7 +1030,7 @@ def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> Non
             return HookWorkerCallResult(result="after\n", diagnostics="discarded\n")
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=RecordingWorkers(),
         helpers=HookHelpers(),
     )
@@ -1110,7 +1071,7 @@ def test_hook_executor_debug_returns_external_diagnostics(tmp_path: Path) -> Non
             return HookWorkerCallResult(result="after\n", diagnostics="diagnostic\n")
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=RecordingWorkers(),
         helpers=HookHelpers(),
     )
@@ -1315,7 +1276,7 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
             )
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=WarningWorkers(),
         helpers=HookHelpers(),
     )

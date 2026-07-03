@@ -65,7 +65,6 @@ def _write_hook_project(
         if (root / "recipe.yml").is_file()
         else ""
     )
-    kind = "validate" if "def validate" in code else "transform"
     (root / "pyproject.toml").write_text(
         "[project]\n"
         f'name = "{root.name}-hooks"\n'
@@ -74,7 +73,7 @@ def _write_hook_project(
         "dependencies = []\n\n"
         f"{recipe_metadata}"
         "[tool.untaped_recipe.hooks]\n"
-        f'"{public_name}" = {{ kind = "{kind}", module = "{package}.hooks.{module_name}" }}\n'
+        f'"{public_name}" = {{ module = "{package}.hooks.{module_name}" }}\n'
     )
     subprocess.run(["uv", "lock"], cwd=root, check=True)
 
@@ -2289,7 +2288,7 @@ def test_hook_run_builtin_stdout_is_redirected_to_stderr(
     monkeypatch.setitem(
         BUILTIN_HOOKS,
         "debug_builtin",
-        BuiltinHook(kind="transform", module=module),
+        BuiltinHook(module=module, exports=frozenset({"transform"})),
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -2396,7 +2395,7 @@ def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.Mo
     assert (initialized_path / "pyproject.toml").is_file()
     assert (initialized_path / "uv.lock").is_file()
     assert (
-        '"check" = { kind = "transform", module = "untaped_recipe_hooks_check.hooks.check" }'
+        '"check" = { module = "untaped_recipe_hooks_check.hooks.check" }'
         in (initialized_path / "pyproject.toml").read_text()
     )
 
@@ -2500,7 +2499,7 @@ def test_recipe_check_rejects_step_hook_kind_mismatch(tmp_path: Path) -> None:
         "[tool.untaped_recipe.recipes]\n"
         '"demo" = { path = "recipe.yml" }\n\n'
         "[tool.untaped_recipe.hooks]\n"
-        '"check" = { kind = "transform", module = "recipe_hooks.hooks.check" }\n'
+        '"check" = { module = "recipe_hooks.hooks.check" }\n'
     )
     (recipe_dir / "uv.lock").write_text("version = 1\n")
 
@@ -2509,7 +2508,7 @@ def test_recipe_check_rejects_step_hook_kind_mismatch(tmp_path: Path) -> None:
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
     assert rows[0]["status"] == "error"
-    assert "validate step hook 'check' resolves to transform hook" in rows[0]["error"]
+    assert "validate step hook 'check' does not export a validate() function" in rows[0]["error"]
 
 
 @pytest.mark.parametrize(
@@ -2677,7 +2676,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path
             "[tool.untaped_recipe.recipes]\n"
             '"demo" = { path = "recipe.yml" }\n\n'
             "[tool.untaped_recipe.hooks]\n"
-            '"bad-name" = { kind = "validate", module = "recipe_hooks.hooks.check" }\n',
+            '"bad-name" = { module = "recipe_hooks.hooks.check" }\n',
             "invalid hook name",
         ),
         (

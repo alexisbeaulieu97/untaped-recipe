@@ -118,7 +118,7 @@ class HookLibrary:
             "[tool.untaped_recipe]\n"
             f'requires_hook_api = "{_HOOK_API_PROJECT_REQUIREMENT}"\n\n'
             "[tool.untaped_recipe.hooks]\n"
-            f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}\n',
+            f'"{public_name}" = {{ module = "{module}" }}\n',
             encoding="utf-8",
         )
 
@@ -235,7 +235,7 @@ def add_hook_to_project(
         if not hooks_init_existed:
             hooks_init.write_text("", encoding="utf-8")
         module_path.write_text(_hook_stub(kind), encoding="utf-8")
-        _append_hook_metadata(pyproject, public_name, kind, module)
+        _append_hook_metadata(pyproject, public_name, module)
         _lock_scaffold(project_root)
     except Exception:
         _rollback_scoped_hook(
@@ -297,7 +297,6 @@ def _hook_stub(kind: Literal["transform", "validate"]) -> str:
 def _append_hook_metadata(
     path: Path,
     public_name: str,
-    kind: Literal["transform", "validate"],
     module: str,
 ) -> None:
     doc = read_toml_document(path)
@@ -306,7 +305,6 @@ def _append_hook_metadata(
     untaped = toml_table(tool, "untaped_recipe", "tool.untaped_recipe", create=True)
     hooks = toml_table(untaped, "hooks", "tool.untaped_recipe.hooks", create=True)
     entry = tomlkit.inline_table()
-    entry["kind"] = kind
     entry["module"] = module
     hooks[public_name] = entry
     path.write_text(doc.as_string(), encoding="utf-8")

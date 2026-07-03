@@ -76,8 +76,7 @@ def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:
     hook_rows: list[str] = []
     for name, code in hooks.items():
         (recipe_dir / "src" / package / "hooks" / f"{name}.py").write_text(code)
-        kind = "validate" if "def validate" in code else "transform"
-        hook_rows.append(f'"{name}" = {{ kind = "{kind}", module = "{package}.hooks.{name}" }}')
+        hook_rows.append(f'"{name}" = {{ module = "{package}.hooks.{name}" }}')
     (recipe_dir / "pyproject.toml").write_text(
         "[project]\n"
         'name = "recipe-hooks"\n'
@@ -196,7 +195,10 @@ def test_apply_recipe_rejects_step_hook_kind_mismatch_before_worker_call(tmp_pat
         }
     )
 
-    with pytest.raises(ValueError, match="validate step hook 'check' resolves to transform hook"):
+    with pytest.raises(
+        ValueError,
+        match=r"validate step hook 'check' does not export a validate\(\) function",
+    ):
         _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
 
 

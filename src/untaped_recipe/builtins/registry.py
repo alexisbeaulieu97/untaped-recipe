@@ -6,19 +6,24 @@ from dataclasses import dataclass
 from types import ModuleType
 
 from untaped_recipe.builtins.hooks import yaml_edit
-from untaped_recipe.domain.hook_project import HookKind
+
+_HOOK_EXPORT_NAMES = ("transform", "validate")
 
 
 @dataclass(frozen=True)
 class BuiltinHook:
     """Engine-owned hook definition."""
 
-    kind: HookKind
     module: ModuleType
+    exports: frozenset[str]
+
+
+def _module_exports(module: ModuleType) -> frozenset[str]:
+    return frozenset(name for name in _HOOK_EXPORT_NAMES if hasattr(module, name))
 
 
 BUILTIN_HOOKS: dict[str, BuiltinHook] = {
-    "yaml_edit": BuiltinHook(kind="transform", module=yaml_edit),
+    "yaml_edit": BuiltinHook(module=yaml_edit, exports=_module_exports(yaml_edit)),
 }
 
 __all__ = ["BUILTIN_HOOKS", "BuiltinHook"]

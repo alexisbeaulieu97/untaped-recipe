@@ -6,7 +6,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -25,18 +25,7 @@ class HookDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
-    kind: HookKind
     module: str = ""
-
-    @field_validator("kind", mode="before")
-    @classmethod
-    def _kind(cls, value: object) -> HookKind:
-        if not isinstance(value, str):
-            raise ValueError("invalid hook kind")
-        value = value.strip()
-        if value not in {"transform", "validate"}:
-            raise ValueError("invalid hook kind")
-        return cast(HookKind, value)
 
     @field_validator("module")
     @classmethod
@@ -93,7 +82,7 @@ class HookProjectMetadata(BaseModel):
             )
         if not isinstance(hooks, Mapping):
             raise ValueError("[tool.untaped_recipe.hooks] must be a table")
-        _reject_legacy_hook_rows(hooks)
+        _reject_kind_hook_rows(hooks)
         return cls(
             hooks=dict(hooks),
             requires_hook_api=requires_hook_api,
@@ -173,15 +162,14 @@ def validate_hook_project_contract(project_root: Path, metadata: HookProjectMeta
         )
 
 
-def _reject_legacy_hook_rows(hooks: Mapping[object, object]) -> None:
+def _reject_kind_hook_rows(hooks: Mapping[object, object]) -> None:
     for name, definition in hooks.items():
         if not isinstance(definition, Mapping):
             continue
-        if "kind" not in definition:
+        if "kind" in definition:
             raise ValueError(
-                "hook kind is required; update old hook metadata "
-                f"{name!r} = {{ module = ... }} to include "
-                '{ kind = "transform"|"validate", module = ... }'
+                f"hook {name!r} declares kind; kind was removed in 0.9 — "
+                "export transform()/validate() instead"
             )
 
 

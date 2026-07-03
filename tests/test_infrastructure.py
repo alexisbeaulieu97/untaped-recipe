@@ -145,8 +145,7 @@ def test_hook_library_add_rejects_empty_or_mixed_namespace_projects(tmp_path: Pa
     _write_hook_project(mixed, hook_name="ansible.add_play_collections")
     with (mixed / "pyproject.toml").open("a") as pyproject:
         pyproject.write(
-            '"awx.update_job_template" = { kind = "transform", '
-            'module = "shared_hooks.hooks.awx" }\n'
+            '"awx.update_job_template" = { module = "shared_hooks.hooks.awx" }\n'
         )
 
     with pytest.raises(ValueError, match="at least one hook"):
@@ -518,7 +517,7 @@ def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None =
         'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n"
-        f'"{hook_name}" = {{ kind = "transform", module = "{package}.hooks.{module_leaf}" }}\n'
+        f'"{hook_name}" = {{ module = "{package}.hooks.{module_leaf}" }}\n'
     )
     (root / "uv.lock").write_text("version = 1\n")
 

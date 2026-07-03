@@ -15,7 +15,7 @@ from untaped_recipe.infrastructure.hook_resolver import (
     BuiltinHookRef,
     HookResolver,
     UvHookRef,
-    ensure_hook_kind,
+    ensure_hook_supports,
 )
 from untaped_recipe.infrastructure.hook_worker_client import (
     APPLY_DIAGNOSTIC_LIMIT,
@@ -102,7 +102,7 @@ class HookExecutor:
         capture_diagnostics: bool,
     ) -> HookDebugResult[str]:
         ref = self._resolver.resolve(hook, local_hook_project)
-        ensure_hook_kind(ref, hook, expected="transform")
+        ensure_hook_supports(ref, hook, verb="transform")
         if isinstance(ref, BuiltinHookRef):
             execution = _call_builtin_for_debug(
                 lambda: _call_builtin_transform(
@@ -187,7 +187,7 @@ class HookExecutor:
         capture_diagnostics: bool,
     ) -> HookDebugResult[Verdict]:
         ref = self._resolver.resolve(hook, local_hook_project)
-        ensure_hook_kind(ref, hook, expected="validate")
+        ensure_hook_supports(ref, hook, verb="validate")
         if isinstance(ref, BuiltinHookRef):
             execution = _call_builtin_for_debug(
                 lambda: _call_builtin_validate(

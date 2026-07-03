@@ -7,9 +7,10 @@ from pathlib import Path
 from types import ModuleType
 
 from untaped_recipe.builtins.registry import BUILTIN_HOOKS, BuiltinHook
+from untaped_recipe.domain.hook_exports import hook_exports
 from untaped_recipe.domain.hook_project import (
-    HookKind,
     HookProjectMetadata,
+    hook_module_file,
     is_valid_dotted_name,
     project_name_for_hook,
     read_hook_metadata,
@@ -23,7 +24,7 @@ class BuiltinHookRef:
     """Reference to an engine-owned built-in hook module."""
 
     name: str
-    kind: HookKind
+    exports: frozenset[str]
     module: ModuleType
 
 
@@ -32,7 +33,7 @@ class UvHookRef:
     """Reference to an external uv-managed hook project."""
 
     name: str
-    kind: HookKind
+    exports: frozenset[str]
     project_root: Path
     module: str
 
@@ -40,10 +41,10 @@ class UvHookRef:
 HookRef = BuiltinHookRef | UvHookRef
 
 
-def ensure_hook_kind(ref: HookRef, hook: str, *, expected: HookKind) -> None:
-    """Reject a hook reference whose declared kind cannot serve the caller."""
-    if ref.kind != expected:
-        raise ValueError(f"{expected} step hook {hook!r} resolves to {ref.kind} hook")
+def ensure_hook_supports(ref: HookRef, hook: str, *, verb: str) -> None:
+    """Reject a hook reference that does not export the verb the caller needs."""
+    if verb not in ref.exports:
+        raise ValueError(f"{verb} step hook {hook!r} does not export a {verb}() function")
 
 
 class HookResolver:
@@ -73,7 +74,7 @@ class HookResolver:
             return global_ref
         builtin = self._builtins.get(name)
         if builtin is not None:
-            return BuiltinHookRef(name=name, kind=builtin.kind, module=builtin.module)
+            return BuiltinHookRef(name=name, exports=builtin.exports, module=builtin.module)
         raise ValueError(f"hook not found: {name}")
 
     def _global_project_root(self, name: str) -> Path:
@@ -91,9 +92,15 @@ class HookResolver:
         if not (project_root / "uv.lock").is_file():
             raise ValueError(f"hook project is missing uv.lock: {project_root}")
         validate_hook_modules(project_root, metadata)
+        module_file = hook_module_file(project_root, definition.module)
+        exports = hook_exports(module_file)
+        if not exports:
+            raise ValueError(
+                f"hook module for {public_name!r} exports neither transform() nor validate()"
+            )
         return UvHookRef(
             name=public_name,
-            kind=definition.kind,
+            exports=exports,
             project_root=project_root,
             module=definition.module,
         )

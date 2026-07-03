@@ -135,10 +135,11 @@ def run_command(
         local_hook_project = _local_hook_project(project)
         resolver = HookResolver(global_hooks=root / "hooks")
         ref = resolver.resolve(name, local_hook_project)
-        if ref.kind == "validate" and diff:
+        kind = _default_run_kind(ref.exports)
+        if kind == "validate" and diff:
             raise ConfigError("validate hooks do not accept --file or content options")
         RunHook.validate_context(
-            kind=ref.kind,
+            kind=kind,
             target=target,
             file=file,
             content=content,
@@ -161,7 +162,7 @@ def run_command(
             try:
                 execution = RunHook(executor).run(
                     name,
-                    kind=ref.kind,
+                    kind=kind,
                     local_hook_project=local_hook_project,
                     target=target,
                     file=file,
@@ -332,6 +333,16 @@ def _local_hook_project(project: Path | None) -> Path | None:
     if not metadata.hooks:
         return None
     return cwd
+
+
+def _default_run_kind(exports: frozenset[str]) -> HookKind:
+    if exports == frozenset({"validate"}):
+        return "validate"
+    if "transform" in exports:
+        return "transform"
+    if "validate" in exports:
+        return "validate"
+    raise ValueError("hook exports neither transform() nor validate()")
 
 
 def _fixture_mapping(

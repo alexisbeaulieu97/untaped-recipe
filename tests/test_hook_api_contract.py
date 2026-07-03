@@ -6,6 +6,8 @@ import importlib.util
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from untaped_recipe.infrastructure import pack_scaffold
 
 
@@ -57,6 +59,13 @@ def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
     assert dev_requirement == pack_scaffold._HOOK_API_DEV_REQUIREMENT
 
 
+def test_hook_api_requirements_are_derived_from_versions() -> None:
+    assert pack_scaffold.hook_api_requirements(
+        package_version="1.2.0",
+        hook_api_version="1.2.0",
+    ) == (">=1.2,<2", "untaped-recipe>=1.2")
+
+
 def test_release_script_verifies_version_parity() -> None:
     module = _release_module()
 
@@ -72,3 +81,15 @@ def test_release_script_rejects_version_mismatch() -> None:
         assert exc.code == 1
     else:
         raise AssertionError("expected version parity failure")
+
+
+def test_release_script_rejects_stale_scaffold_floor_when_hook_api_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _release_module()
+
+    monkeypatch.setattr(module, "HOOK_API_VERSION", "1.2.0")
+    with pytest.raises(SystemExit) as exc_info:
+        module.verify_versions("0.9.0")
+
+    assert exc_info.value.code == 1

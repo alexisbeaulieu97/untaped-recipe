@@ -27,8 +27,19 @@ def test_scaffold_pack_writes_parseable_manifest_with_hook_api_floors(
     manifest = PackManifest.from_pyproject(pack_dir)
     pyproject = (pack_dir / "pyproject.toml").read_text(encoding="utf-8")
     assert manifest.name == "ansible"
-    assert 'dev = ["untaped-recipe>=0.9"]' in pyproject
-    assert 'requires_hook_api = ">=0.9,<1"' in pyproject
+    assert pyproject == (
+        "[project]\n"
+        'name = "untaped-recipe-ansible"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n"
+        "\n"
+        "[dependency-groups]\n"
+        'dev = ["untaped-recipe>=0.9"]\n'
+        "\n"
+        "[tool.untaped_recipe]\n"
+        'requires_hook_api = ">=0.9,<1"\n'
+    )
     assert (pack_dir / "src" / "ansible_pack" / "hooks" / "__init__.py").is_file()
 
 

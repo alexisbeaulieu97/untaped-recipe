@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import tomlkit
+from packaging.version import Version
 from tomlkit import TOMLDocument
 
 from untaped_recipe._version import PACKAGE_VERSION
@@ -24,9 +25,12 @@ def hook_api_requirements(
     package_version: str = PACKAGE_VERSION,
     hook_api_version: str = HOOK_API_VERSION,
 ) -> tuple[str, str]:
-    """Return the 0.9 hook API project floor and authoring dependency."""
-    del package_version, hook_api_version
-    return ">=0.9,<1", "untaped-recipe>=0.9"
+    """Return the hook API project floor and authoring dependency."""
+    package = Version(package_version)
+    hook_api = Version(hook_api_version)
+    project_requirement = f">={hook_api.major}.{hook_api.minor},<{hook_api.major + 1}"
+    dev_requirement = f"untaped-recipe>={package.major}.{package.minor}"
+    return project_requirement, dev_requirement
 
 
 _HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements()

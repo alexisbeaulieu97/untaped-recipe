@@ -34,10 +34,10 @@ SDK_REQUIREMENT = "untaped>=3.0.0,<4"
 def verify_versions(expected_version: str) -> None:
     """Require package and hook API scaffold version sources to be consistent."""
     root_version = _project_version(ROOT / "pyproject.toml")
-    project_requirement, dev_requirement = pack_scaffold.hook_api_requirements(
-        package_version=expected_version,
-        hook_api_version=HOOK_API_VERSION,
-    )
+    hook_api = Version(HOOK_API_VERSION)
+    package = Version(PACKAGE_VERSION)
+    project_requirement = f">={hook_api.major}.{hook_api.minor},<{hook_api.major + 1}"
+    dev_requirement = f"{PACKAGE_NAME}>={package.major}.{package.minor}"
 
     checks = [
         ("root pyproject", root_version, expected_version),

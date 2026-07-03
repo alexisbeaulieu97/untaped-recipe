@@ -89,13 +89,14 @@ class ApplyRecipe:
         inputs: dict[str, object],
         warnings: list[str],
     ) -> None:
-        verdict = self._hooks.validate(
+        execution = self._hooks.validate(
             hook,
             local_hook_project=local_hook_project,
             target=target,
             inputs=inputs,
             args=args,
         )
+        verdict = execution.result
         if verdict.status == "warn":
             warnings.append(verdict.message)
         if verdict.failed:
@@ -154,7 +155,7 @@ class ApplyRecipe:
             if not path.is_file():
                 raise ValueError(f"transform path is not a file: {step.file}")
             current = path.read_text(encoding="utf-8", newline="")
-        buffer[step.file] = self._hooks.transform(
+        execution = self._hooks.transform(
             step.hook,
             current,
             local_hook_project=local_hook_project,
@@ -163,6 +164,7 @@ class ApplyRecipe:
             file=path,
             args=step.args,
         )
+        buffer[step.file] = execution.result
 
     def _changes(self, target: Path, buffer: dict[Path, str | None]) -> list[FileChange]:
         changes: list[FileChange] = []

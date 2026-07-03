@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from untaped_recipe.application.apply_recipe import ApplyRecipe
+from untaped_recipe.application.ports import HookDebugResult
+from untaped_recipe.domain.plan import Verdict
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.hook_worker import handle_request
 from untaped_recipe.infrastructure.file_writer import flush_changes
@@ -86,6 +88,67 @@ def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:
         "[tool.untaped_recipe.hooks]\n" + "\n".join(hook_rows) + "\n"
     )
     (recipe_dir / "uv.lock").write_text("version = 1\n")
+
+
+def test_apply_recipe_executor_calls_default_to_no_diagnostics(tmp_path: Path) -> None:
+    class SpyExecutor:
+        def __init__(self) -> None:
+            self.transform_capture_flags: list[bool] = []
+            self.validate_capture_flags: list[bool] = []
+
+        def transform(
+            self,
+            hook: str,
+            content: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            file: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[str]:
+            self.transform_capture_flags.append(capture_diagnostics)
+            return HookDebugResult(result=content + "!", diagnostics="ignored")
+
+        def validate(
+            self,
+            hook: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[Verdict]:
+            self.validate_capture_flags.append(capture_diagnostics)
+            return HookDebugResult(result=Verdict(status="pass"), diagnostics="ignored")
+
+    spy = SpyExecutor()
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {"type": "validate", "hook": "check"},
+                {"type": "transform", "file": "config.txt", "hook": "rewrite"},
+            ],
+        }
+    )
+
+    plan = ApplyRecipe(spy)(
+        recipe=recipe,
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=target,
+        inputs={},
+    )
+
+    assert spy.validate_capture_flags == [False]
+    assert spy.transform_capture_flags == [False]
+    assert plan.changes[0].after == "before!"
 
 
 def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -> None:

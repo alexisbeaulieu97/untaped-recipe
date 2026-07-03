@@ -31,8 +31,9 @@ class HookExecutorPort(Protocol):
         file: Path,
         inputs: dict[str, object],
         args: dict[str, object],
-    ) -> str:
-        """Run a transform hook and return replacement content."""
+        capture_diagnostics: bool = False,
+    ) -> HookDebugResult[str]:
+        """Run a transform hook and return replacement content plus diagnostics."""
 
     def validate(
         self,
@@ -42,34 +43,7 @@ class HookExecutorPort(Protocol):
         target: Path,
         inputs: dict[str, object],
         args: dict[str, object],
-    ) -> Verdict:
-        """Run a validate hook and return its coerced verdict."""
-
-
-class HookDebugExecutorPort(HookExecutorPort, Protocol):
-    """Execute trusted hooks and expose successful diagnostics for debugging."""
-
-    def transform_for_debug(
-        self,
-        hook: str,
-        content: str,
-        *,
-        local_hook_project: Path | None,
-        target: Path,
-        file: Path,
-        inputs: dict[str, object],
-        args: dict[str, object],
-    ) -> HookDebugResult[str]:
-        """Run a transform hook and return replacement content plus diagnostics."""
-
-    def validate_for_debug(
-        self,
-        hook: str,
-        *,
-        local_hook_project: Path | None,
-        target: Path,
-        inputs: dict[str, object],
-        args: dict[str, object],
+        capture_diagnostics: bool = False,
     ) -> HookDebugResult[Verdict]:
         """Run a validate hook and return its coerced verdict plus diagnostics."""
 

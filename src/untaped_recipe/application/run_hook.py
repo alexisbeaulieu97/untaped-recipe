@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from untaped_recipe.application.ports import HookDebugExecutorPort
+from untaped_recipe.application.ports import HookExecutorPort
 from untaped_recipe.domain.hook_project import HookKind
 from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.plan import Verdict
@@ -67,7 +67,7 @@ def select_verb(
 class RunHook:
     """Run a resolved hook kind once without writing target files."""
 
-    def __init__(self, executor: HookDebugExecutorPort) -> None:
+    def __init__(self, executor: HookExecutorPort) -> None:
         self._executor = executor
 
     @staticmethod
@@ -117,12 +117,13 @@ class RunHook:
                 args=args,
             )
         _validate_validate_context(file=file, content=content, content_file=content_file)
-        execution = self._executor.validate_for_debug(
+        execution = self._executor.validate(
             hook,
             local_hook_project=local_hook_project,
             target=resolved_target,
             inputs=inputs,
             args=args,
+            capture_diagnostics=True,
         )
         return ValidateHookRun(
             hook=hook,
@@ -150,7 +151,7 @@ class RunHook:
             content=content,
             content_file=content_file,
         )
-        execution = self._executor.transform_for_debug(
+        execution = self._executor.transform(
             hook,
             before,
             local_hook_project=local_hook_project,
@@ -158,6 +159,7 @@ class RunHook:
             file=resolved_file,
             inputs=inputs,
             args=args,
+            capture_diagnostics=True,
         )
         return TransformHookRun(
             hook=hook,

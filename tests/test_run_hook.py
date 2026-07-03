@@ -15,7 +15,7 @@ class _DebugExecutor:
     def __init__(self) -> None:
         self.transform_calls: list[dict[str, object]] = []
 
-    def transform_for_debug(
+    def transform(
         self,
         hook: str,
         content: str,
@@ -25,6 +25,7 @@ class _DebugExecutor:
         file: Path,
         inputs: dict[str, object],
         args: dict[str, object],
+        capture_diagnostics: bool = False,
     ) -> HookDebugResult[str]:
         self.transform_calls.append(
             {
@@ -35,11 +36,12 @@ class _DebugExecutor:
                 "file": file,
                 "inputs": inputs,
                 "args": args,
+                "capture_diagnostics": capture_diagnostics,
             }
         )
         return HookDebugResult(result=content + "!", diagnostics="diagnostic\n")
 
-    def validate_for_debug(
+    def validate(
         self,
         hook: str,
         *,
@@ -47,6 +49,7 @@ class _DebugExecutor:
         target: Path,
         inputs: dict[str, object],
         args: dict[str, object],
+        capture_diagnostics: bool = False,
     ) -> HookDebugResult[Verdict]:
         return HookDebugResult(result=Verdict(status="pass"), diagnostics="")
 
@@ -82,6 +85,7 @@ def test_run_hook_transform_reads_target_file_and_invokes_executor(tmp_path: Pat
             "file": target.resolve() / "config.txt",
             "inputs": {"enabled": True},
             "args": {"count": 3},
+            "capture_diagnostics": True,
         }
     ]
 

@@ -1057,7 +1057,8 @@ def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None
         args={"edits": [{"op": "set", "path": ["enabled"], "value": True}]},
     )
 
-    assert "enabled: true" in result
+    assert "enabled: true" in result.result
+    assert result.diagnostics == ""
 
 
 def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> None:
@@ -1093,7 +1094,8 @@ def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> Non
         args={"flag": True},
     )
 
-    assert result == "after\n"
+    assert result.result == "after\n"
+    assert result.diagnostics == ""
     assert len(calls) == 1
     payload = calls[0]["payload"]
     assert payload["kind"] == "transform"
@@ -1123,7 +1125,7 @@ def test_hook_executor_debug_returns_external_diagnostics(tmp_path: Path) -> Non
         helpers=HookHelpers(),
     )
 
-    result = executor.transform_for_debug(
+    result = executor.transform(
         "suffix",
         "before\n",
         local_hook_project=recipe_dir,
@@ -1131,6 +1133,7 @@ def test_hook_executor_debug_returns_external_diagnostics(tmp_path: Path) -> Non
         file=tmp_path / "target" / "local.yml",
         inputs={},
         args={},
+        capture_diagnostics=True,
     )
 
     assert result.result == "after\n"
@@ -1327,7 +1330,7 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
         helpers=HookHelpers(),
     )
 
-    verdict = executor.validate(
+    result = executor.validate(
         "check",
         local_hook_project=recipe_dir,
         target=tmp_path / "target",
@@ -1335,7 +1338,8 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
         args={},
     )
 
-    assert verdict == Verdict(status="warn", message="check this")
+    assert result.result == Verdict(status="warn", message="check this")
+    assert result.diagnostics == ""
 
 
 class _FakeProcess:

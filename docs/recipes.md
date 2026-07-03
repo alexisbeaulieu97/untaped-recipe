@@ -9,67 +9,52 @@ creates backups, and only then writes files for successful target plans.
 The default library root is `~/.untaped/untaped-recipes`:
 
 ```text
-recipes/
 packs/
-hooks/
+packs.toml
 backups/
 ```
 
-The library stores three uv-backed authoring artifacts:
-
-- `recipes/<recipe-id>/` for standalone recipe projects.
-- `packs/<pack-id>/` for pack projects exposing zero or more recipes.
-- `hooks/<hook-id>/` for reusable global hook projects.
-
-Installed standalone recipes and packs are always project directories with
-`pyproject.toml` and `uv.lock`. Recipe YAML is behavior-only; public identity
-comes from the top-level project metadata. Recipe YAML contains `version`,
-optional `description`, optional `inputs`, and `steps`; `name:` is rejected.
-
-A standalone recipe project exposes exactly one recipe:
+The library stores installed pack projects under `packs/<pack-id>/`. A pack is
+the reusable library and sharing unit. It is a uv project whose
+`pyproject.toml` exposes zero or more recipes and zero or more hooks:
 
 ```toml
-[tool.untaped_recipe.recipes]
-"add-config" = { path = "recipe.yml" }
-```
+[project]
+name = "untaped-recipe-ansible"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = []
 
-The project can include recipe assets and local hooks:
+[dependency-groups]
+dev = ["untaped-recipe>=0.9"]
 
-```text
-recipes/add-config/
-├── recipe.yml
-├── pyproject.toml
-├── uv.lock
-├── templates/
-│   └── config.yml
-├── files/
-│   └── README.md
-└── src/
-    └── add_config_hooks/
-        └── hooks/
-            └── set_owner.py
-```
-
-A pack project declares a pack id and may expose zero or more recipes:
-
-```toml
 [tool.untaped_recipe]
-pack = "ansible"
+requires_hook_api = ">=0.9,<1"
 
 [tool.untaped_recipe.recipes]
 "playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
+
+[tool.untaped_recipe.hooks]
+"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
 ```
 
 ```text
-packs/ansible/
+ansible/
 ├── pyproject.toml
 ├── uv.lock
-├── recipes/playbook-migration/recipe.yml
-└── src/ansible_hooks/hooks/add_play_collections.py
+├── recipes/
+│   └── playbook-migration/
+│       ├── recipe.yml
+│       └── templates/
+│           └── config.yml
+└── src/
+    └── ansible_hooks/
+        └── hooks/
+            └── add_play_collections.py
 ```
 
-Nested uv projects or workspaces inside a recipe or pack are opaque. Untaped
-only reads the top-level project metadata and declared recipe paths.
+Nested uv projects or workspaces inside a pack are opaque. Untaped only reads
+the top-level project metadata and declared recipe paths.
 
 Single-file recipes remain supported by explicit path only, for quick local use:
 
@@ -78,88 +63,69 @@ untaped-recipe apply ./recipe.yml ./repo --yes
 ```
 
 Single-file recipes are best when they use only templates, copy/remove steps,
-built-ins, or hooks already installed in the global hook library. Use a recipe
-or pack project when local hook code or hook-specific dependencies should ship
-with the recipe.
+built-ins, or hooks already installed through packs. Use a pack when local hook
+code or hook-specific dependencies should ship with the recipe.
 
-Local hooks are declared in the same top-level `pyproject.toml`:
+Recipe YAML is behavior-only. It contains `version`, optional `description`,
+optional `inputs`, and `steps`; `name:` is rejected. The recipe file schema
+remains `version: 1` in 0.9.0.
 
-```toml
-[dependency-groups]
-dev = ["untaped-recipe>=0.8"]
-
-[tool.untaped_recipe]
-requires_hook_api = ">=0.8"
-
-[tool.untaped_recipe.hooks]
-"set_owner" = { kind = "transform", module = "add_config_hooks.hooks.set_owner" }
-```
-
-The declared `kind` must match the recipe step type that calls the hook. The
-recipe still uses the simple hook name:
-
-```yaml
-steps:
-  - type: transform
-    file: pyproject.toml
-    hook: set_owner
-```
+See [packs.md](./packs.md) for pack identity, installation, and sharing.
 
 ## Authoring Commands
 
 ```bash
-untaped-recipe recipe init add-config
-untaped-recipe recipe init add-config --library
-untaped-recipe pack init ansible
-untaped-recipe pack init ansible --library
-untaped-recipe pack recipe init ansible playbook-migration
-untaped-recipe recipe hook init add-config set_owner --kind validate
-untaped-recipe pack hook init ansible add_play_collections
-untaped-recipe hook run set_owner --target ./repo --file pyproject.toml --diff
+untaped-recipe new pack ansible
+untaped-recipe new recipe ansible/playbook-migration
+untaped-recipe new hook ansible/add_play_collections
+untaped-recipe add ./ansible --yes
+untaped-recipe hook run ansible/add_play_collections --target ./repo --file site.yml --diff
 ```
 
-`recipe init` creates a standalone uv recipe project with `recipe.yml`,
-`templates/`, `files/`, metadata, and `uv.lock`. `--library` creates it directly
-under `<library_root>/recipes/`; otherwise it creates `./<recipe>/`.
+`new pack` creates an empty uv pack project. `new recipe <pack>/<recipe>` adds a
+recipe under `recipes/<recipe>/` and updates the manifest. `new hook
+<pack>/<hook>` adds a hook module under `src/`, updates
+`[tool.untaped_recipe.hooks]`, adds the dev-only `untaped-recipe` dependency
+for typing, pins `requires_hook_api = ">=0.9,<1"`, and refreshes `uv.lock`.
 
-`pack init` creates an empty uv pack project. Empty packs are valid and
-installable. `pack recipe init` adds a recipe under `recipes/<recipe>/` and
-updates the pack metadata.
+`new recipe` and `new hook` also accept explicit local pack paths such as
+`./some-local-pack/probe`; the final path segment is the recipe or hook name and
+the parent is the pack directory. Bare multi-segment refs must be exactly
+`<pack>/<name>`.
 
-`recipe hook init` and `pack hook init` add local hook modules to the top-level
-project `src/` tree, update `[tool.untaped_recipe.hooks]`, and refresh
-`uv.lock`. They also add the dev-only `untaped-recipe` dependency for typing
-and a `requires_hook_api` floor for fast compatibility checks. Hook projects
-must not add `untaped-recipe` to runtime dependencies; the installed CLI owns
-the worker and helper implementation. Top-level `hook init` is for reusable
-global hooks only.
 `hook run` invokes one resolved hook against explicit fixture context without
 running a full recipe or writing target files.
 
 ## Resolution
 
 ```bash
-untaped-recipe apply add-config ./repo
-untaped-recipe apply ansible:playbook-migration ./repo
-untaped-recipe apply ./recipe-project ./repo --yes
+untaped-recipe apply playbook-migration ./repo
+untaped-recipe apply ansible/playbook-migration ./repo --yes
 untaped-recipe apply ./pack-project ./repo --recipe playbook-migration --yes
 untaped-recipe apply ./recipe.yml ./repo --yes
+untaped-recipe check
+untaped-recipe check ansible
+untaped-recipe check ansible/playbook-migration
 ```
 
 Resolution rules:
 
-- `apply foo` resolves only standalone library recipe `recipes/foo/`.
-- `apply pack:recipe` resolves installed pack recipe `packs/pack/`.
-- `apply ./recipe.yml` runs a path-only single-file recipe.
-- `apply ./recipe-project` runs a local standalone recipe project.
-- `apply ./pack-project --recipe recipe` runs a recipe from a local pack project.
+- Bare recipe names resolve against installed packs only when unique.
+- `pack/recipe` resolves an installed pack recipe.
+- `./recipe.yml` runs a path-only single-file recipe.
+- `./pack-project --recipe recipe` runs a recipe from a local pack path.
 
-`recipe list|show|check|remove|edit` manage standalone recipes only.
-`pack list|show|check|remove|edit` manage packs only. Pack recipes are managed
-with `pack recipe list|show|edit|remove`.
+For `apply`, local paths must be explicit. A path is explicit only when it
+starts with `./`, `../`, `/`, or `~`, or ends in `.yml` or `.yaml`. Anything
+else, including `a/b`, is a library ref and is never classified by checking the
+filesystem.
 
-Apply output and backup metadata use canonical refs: `foo` for standalone
-recipes and `pack:recipe` for pack recipes.
+`list`, `show`, `check`, `remove`, and `edit` operate on the unified pack
+library. `list` shows recipes by default; use `list --packs` for packs and
+`list --hooks` for hooks. `check` with no ref validates the whole library.
+
+Apply output and backup metadata use canonical refs such as
+`ansible/playbook-migration`.
 
 ## Schema
 
@@ -303,7 +269,34 @@ command fails clearly when no terminal is available. `--stdin` writes require
 target before any writes.
 
 `template` renders a recipe-local text template using `{{ name }}` placeholders
-from resolved inputs.
+from resolved inputs. Template steps are strict by default:
+`unknown_tokens: error` rejects unknown bare names and non-bare `{{ ... }}`
+tokens. Set `unknown_tokens: keep` when the template intentionally emits
+another tool's template syntax, such as GitHub Actions or Helm:
+
+```yaml
+steps:
+  - type: template
+    template: templates/workflow.yml
+    dest: .github/workflows/ci.yml
+    unknown_tokens: keep
+```
+
+```yaml
+# templates/workflow.yml
+name: ci
+on: push
+jobs:
+  test:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - run: helm template --set owner={{ owner }} chart
+      - run: echo '{{ .Values.image.tag }}'
+```
+
+Under `keep`, known inputs such as `{{ owner }}` still render and unknown
+tokens such as `${{ github.ref }}` or `{{ .Values.image.tag }}` pass through
+verbatim.
 
 `copy` copies a recipe-local text file into a target-relative destination.
 
@@ -346,14 +339,15 @@ engine-mediated reads or writes.
 
 ```bash
 untaped-recipe apply add-config ./repo-a ./repo-b --var service=api
-untaped-recipe apply ansible:playbook-migration ./repo-a --yes
+untaped-recipe apply ansible/playbook-migration ./repo-a --yes
 untaped-recipe apply ./pack-project ./repo-a --recipe playbook-migration --yes
 untaped-recipe apply add-config --stdin --yes --parallel 8 --format pipe
 untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
 untaped-recipe apply add-config ./repo-a --check
 untaped-recipe apply add-config ./repo-a --preview diff
-untaped-recipe recipe check add-config
-untaped-recipe pack check ansible
+untaped-recipe check
+untaped-recipe check ansible
+untaped-recipe check ansible/playbook-migration
 ```
 
 Important behavior:
@@ -378,11 +372,11 @@ Important behavior:
   write failures are reported as per-target errors.
 - Backups are created by default; pass `--no-backup` only when the target tree
   is already protected another way.
-- `recipe check` validates standalone recipe projects or explicit path-only
-  recipe files, including input source expressions and hook kind mismatches.
-- `pack check` validates pack metadata, all declared recipe files and assets,
-  recipe input source expressions, pack-local hooks, hook kind mismatches, and
-  lockfile state.
+- `check` with no ref validates the whole installed pack library and its index.
+- `check <pack>` validates pack metadata, declared recipe files and assets,
+  recipe input source expressions, pack-local hooks, exported hook functions,
+  and lockfile state.
+- `check <recipe-ref>` validates one recipe by bare or qualified ref.
 - `hook run <hook>` executes one hook through the same built-in or external uv
   worker path as `apply`; transform stdout is raw content or `--diff`, while
   validate stdout is a `recipe.hook_run` verdict record.
@@ -420,8 +414,8 @@ steps:
       - ansible.cfg
 ```
 
-The `add_play_collections` hook can be pack-local, recipe-local in a standalone
-recipe project, a reusable global hook project, or a packaged built-in if the
+The `add_play_collections` hook can be in the recipe's own pack, another
+installed pack when the name is unambiguous, or a packaged built-in if the
 engine ships one.
 
 ## Backups

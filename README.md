@@ -13,8 +13,8 @@ uv tool install git+https://github.com/alexisbeaulieu97/untaped-recipe.git
 
 ## Configure
 
-Recipes, packs, reusable hooks, and backups live under
-`~/.untaped/untaped-recipes` by default.
+Installed packs and backup bundles live under `~/.untaped/untaped-recipes` by
+default.
 
 ```bash
 untaped-recipe config set library_root ~/.untaped/untaped-recipes
@@ -26,33 +26,36 @@ External hook requests time out after `hook_timeout_seconds` seconds, default
 
 ## Library Model
 
-The library has separate first-class item types:
+The library has one installable item type: packs.
 
-- standalone recipe projects under `<library_root>/recipes/<recipe-id>/`
-- pack projects under `<library_root>/packs/<pack-id>/`
-- reusable global hook projects under `<library_root>/hooks/<hook-id>/`
+- installed pack projects under `<library_root>/packs/<pack-id>/`
+- install-source bookkeeping in `<library_root>/packs.toml`
 - backup bundles under `<library_root>/backups/`
 
-Installed recipes and packs are uv projects. Public identity comes from the
-top-level `pyproject.toml`, not from `recipe.yml`:
+Packs are uv projects. Public pack identity comes from `[project].name` in the
+top-level `pyproject.toml`; `untaped-recipe-ansible` installs as pack
+`ansible`:
 
 ```toml
+[project]
+name = "untaped-recipe-ansible"
+version = "0.1.0"
+
+[dependency-groups]
+dev = ["untaped-recipe>=0.9"]
+
+[tool.untaped_recipe]
+requires_hook_api = ">=0.9,<1"
+
 [tool.untaped_recipe.recipes]
-"add-config" = { path = "recipe.yml" }
+"playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
+
+[tool.untaped_recipe.hooks]
+"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
 ```
 
 Recipe YAML is behavior-only. It contains `version`, optional `description`,
 optional `inputs`, and `steps`; `name:` is rejected.
-
-Packs declare a pack id and recipe paths:
-
-```toml
-[tool.untaped_recipe]
-pack = "ansible"
-
-[tool.untaped_recipe.recipes]
-"playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
-```
 
 Single-file recipes are still supported by explicit path, for quick local use:
 
@@ -64,56 +67,44 @@ They are not installed as loose `recipes/<name>.yml` library items.
 
 ## Authoring
 
-Hooks are referenced from recipes by name. Recipes do not declare hook runtimes.
-External hooks live in uv-managed hook projects with a
-`[tool.untaped_recipe.hooks]` table:
+Hooks are referenced from recipes by name. Recipes do not declare hook runtimes,
+and hook manifest rows do not declare `kind`; the exported function name is the
+contract. A hook module exports `transform()`, `validate()`, or both, and the
+recipe step `type` selects which function runs.
 
 ```toml
 [tool.untaped_recipe.hooks]
-"ansible.add_play_collections" = { kind = "transform", module = "ansible_hooks.hooks.add_play_collections" }
+"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
 ```
 
-Every hook row must declare `kind = "transform"` or `kind = "validate"`.
-Older rows that only declare `module` must be updated before the hook project
-can be used.
+Supported hook sources are:
 
-Supported hook forms are:
-
-- recipe-local hooks declared in a standalone recipe project's `pyproject.toml`
-- pack-local hooks declared in a pack project's `pyproject.toml`
-- global hook projects under `<library_root>/hooks/<name>/`
+- the recipe's own pack
+- installed packs
 - built-ins such as `yaml_edit`, which are engine-owned and run in-process
 
-Use `untaped-recipe hook init <hook-name>` to scaffold a global uv hook project.
-Use `untaped-recipe recipe hook init <recipe> <hook>` or
-`untaped-recipe pack hook init <pack> <hook>` for local hooks.
 Generated hooks use `TYPE_CHECKING` imports from `untaped_recipe.hook_api` for
-editor discovery through the dev-only `untaped-recipe` dependency. Hook projects
+editor discovery through the dev-only `untaped-recipe` dependency. Pack projects
 must not depend on `untaped-recipe` at runtime; the installed CLI provides the
 worker and helper implementation. Runtime hook dependencies belong in
 `[project].dependencies`, and type-only authoring dependencies belong in
-`[dependency-groups].dev` because workers execute with `uv run --locked --no-dev`.
-Hook initialization refreshes `uv.lock`, so scaffolding hooks needs access to
-PyPI or a configured uv source for `untaped-recipe`.
-Use `untaped-recipe hook run <hook> --target <dir>` to invoke one hook against
-an explicit fixture without writing target files.
+`[dependency-groups].dev` because workers execute with
+`uv run --locked --no-dev`. Hook scaffolding refreshes `uv.lock`, so it needs
+access to PyPI or a configured uv source for `untaped-recipe`.
 
 ```bash
-untaped-recipe recipe init add-config
-untaped-recipe recipe init shared-config --library
-untaped-recipe pack init ansible
-untaped-recipe pack recipe init ansible playbook-migration
-untaped-recipe recipe hook init add-config set_owner --kind validate
-untaped-recipe pack hook init ansible add_play_collections
-untaped-recipe hook run set_owner --target ./service-a --file pyproject.toml --diff
+untaped-recipe new pack ansible
+untaped-recipe new recipe ansible/playbook-migration
+untaped-recipe new hook ansible/add_play_collections
+untaped-recipe add ./ansible --yes
+untaped-recipe hook run ansible/add_play_collections --target ./service-a --file site.yml --diff
 ```
 
 ## Apply
 
 ```bash
 untaped-recipe apply add-config ./service-a ./service-b --var service=api
-untaped-recipe apply ansible:playbook-migration ./service-a --yes
-untaped-recipe apply ./recipe-project ./service-a --yes
+untaped-recipe apply ansible/playbook-migration ./service-a --yes
 untaped-recipe apply ./pack-project ./service-a --recipe playbook-migration --yes
 untaped-recipe apply ./recipe.yml ./service-a --yes
 untaped-recipe apply add-config --stdin --yes --format json
@@ -184,27 +175,34 @@ redacted per-target inputs and never store the full incoming pipe record.
 ## Library Commands
 
 ```text
-untaped-recipe recipe init|list|show|add|check|remove|edit
-untaped-recipe pack init|list|show|add|check|remove|edit
-untaped-recipe pack recipe init|list|show|edit|remove
-untaped-recipe hook init|list|show|add|remove|edit|run
+untaped-recipe new pack <name>
+untaped-recipe new recipe <pack>/<name>
+untaped-recipe new hook <pack>/<name>
+untaped-recipe add <path|git-url> [--rev REV] [--name NAME] [--force]
+untaped-recipe list [--packs|--hooks]
+untaped-recipe show <pack|recipe-ref|hook-ref>
+untaped-recipe check [pack|recipe-ref|path]
+untaped-recipe remove <pack>
+untaped-recipe edit <pack|recipe-ref|hook-ref>
+untaped-recipe hook run <hook-ref>
 untaped-recipe backup list|show|restore
 ```
 
-`recipe add` accepts only uv standalone recipe projects exposing exactly one
-recipe. `pack add` accepts uv pack projects, including empty packs.
-`hook add` copies uv hook project directories, not bare `.py` files, and the
-library directory is derived from the declared hook metadata. Declared hook
-modules must live under the project's `src/` layout. Use explicit paths such as
-`./my-hook-project` when referring to a project in the current directory; bare
-hook names resolve through the library. `recipe remove`, `pack remove`,
-`pack recipe remove`, and `hook remove` require confirmation or `--yes`.
-`recipe check` and `pack check` are static preflight commands; they validate
-input source expressions and reject recipe steps whose type does not match the
-resolved hook kind, but do not execute hooks against targets. `backup show` and
-`backup restore` accept full ids, unambiguous prefixes, or `latest`;
-restore uses the same transactional write path and symlink confinement as
-apply. Backups store text content and do not preserve file mode or mtime.
+`add` installs a pack from a local path or git URL and asks for confirmation
+after listing the recipes and hooks being installed. `--name` overrides the
+installed pack key; that key is the identity used by refs, output rows,
+ambiguity errors, `check`, and `remove`.
+
+`list` shows recipes by default. `list --packs` shows installed packs and
+`list --hooks` shows hook refs. `show` renders structured pack, recipe, or hook
+detail. `check` is static preflight; without a ref it validates the whole
+library and `packs.toml`, and with a ref it validates one pack or recipe.
+`remove <pack>` is destructive because library packs are editable in place; it
+requires confirmation or `--yes`. `backup show` and `backup restore` accept
+full ids, unambiguous prefixes, or `latest`; restore previews and confirms like
+apply, uses the same transactional write path and symlink confinement, and
+preserves the changed-since-backup hash guard unless `--force` is passed.
+Backups store text content and do not preserve file mode or mtime.
 
 `hook run` is a no-write debug harness. Transform hooks require `--file`; by
 default the command reads `--target/--file` and writes exact transformed content
@@ -218,8 +216,10 @@ and hook diagnostics go to stderr; structured `--format json|yaml|table|pipe`
 output omits raw input and arg values. Use SDK `--quiet` when ad-hoc fixture
 values should not be echoed in a shared terminal.
 
-See [docs/recipes.md](./docs/recipes.md) and
-[docs/hooks.md](./docs/hooks.md) for schema and hook authoring details.
+See [docs/packs.md](./docs/packs.md), [docs/recipes.md](./docs/recipes.md),
+and [docs/hooks.md](./docs/hooks.md) for pack, schema, and hook authoring
+details. See [docs/migration-0.9.md](./docs/migration-0.9.md) for the 0.9.0
+breaking changes.
 
 ## Development
 

@@ -135,7 +135,7 @@ def read_hook_metadata(project_root: Path) -> HookProjectMetadata:
     if not pyproject.is_file():
         raise ValueError(f"hook project must contain pyproject.toml: {project_root}")
     try:
-        data = tomllib.loads(pyproject.read_text())
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"invalid hook project pyproject: {pyproject}") from exc
     return HookProjectMetadata.from_pyproject(data)

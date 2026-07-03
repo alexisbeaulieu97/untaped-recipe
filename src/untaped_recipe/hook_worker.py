@@ -118,6 +118,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> int:
     """Run the NDJSON worker loop."""
+    _configure_standard_streams()
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -139,6 +140,13 @@ def main() -> int:
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
     return 0
+
+
+def _configure_standard_streams() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def _required_str(request: dict[str, Any], key: str) -> str:

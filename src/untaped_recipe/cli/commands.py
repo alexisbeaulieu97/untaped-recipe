@@ -426,7 +426,9 @@ def _interactive_prompt(
         return None
     if stdin:
         try:
-            tty = stack.enter_context(Path("/dev/tty").open("r+"))  # noqa: SIM115
+            tty = stack.enter_context(
+                Path("/dev/tty").open("r+", encoding="utf-8")  # noqa: SIM115
+            )
         except OSError as exc:
             raise ConfigError("interactive input requires a terminal") from exc
         ui = ui_context(stdin=tty, stderr=tty, strict=True)

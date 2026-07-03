@@ -98,10 +98,14 @@ class HookLibrary:
         package = _package_name(project_name)
         module = f"{package}.hooks.{module_leaf}"
         (project_root / "src" / package / "hooks").mkdir(parents=True)
-        (project_root / "src" / package / "__init__.py").write_text("")
-        (project_root / "src" / package / "hooks" / "__init__.py").write_text("")
+        (project_root / "src" / package / "__init__.py").write_text("", encoding="utf-8")
+        (project_root / "src" / package / "hooks" / "__init__.py").write_text(
+            "",
+            encoding="utf-8",
+        )
         (project_root / "src" / package / "hooks" / f"{module_leaf}.py").write_text(
-            _hook_stub(kind)
+            _hook_stub(kind),
+            encoding="utf-8",
         )
         (project_root / "pyproject.toml").write_text(
             "[project]\n"
@@ -114,7 +118,8 @@ class HookLibrary:
             "[tool.untaped_recipe]\n"
             f'requires_hook_api = "{_HOOK_API_PROJECT_REQUIREMENT}"\n\n'
             "[tool.untaped_recipe.hooks]\n"
-            f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}\n'
+            f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}\n',
+            encoding="utf-8",
         )
 
     def add(self, source: Path, *, name: str | None = None) -> Path:
@@ -211,7 +216,7 @@ def add_hook_to_project(
     package = _local_package_name(project_root.name)
     module = f"{package}.hooks.{module_leaf}"
     pyproject = project_root / "pyproject.toml"
-    before_pyproject = pyproject.read_text()
+    before_pyproject = pyproject.read_text(encoding="utf-8")
     package_dir = project_root / "src" / package
     hooks_dir = package_dir / "hooks"
     module_path = project_root / "src" / package / "hooks" / f"{module_leaf}.py"
@@ -226,10 +231,10 @@ def add_hook_to_project(
     try:
         hooks_dir.mkdir(parents=True, exist_ok=True)
         if not package_init_existed:
-            package_init.write_text("")
+            package_init.write_text("", encoding="utf-8")
         if not hooks_init_existed:
-            hooks_init.write_text("")
-        module_path.write_text(_hook_stub(kind))
+            hooks_init.write_text("", encoding="utf-8")
+        module_path.write_text(_hook_stub(kind), encoding="utf-8")
         _append_hook_metadata(pyproject, public_name, kind, module)
         _lock_scaffold(project_root)
     except Exception:
@@ -304,7 +309,7 @@ def _append_hook_metadata(
     entry["kind"] = kind
     entry["module"] = module
     hooks[public_name] = entry
-    path.write_text(doc.as_string())
+    path.write_text(doc.as_string(), encoding="utf-8")
 
 
 def _ensure_hook_authoring_metadata(doc: TOMLDocument) -> None:
@@ -359,7 +364,7 @@ def _rollback_scoped_hook(
     package_existed: bool,
     hooks_existed: bool,
 ) -> None:
-    pyproject.write_text(before_pyproject)
+    pyproject.write_text(before_pyproject, encoding="utf-8")
     for path, existed in (
         (module_path, False),
         (hooks_init, hooks_init_existed),

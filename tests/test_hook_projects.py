@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -476,6 +477,48 @@ def test_uv_hook_worker_request_returns_result_and_diagnostics(
 
     assert result.result == "after"
     assert result.diagnostics == "success diagnostic"
+
+
+def test_uv_hook_worker_survives_non_utf8_stderr(tmp_path: Path) -> None:
+    _write_hook_project(
+        tmp_path,
+        hooks={"noisy": "project_hooks.hooks.noisy"},
+    )
+    module = tmp_path / "src" / "project_hooks" / "hooks" / "noisy.py"
+    module.write_text(
+        "import sys\n\n"
+        "def transform(content, *, inputs, target, file, args, helpers):\n"
+        "    sys.stderr.buffer.write(b'\\xff\\xfe\\n')\n"
+        "    sys.stderr.flush()\n"
+        "    return content\n"
+    )
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    env["UV_CACHE_DIR"] = "/private/tmp/untaped-recipe-uv-cache"
+    (tmp_path / "uv.lock").unlink()
+    subprocess.run(["uv", "lock", "--project", str(tmp_path)], check=True, env=env)
+    target = tmp_path / "target"
+    target.mkdir()
+    worker = UvHookWorker(tmp_path)
+    try:
+        result = worker.request(
+            {
+                "kind": "transform",
+                "module": "project_hooks.hooks.noisy",
+                "content": "before",
+                "target": str(target),
+                "file": str(target / "config.txt"),
+                "inputs": {},
+                "args": {},
+            },
+            diagnostic_limit=None,
+            settle_seconds=0.1,
+        )
+    finally:
+        worker.close()
+
+    assert result.result == "before"
+    assert "\ufffd\ufffd" in result.diagnostics
 
 
 def test_uv_hook_worker_diagnostics_are_bounded(

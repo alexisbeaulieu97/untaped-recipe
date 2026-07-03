@@ -75,7 +75,7 @@ def show_command(name: Annotated[str, Parameter(help="Recipe id or path.")], /) 
     """Print a recipe file."""
     with report_config_errors():
         resolution = _resolve_recipe_command(name)
-        echo(resolution.path.read_text(), nl=False)
+        echo(resolution.path.read_text(encoding="utf-8"), nl=False)
 
 
 @app.command(name="add")

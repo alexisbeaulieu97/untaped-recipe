@@ -56,7 +56,7 @@ def _verify_current_content(changes: tuple[FileChange, ...]) -> None:
     for change in changes:
         path = _change_path(change)
         try:
-            current = path.read_text() if path.is_file() else None
+            current = path.read_text(encoding="utf-8", newline="") if path.is_file() else None
         except OSError as exc:
             raise ApplyWriteError(str(exc)) from exc
         if current != change.before:
@@ -75,7 +75,7 @@ def _stage_replacements(
             path = _change_path(change)
             created_dirs.extend(_ensure_parent(path))
             tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.untaped-recipe.tmp")
-            tmp.write_text(change.after)
+            tmp.write_text(change.after, encoding="utf-8", newline="")
             staged[change] = tmp
     except ApplyWriteError:
         _remove_staged_files(staged.values())
@@ -119,7 +119,7 @@ def _rollback(applied: list[FileChange], created_dirs: list[Path]) -> list[str]:
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.untaped-recipe.rollback.tmp")
-            tmp.write_text(change.before)
+            tmp.write_text(change.before, encoding="utf-8", newline="")
             os.replace(tmp, path)
         except (OSError, ApplyWriteError) as exc:
             errors.append(f"{label}: {exc}")

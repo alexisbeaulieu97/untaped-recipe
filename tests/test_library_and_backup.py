@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
+from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.domain.plan import FileChange
+from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.infrastructure.backup import BackupStore
+from untaped_recipe.infrastructure.file_writer import flush_changes
 from untaped_recipe.infrastructure.hook_library import HookLibrary
 from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
 from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
@@ -123,6 +126,14 @@ def _write_hook_project(
     (root / "uv.lock").write_text("version = 1\n")
 
 
+class _UnusedHooks:
+    def validate(self, *args: object, **kwargs: object) -> object:
+        raise AssertionError("hook executor should not be used")
+
+    def transform(self, *args: object, **kwargs: object) -> object:
+        raise AssertionError("hook executor should not be used")
+
+
 def test_backup_store_records_and_restores_touched_files(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
@@ -163,6 +174,34 @@ def test_backup_store_records_and_restores_touched_files(tmp_path: Path) -> None
         store.restore(bundle.id)
     store.restore("latest", force=True)
     assert existing.read_text() == "before\n"
+
+
+def test_backup_restore_of_crlf_file_does_not_false_trip_hash_guard(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_bytes(b"after one\r\nafter two\r\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    config = target / "config.txt"
+    original = b"before one\r\nbefore two\r\n"
+    config.write_bytes(original)
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [{"type": "template", "template": "template.txt", "dest": "config.txt"}],
+        }
+    )
+    planner = ApplyRecipe(_UnusedHooks())  # type: ignore[arg-type]
+    plan = planner(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+    store = BackupStore(tmp_path / "backups")
+    draft = store.start(recipe_name="demo", inputs={})
+    reservation = draft.stage(plan.changes, inputs={})
+
+    flush_changes(plan.changes)
+    draft.commit(reservation)
+    store.restore(draft.id)
+
+    assert config.read_bytes() == original
 
 
 def test_backup_restore_rejects_symlink_escape(tmp_path: Path) -> None:

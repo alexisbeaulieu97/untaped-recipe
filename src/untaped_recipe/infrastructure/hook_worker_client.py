@@ -391,6 +391,8 @@ class UvHookWorker:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except FileNotFoundError as exc:
             raise ValueError("uv executable not found for hook project execution") from exc

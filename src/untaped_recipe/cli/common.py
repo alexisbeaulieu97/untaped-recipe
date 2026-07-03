@@ -28,7 +28,7 @@ def library_root() -> Path:
 def load_yaml_mapping_file(path: Path, *, flag: str) -> dict[str, object]:
     """Load a YAML mapping from a CLI file flag."""
     try:
-        loaded = yaml.safe_load(path.expanduser().read_text()) or {}
+        loaded = yaml.safe_load(path.expanduser().read_text(encoding="utf-8")) or {}
     except OSError as exc:
         raise ConfigError(f"{flag} file not found: {path}") from exc
     except yaml.YAMLError as exc:

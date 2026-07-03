@@ -264,7 +264,8 @@ def _scaffold_recipe_project(*, project_root: Path, recipe_id: str) -> None:
         "inputs: {}\n"
         "steps: []\n"
         "\n"
-        "# Add template, copy, transform, validate, or remove steps here.\n"
+        "# Add template, copy, transform, validate, or remove steps here.\n",
+        encoding="utf-8",
     )
     (project_root / "pyproject.toml").write_text(
         "[project]\n"
@@ -273,5 +274,6 @@ def _scaffold_recipe_project(*, project_root: Path, recipe_id: str) -> None:
         'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.recipes]\n"
-        f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'
+        f'"{recipe_id}" = {{ path = "recipe.yml" }}\n',
+        encoding="utf-8",
     )

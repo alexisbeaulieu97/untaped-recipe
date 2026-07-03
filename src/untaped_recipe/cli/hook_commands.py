@@ -207,7 +207,10 @@ def run_command(
 def show_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) -> None:
     """Print a hook project file."""
     with report_config_errors():
-        echo(HookLibrary(library_root()).resolve_editable(name).read_text(), nl=False)
+        echo(
+            HookLibrary(library_root()).resolve_editable(name).read_text(encoding="utf-8"),
+            nl=False,
+        )
 
 
 @app.command(name="add")

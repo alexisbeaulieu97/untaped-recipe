@@ -281,9 +281,12 @@ class UvHookWorker:
             request_id = str(self._next_id)
             request = {protocol.ID: request_id, **payload}
             try:
-                line = json.dumps(request, default=str) + "\n"
+                line = json.dumps(request) + "\n"
             except TypeError as exc:
-                raise ValueError(f"hook request is not JSON serializable: {exc}") from exc
+                hook_name = str(request.get(protocol.MODULE, "<unknown>"))
+                raise ValueError(
+                    f"hook request for {hook_name!r} is not JSON-serializable: {exc}"
+                ) from exc
             stdin = self._process.stdin
             stdout = self._process.stdout
             if stdin is None or stdout is None:

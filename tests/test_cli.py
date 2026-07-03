@@ -1694,7 +1694,9 @@ def test_explicit_single_file_recipe_does_not_use_sibling_hook_project(tmp_path:
     assert (target / "local.yml").read_text() == "---\n"
 
 
-def test_external_hook_args_with_yaml_dates_cross_worker_as_strings(tmp_path: Path) -> None:
+def test_external_hook_args_with_yaml_dates_are_rejected_before_worker(
+    tmp_path: Path,
+) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
     (recipe_dir / "recipe.yml").write_text(
@@ -1724,8 +1726,9 @@ def test_external_hook_args_with_yaml_dates_cross_worker_as_strings(tmp_path: Pa
         ["apply", str(recipe_dir), str(target), "--yes", "--format", "json"],
     )
 
-    assert result.exit_code == 0, result.output
-    assert "day=2026-06-19" in (target / "local.yml").read_text()
+    assert result.exit_code != 0
+    assert "is not JSON-serializable" in result.output
+    assert (target / "local.yml").read_text() == "---\n"
 
 
 def test_hook_run_transform_reads_disk_and_emits_exact_content(tmp_path: Path) -> None:

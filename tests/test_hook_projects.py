@@ -417,7 +417,7 @@ def test_uv_hook_worker_times_out_and_closes_hung_process(
     assert fake.killed
 
 
-def test_uv_hook_worker_serializes_request_dates_as_strings(
+def test_uv_hook_worker_rejects_non_json_serializable_request_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -427,16 +427,43 @@ def test_uv_hook_worker_serializes_request_dates_as_strings(
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
     worker = UvHookWorker(tmp_path)
 
+    with pytest.raises(ValueError, match="is not JSON-serializable"):
+        worker.request(
+            {
+                "kind": "transform",
+                "module": "hooks.sample",
+                "args": {"day": dt.date(2026, 6, 19)},
+            }
+        )
+
+    assert fake.stdin.getvalue() == ""
+
+
+def test_uv_hook_worker_preserves_json_serializable_request_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload_args = {
+        "enabled": True,
+        "count": 2,
+        "labels": ["api", "worker"],
+        "options": {"mode": "strict", "empty": None},
+    }
+    fake = _FakeProcess(stdout='{"id": "1", "ok": true, "result": "after"}\n')
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
     result = worker.request(
         {
             "kind": "transform",
             "module": "hooks.sample",
-            "args": {"day": dt.date(2026, 6, 19)},
+            "args": payload_args,
         }
     )
 
+    sent = json.loads(fake.stdin.getvalue())
     assert result.result == "after"
-    assert '"day": "2026-06-19"' in fake.stdin.getvalue()
+    assert sent["args"] == payload_args
 
 
 def test_uv_hook_worker_discards_success_diagnostics_before_failure(

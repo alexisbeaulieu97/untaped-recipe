@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
-HOOK_API_VERSION = "0.8.0"
+HOOK_API_VERSION = "0.9.0"
 
 
 class YamlIndentOptions(TypedDict, total=False):

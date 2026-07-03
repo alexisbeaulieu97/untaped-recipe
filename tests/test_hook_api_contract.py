@@ -30,7 +30,7 @@ def test_public_hook_api_exposes_helper_types() -> None:
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
-    assert HOOK_API_VERSION == "0.8.0"
+    assert HOOK_API_VERSION == "0.9.0"
     assert options["indent"]["sequence"] == 4
     assert HookHelpers.__name__ == "HookHelpers"
 
@@ -60,14 +60,14 @@ def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
 def test_release_script_verifies_version_parity() -> None:
     module = _release_module()
 
-    module.verify_versions("0.8.1")
+    module.verify_versions("0.9.0")
 
 
 def test_release_script_rejects_version_mismatch() -> None:
     module = _release_module()
 
     try:
-        module.verify_versions("0.8.0")
+        module.verify_versions("0.8.1")
     except SystemExit as exc:
         assert exc.code == 1
     else:

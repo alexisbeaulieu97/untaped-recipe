@@ -33,10 +33,10 @@ def test_build_package_wheel_writes_recipe_wheel(
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     release.build_package_wheel(dist_dir)
 
-    assert list(dist_dir.glob("untaped_recipe-0.8.1-*.whl"))
+    assert list(dist_dir.glob("untaped_recipe-0.9.0-*.whl"))
 
 
-def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(
+def test_release_smoke_new_runs_outside_workspace_with_local_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -48,27 +48,28 @@ def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(
     def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
         assert env is not None
         calls.append((command, cwd, env))
-        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
-        hook = library / "hooks" / "hook_api_smoke"
-        hook.mkdir(parents=True)
-        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+        pack = cwd / "hook_api_smoke"
+        pack.mkdir(exist_ok=True)
+        (pack / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.9.0"\n')
 
     monkeypatch.setattr(release, "_run", fake_run)
 
-    release.smoke_hook_init("0.8.0", find_links=dist_dir)
+    release.smoke_new("0.9.0", find_links=dist_dir)
 
-    assert calls
-    command, cwd, env = calls[0]
+    assert len(calls) == 2
+    first, second = calls
+    command, cwd, env = first
     assert cwd != Path(release.ROOT)
     assert "--no-project" in command
     assert "--project" not in command
-    assert "untaped-recipe==0.8.0" in command
-    assert command[-4:] == ["untaped-recipe", "hook", "init", "hook_api_smoke"]
+    assert "untaped-recipe==0.9.0" in command
+    assert command[-4:] == ["untaped-recipe", "new", "pack", "hook_api_smoke"]
+    assert second[0][-4:] == ["untaped-recipe", "new", "hook", "./hook_api_smoke/probe"]
     assert env is not None
     assert env["UV_FIND_LINKS"] == str(dist_dir.resolve())
 
 
-def test_release_smoke_hook_init_resolves_relative_local_index(
+def test_release_smoke_new_resolves_relative_local_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -78,23 +79,22 @@ def test_release_smoke_hook_init_resolves_relative_local_index(
     captured_find_links: list[str] = []
 
     def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
-        del command, cwd
+        del command
         assert env is not None
         captured_find_links.append(env["UV_FIND_LINKS"])
-        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
-        hook = library / "hooks" / "hook_api_smoke"
-        hook.mkdir(parents=True)
-        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+        pack = cwd / "hook_api_smoke"
+        pack.mkdir(exist_ok=True)
+        (pack / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.9.0"\n')
 
     monkeypatch.setattr(release, "_run", fake_run)
     monkeypatch.chdir(tmp_path)
 
-    release.smoke_hook_init("0.8.0", find_links=Path("dist"))
+    release.smoke_new("0.9.0", find_links=Path("dist"))
 
-    assert captured_find_links == [str(dist_dir.resolve())]
+    assert captured_find_links == [str(dist_dir.resolve()), str(dist_dir.resolve())]
 
 
-def test_release_smoke_hook_init_uses_published_index_and_isolated_env(
+def test_release_smoke_new_uses_published_index_and_isolated_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -107,21 +107,20 @@ def test_release_smoke_hook_init_uses_published_index_and_isolated_env(
     def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
         assert env is not None
         calls.append((command, cwd, env))
-        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
-        hook = library / "hooks" / "hook_api_smoke"
-        hook.mkdir(parents=True)
-        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+        pack = cwd / "hook_api_smoke"
+        pack.mkdir(exist_ok=True)
+        (pack / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.9.0"\n')
 
     monkeypatch.setattr(release, "_run", fake_run)
 
-    release.smoke_hook_init("0.8.0", index_url="https://test.pypi.org/simple/")
+    release.smoke_new("0.9.0", index_url="https://test.pypi.org/simple/")
 
-    assert calls
+    assert len(calls) == 2
     command, cwd, env = calls[0]
     assert cwd != Path(release.ROOT)
     assert "--no-project" in command
     assert "--project" not in command
-    assert "untaped-recipe==0.8.0" in command
+    assert "untaped-recipe==0.9.0" in command
     assert env is not None
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONPATH" not in env
@@ -163,7 +162,7 @@ def test_release_verify_sdk_published_uses_isolated_uv_environment(
     command, cwd, env = calls[0]
     assert cwd != Path(release.ROOT)
     assert "--with" in command
-    assert "untaped>=2.4.0,<3" in command
+    assert "untaped>=3.0.0,<4" in command
     assert env is not None
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONPATH" not in env
@@ -264,7 +263,7 @@ def test_public_hook_api_exposes_yaml_option_types() -> None:
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
-    assert HOOK_API_VERSION == "0.8.0"
+    assert HOOK_API_VERSION == "0.9.0"
     assert options["indent"]["sequence"] == 4
     assert ExternalHookHelpers.__name__ == "HookHelpers"
 

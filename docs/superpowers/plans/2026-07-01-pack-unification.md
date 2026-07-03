@@ -14,6 +14,7 @@
 - `PACKAGE_VERSION = "0.9.0"` in `src/untaped_recipe/_version.py`; `HOOK_API_VERSION = "0.9.0"` in `src/untaped_recipe/hook_api.py`; root `pyproject.toml` `version = "0.9.0"`.
 - Scaffold floors derive from those constants: dev dep `untaped-recipe>=0.9`, `requires_hook_api = ">=0.9,<1"` (upper bound is new and mandatory).
 - Pack name = `[project].name` with `untaped-recipe-` prefix stripped. Qualified refs use `pack/name`. Ambiguous bare names are errors listing qualified candidates — never first-match.
+- SDK dependency: `untaped>=3.0.0,<4`, set in Task 0.5 before any feature work. Every task's new code targets the SDK 3.0 surface (`emit`, `batch_apply`, `finish`, `read_stdin` as of 3.0); the seven consolidated emit kinds are `recipe.<snake_case>` and already satisfy 3.0's kind rule.
 - No compat shims, no migration command (sole user). No auto-discovery of recipes — manifest tables are the identity.
 - Repo conventions (AGENTS.md): four-layer imports `cli → application → domain`, `infrastructure` implements `application/ports.py`; absolute imports only; SDK imports only from `untaped.api`; run tests with `uv run pytest -p no:cacheprovider`; FORCE_COLOR gotcha handled by conftest.
 - Full gate before any release: `uv lock`, `uv run pre-commit run --all-files --show-diff-on-failure`, `uv run mypy`, `uv run pytest`, `uv build --no-sources`, `uv run python scripts/release.py verify-versions 0.9.0`.
@@ -29,6 +30,33 @@
 - [ ] **Step 2:** `git fetch origin && git checkout -b pack-unification origin/main`.
 - [ ] **Step 3:** Read every file listed above end to end. This plan cites symbols as of 2026-07-01; PR #17's follow-up may have moved lines. If a cited symbol is gone or renamed, adapt the task to the current symbol and note the delta in the commit message.
 - [ ] **Step 4:** Run `uv run pytest -p no:cacheprovider` — must be green before any change.
+
+### Task 0.5: Re-pin to untaped SDK 3.x (mechanical migration)
+
+Context: this plan predates untaped 3.0.0 (released 2026-07-03; every other tool in
+the fleet has adopted it). All new code in Tasks 1-16 must be written against the
+3.0 surface, so the re-pin happens first. Recipe's emit kinds are already
+`recipe.<snake_case>` and satisfy 3.0's stricter kind rule, so the migration is
+expected to be mechanical; if Step 2 reveals otherwise, STOP and report before
+adapting.
+
+**Files:**
+- Modify: `pyproject.toml` (the `untaped` dependency pin), `uv.lock`
+- Modify: any `src/untaped_recipe/cli/` module where Step 3 finds echo-then-exit
+  patterns
+- Test: existing suite (behavior unchanged)
+
+- [ ] **Step 1:** In `pyproject.toml`, change the `untaped` dependency to
+  `untaped>=3.0.0,<4`. Run `uv lock`.
+- [ ] **Step 2:** `uv run pytest -p no:cacheprovider` — fix any breakage surfaced by
+  the 3.0 SDK. Expected: none or trivial.
+- [ ] **Step 3:** `grep -rn "SystemExit\|sys\.exit" src/untaped_recipe/` — where a
+  command echoes per-item results and then raises a bare non-zero exit, switch to
+  the SDK's `finish(...)` (import from `untaped.api`); where an aggregate error
+  message IS the error contract, keep `raise UntapedError(...)`. Note each judgment
+  call in the commit message.
+- [ ] **Step 4:** `uv run mypy` clean; full suite green.
+- [ ] **Step 5:** Commit: `git commit -m "chore!: re-pin to untaped SDK 3.x"`.
 
 ### Task 1: AST-based hook export discovery
 
@@ -229,12 +257,12 @@ with a `capture_diagnostics` flag, and normal apply builds debug results with
 - Consumes: `PackManifest`, `pack_name_from_project`, `PackRef` from Task 5; `hook_exports` from Task 1.
 - Produces `PackLibrary` with:
   - `__init__(self, *, library_root: Path)` — packs live at `library_root / "packs" / name`; index at `library_root / "packs.toml"` mapping name → `{ source = "<path-or-url>", rev = "<rev-or-empty>", version = "<[project].version at add time>" }`
-  - `add(self, source_dir: Path, *, source: str, rev: str | None, name: str | None, force: bool) -> PackManifest` — validates the manifest, checks `requires_hook_api`, copies the directory (mirroring the copy/validation behavior in today's `HookLibrary.add`), errors on existing name without `force` (message names the pack and suggests `--force`/`--name`), writes the index entry
+  - `add(self, source_dir: Path, *, source: str, rev: str | None, name: str | None, force: bool) -> PackManifest` — validates the manifest, checks `requires_hook_api`, copies the directory (mirroring the copy/validation behavior in today's `HookLibrary.add`), errors on existing name without `force` (message names the pack and suggests `--force`/`--name`), writes the index entry. When `name` is given it overrides the library key: the index key is the pack's identity everywhere (`find_recipe`/`find_hook` qualification, `packs()`, `remove`); the manifest-derived name is display metadata only.
   - `remove(self, name: str) -> None`
   - `packs(self) -> list[PackManifest]`
   - `find_recipe(self, ref: PackRef) -> tuple[PackManifest, RecipeEntry]` and `find_hook(self, ref: PackRef) -> tuple[PackManifest, HookEntry]` — bare-name matches across >1 pack raise `ValueError` listing every `pack/name` candidate; zero matches raise `ValueError("recipe not found: ...")` / `("hook not found: ...")`
 
-- [ ] **Step 1:** Failing tests: add a fixture pack then `find_recipe`/`find_hook` by bare and qualified name; two packs sharing a hook name → ambiguity error listing `a/x` and `b/x`; add duplicate name → error, `force=True` replaces; `remove` deletes dir + index row; index round-trips source, rev, and version.
+- [ ] **Step 1:** Failing tests: add a fixture pack then `find_recipe`/`find_hook` by bare and qualified name; two packs sharing a hook name → ambiguity error listing `a/x` and `b/x`; add duplicate name → error, `force=True` replaces; add with `name="alias"` → resolvable as `alias/...` and NOT under the manifest name; `remove` deletes dir + index row; index round-trips source, rev, and version.
 - [ ] **Step 2:** FAIL run.
 - [ ] **Step 3:** Implement. Write `packs.toml` with `tomlkit` if already a dependency, else emit minimal TOML by hand (check `pyproject.toml` first; do not add a dependency without checking). Copy semantics: `shutil.copytree` after validation, excluding `.git`.
 - [ ] **Step 4:** Tests + mypy green.
@@ -284,10 +312,10 @@ with a `capture_diagnostics` flag, and normal apply builds debug results with
 - Test: rewrite the corresponding command tests; keep `apply` behavior tests passing with refs resolved through `PackLibrary`
 
 **Interfaces:**
-- Consumes: everything above. `apply <ref|path>`: a path (contains `/` AND exists on disk, or ends `.yml`) is loaded directly; otherwise `parse_ref` + `PackLibrary.find_recipe`.
-- Produces: final CLI surface exactly as the spec table (`new`, `add`, `remove`, `check`, `edit`, `list`, `show`, `hook run`, `apply`, `backup`, `config`). Emit record kinds consolidate to exactly: `recipe.outcome`, `recipe.backup`, `recipe.hook_run`, `recipe.recipe`, `recipe.hook`, `recipe.pack`, `recipe.check` — `recipe.pack_check` and `recipe.pack_recipe` die with their commands (breaking for pipe consumers; called out in the Task 16 migration note).
+- Consumes: everything above. `apply <ref|path>`: a path must be EXPLICIT — it starts with `./`, `../`, `/`, or `~`, or ends in `.yml`/`.yaml`; anything else (including `a/b`) is always a library ref via `parse_ref` + `PackLibrary.find_recipe`. No on-disk existence sniffing in the classification — `apply ansible/playbook-migration` never changes meaning because a local `ansible/` directory exists.
+- Produces: final CLI surface exactly as the spec table (`new`, `add`, `remove`, `check`, `edit`, `list`, `show`, `hook run`, `apply`, `backup`, `config`). `remove <pack>` is destructive (library packs are editable in place; removal discards edits): interactive confirm before deleting, `--yes` skips, piped/non-tty stdin without `--yes` refuses with the standard destructive-verb message. Emit record kinds consolidate to exactly: `recipe.outcome`, `recipe.backup`, `recipe.hook_run`, `recipe.recipe`, `recipe.hook`, `recipe.pack`, `recipe.check` — `recipe.pack_check` and `recipe.pack_recipe` die with their commands (breaking for pipe consumers; called out in the Task 16 migration note).
 
-- [ ] **Step 1:** Write failing CLI tests for: `list` (recipes with pack column), `list --hooks`, `show pack`, `show pack/recipe`, `check <pack>` (runs manifest + AST export validation for every wired step), ambiguous `apply set_owner`-style ref error text. Add one test pinning the surviving kind names: grep-style assertion that the `kind=` values passed to `emit`/`render_rows` across `src/untaped_recipe/cli/` equal the seven-kind set above (import each command module's constant or scan the source tree — mirror however existing tests pin emit kinds, `grep -rn "recipe\." tests/ | grep kind` first).
+- [ ] **Step 1:** Write failing CLI tests for: `list` (recipes with pack column), `list --hooks`, `show pack`, `show pack/recipe`, `check <pack>` (runs manifest + AST export validation for every wired step), ambiguous `apply set_owner`-style ref error text; ref-vs-path classification (bare `a/b` resolves via the library even when a matching local directory exists; `./a/b` and `a/b/recipe.yml` load from disk); `remove` without `--yes` on non-tty stdin refuses, with `--yes` deletes, interactive decline leaves the pack installed. Add one test pinning the surviving kind names: grep-style assertion that the `kind=` values passed to `emit`/`render_rows` across `src/untaped_recipe/cli/` equal the seven-kind set above (import each command module's constant or scan the source tree — mirror however existing tests pin emit kinds, `grep -rn "recipe\." tests/ | grep kind` first).
 - [ ] **Step 2:** FAIL run.
 - [ ] **Step 3:** Implement; migrate resolution inside `HookResolver` to consult `PackLibrary` instead of `<library_root>/hooks`; delete the five dead modules and every import of them; rewrite their tests against the new surface (behavior parity: everything `recipe check`/`pack check` verified before must still be verified by `check`).
 - [ ] **Step 4:** Full suite + mypy + `uv run pre-commit run --all-files --show-diff-on-failure` green.
@@ -305,7 +333,7 @@ with a `capture_diagnostics` flag, and normal apply builds debug results with
 - Produces record builders emitted via the SDK `emit` (single-object detail view):
   - `recipe_detail(ref: str, recipe: Recipe, path: Path) -> dict` — keys: `ref`, `description`, `inputs` (list of `{name, type, required, default, description, sensitive}` from `InputSpec`), `steps` (list of `{type, file_or_files, hook}` summaries), `hooks` (sorted unique hook names referenced by steps), `path`
   - `hook_detail(ref: str, entry: HookEntry, exports: frozenset[str], module_file: Path) -> dict` — keys: `ref`, `module`, `exports` (sorted list), `path`
-  - `pack_detail(manifest: PackManifest, root: Path) -> dict` — keys: `name`, `version`, `recipes` (name + first line of each recipe's description), `hooks` (name + exports), `path`
+  - `pack_detail(installed_name: str, manifest: PackManifest, root: Path) -> dict` — keys: `name` (the library index key), `project` (the manifest's `[project].name`, so a `--name` override stays visible), `version`, `recipes` (name + first line of each recipe's description), `hooks` (name + exports), `path`
 - `show` never dumps raw file text; `edit <ref>` remains the way to open the file.
 
 - [ ] **Step 1:** Failing tests: build a fixture pack whose recipe declares a typed input (`owner`, type str, required, description, one `sensitive` input) — `recipe_detail` returns the inputs list with all six keys and redacts nothing (redaction is a preview concern; `show` displays the *spec*, not values); `hook_detail` reports `exports` from the AST scan; `pack_detail` lists recipes and hooks. CLI test: `show <pack>/<recipe> --format json` emits one `recipe.recipe` record containing the `inputs` array.
@@ -345,7 +373,7 @@ and must stay independent of confirmation.
 
 **Interfaces:**
 - Produces: `BackupStore.plan_restore(backup_id: str, *, force: bool) -> list[RestoreItem]` where `RestoreItem` is a frozen dataclass `(path: Path, action: str)` with `action` in `{"restore", "create", "delete"}` (mirroring what `restore` already decides per file), raising the existing changed-since-backup error when `force=False` — i.e. the plan performs the hash checks up front so nothing fails mid-apply. `restore(...)` gains an `items:` fast path or is refactored so the CLI applies exactly the planned items.
-- CLI: `restore <id> [--force] [--yes]` — prints the per-file preview rows (`path`, `action`), confirms via `batch_apply(destructive=True, assume_yes=yes, ...)` with one item per file, refuses piped stdin without `--yes` (same policy as other destructive verbs), reports progress, exits non-zero if any item failed.
+- CLI: `restore <id> [--force] [--yes]` — prints the per-file preview rows (`path`, `action`), confirms via `batch_apply(destructive=True, assume_yes=yes, ...)` with one item per file, refuses piped stdin without `--yes` (same policy as other destructive verbs), reports progress, and exits through the SDK's `finish(outcome)` (3.0 surface — no hand-rolled non-zero exit).
 
 - [ ] **Step 1:** Failing tests: `plan_restore` on a bundle returns the expected `(path, action)` rows; changed-file without `force` raises before anything is written; CLI `restore` without `--yes` on a non-tty aborts with the standard refuse message; with `--yes` restores and exits 0; a failing item yields exit 1.
 - [ ] **Step 2:** FAIL run.
@@ -410,8 +438,8 @@ strict, with a per-step escape hatch.
 - Modify: `README.md`, `AGENTS.md`, `docs/recipes.md`, `docs/hooks.md`
 - Create: `docs/packs.md`; changelog/release-notes migration note
 
-- [ ] **Step 1:** Write `docs/packs.md` (pack concept, manifest example from the spec, sharing via `add <path|git-url>`, qualified names, resolution + ambiguity rule). Rewrite `docs/hooks.md` for the function-name contract and dual-verb hooks; delete kind-migration prose. Update `README.md` command table. Document `unknown_tokens: error | keep` in `docs/recipes.md` with the GitHub Actions/Helm example.
-- [ ] **Step 2:** Add the six permanent invariants to `AGENTS.md` verbatim from the spec §"Wave 3": no control flow in the recipe schema; planning is the only execution; no state/inventory; builtins minimal; pure-data hook boundary; pipe composability (untaped envelope ingestion via `apply --stdin` + `record` in input `from`) is a protected feature.
+- [ ] **Step 1:** Write `docs/packs.md` (pack concept, manifest example from the spec, sharing via `add <path|git-url>`, qualified names, resolution + ambiguity rule + explicit-path rule, and the trust-stance paragraph from spec §Sharing: packs are trusted code on the pip model; the mitigations are the evaluate-before-trust surfaces). Rewrite `docs/hooks.md` for the function-name contract and dual-verb hooks; delete kind-migration prose. Update `README.md` command table. Document `unknown_tokens: error | keep` in `docs/recipes.md` with the GitHub Actions/Helm example.
+- [ ] **Step 2:** Add invariant #0 (the domain lock, verbatim from spec §"Domain": deterministic transformation engine over file trees; never-build list) plus the seven permanent invariants from spec §"Wave 3" to `AGENTS.md`: no control flow in the recipe schema; planning is the only execution; no state/inventory; builtins minimal; pure-data hook boundary; pipe composability (untaped envelope ingestion via `apply --stdin` + `record` in input `from`) is a protected feature; hooks are pure at planning time (may read target tree + own pack dir, never write/network/read outside).
 - [ ] **Step 3:** Migration note (changelog): manifests drop `kind`; library moves under `packs/`; floors `>=0.9,<1`; CLI renames table (old verb → new verb); emit kinds `recipe.pack_check`/`recipe.pack_recipe` removed (pipe consumers rekey on `recipe.check`/`recipe.recipe`); template steps now strict by default (`unknown_tokens: keep` restores pass-through); recipe.yml schema itself is unchanged (`version: 1`).
 - [ ] **Step 4:** `uv run pre-commit run --all-files --show-diff-on-failure` green (docs formatting). Commit: `git commit -m "docs: pack unification docs, invariants, migration note"`.
 - [ ] **Step 5:** Full release gate from Global Constraints, then open the PR (release itself follows `docs/release.md` after review).
@@ -422,3 +450,4 @@ strict, with a per-step escape hatch.
 
 - Spec coverage: hook contract + AST check (T1-T2), dual-verb + `hook run` (T3), executor-port collapse (T4), identity/manifest (T5), library + index/version + ambiguity (T6), sharing front doors + confirm (T7), `new` scaffolding + floors (T8), CLI flattening + resolution + emit-kind consolidation + deletions (T9), structured `show` (T10), library doctor (T11), restore-through-batch_apply (T12), UiContext plumbing + dead-code trim (T13), versions/release smoke (T14), `unknown_tokens` template policy + parity test (T15), invariants/docs/migration (T16). Wave 2 (test harness) is intentionally out — separate plan against the 0.9.0 codebase; hardening bugfixes (encoding/newline, worker lifecycle, input semantics) live in `2026-07-01-hardening-0.8.1.md` and execute BEFORE this plan.
 - Known deliberate deference: exact fixture-helper names in existing test files and post-PR-#17 line numbers are re-read at execution (Task 0 Step 3 covers this); interfaces and error strings above are the contract.
+- Amended 2026-07-03 (vision + correctness review with Alexis): Task 0.5 re-pins to untaped SDK 3.x before feature work; explicit-path rule replaces on-disk sniffing in Task 9; `remove` gained destructive gating; `--name` index-key identity pinned in Task 6; Task 12 exits via `finish(outcome)`; AGENTS.md invariants grew to #0 + seven. Spec amendments: §Domain (invariant #0 + never-build list), trust stance, purity contract, Deferred designs (ensure semantics, follow-up declarations, composition trigger).

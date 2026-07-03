@@ -1,10 +1,15 @@
 # Pack Unification — Design
 
 Date: 2026-07-01
-Status: approved (brainstormed and locked with Alexis)
+Status: approved (brainstormed and locked with Alexis); amended 2026-07-03 after a
+second vision + correctness review with Alexis (domain lock, SDK 3.0 re-pin at the
+front of the wave, gap rulings, deferred-design models).
 Target release: 0.9.0 (wave 1), 0.10.0 (wave 2)
 Sequencing: implementation starts only after PR #17 merges and untaped-recipe 0.8.0
 publishes to PyPI, so the release pipeline is proven before this breaking wave.
+As of the amendment both preconditions are met (0.8.0 and 0.8.1 shipped); the wave
+now begins by re-pinning to `untaped>=3.0.0,<4` (plan Task 0.5) so every line of new
+code is written against the SDK 3.0 surface instead of being migrated later.
 
 ## Context
 
@@ -22,6 +27,39 @@ project manifest and in every recipe step that uses it — with a cross-check
 dispatches by calling the `transform()` or `validate()` function by name.
 
 This redesign lands while the project has a single user, so breaking changes are cheap.
+
+## Domain (invariant #0)
+
+**untaped-recipe is a deterministic transformation engine over file trees — "moderne
+for files, driven by hooks."** A recipe's scope is anything expressible as planned
+file edits: version migrations, bulk config rewrites, scaffolding, drift checks. The
+comparison that holds is OpenRewrite/moderne (transformation recipes, previewable at
+scale), not Ansible (general task execution): "you could write a recipe for anything"
+is bounded to *anything that is a file transformation*. This sentence wins every
+future scope argument and joins AGENTS.md alongside the Wave-3 invariants.
+
+Two consequences are load-bearing:
+
+- **Truthful preview is the product.** Plan → preview → confirm → flush is only
+  trustworthy while every step is a planned file mutation. Agent-authored packs are a
+  first-class north-star use case precisely because the human reviews the plan, not
+  the agent; anything that executed at apply time outside the plan buffer would make
+  the preview lie.
+- **Follow-up commands are data.** Real migrations often end with "now run `uv lock`"
+  or "re-run the formatter". Recipes will be able to *declare* follow-ups; preview
+  and outcome *display* them; recipe never executes them (model locked, design
+  deferred — see Deferred designs).
+
+**Never build** (recorded with reasons so future scope arguments end here):
+
+- Exec/shell/API step types — they kill truthful preview; this is the boundary
+  decision itself. "Ensure"-style capabilities enter as *planned* mutations resolved
+  at planning time (see Deferred designs), never as execution-time convergence.
+- Control flow in the recipe schema (`when:`, loops) — a decision is a hook.
+- State, inventory, or remote execution — targets come from arguments and pipes.
+- Hook sandboxing — packs are trusted code, on the same model as `pip install`; the
+  mitigations are evaluate-before-trust surfaces (`show`, `check`'s AST scan, the
+  `add` confirmation, the 0.10 harness), not a sandbox.
 
 ## Decision: everything is a pack
 
@@ -98,6 +136,12 @@ One `PackLibrary` replaces the three library modules.
   bookkeeping. The index is bookkeeping for a future `update` command; `update` itself
   is out of scope for 0.9.0.
 - Library packs remain editable in place (parity with today's `hook edit`).
+- `add --name <n>` overrides the library key (the collision escape). The index key is
+  the pack's identity everywhere — refs, `list`, `check`, `remove`; `show` displays
+  both the installed name and the manifest's `[project].name` when they differ.
+- `packs.toml` is written without a cross-process lock; concurrent `add`/`remove` can
+  race. Accepted for the sole-user reality — recorded as a decision, not an
+  oversight.
 
 ## Resolution
 
@@ -107,9 +151,17 @@ For `hook: set_owner` referenced by a recipe:
 2. library packs,
 3. builtins (`yaml_edit` stays the only builtin; builtins remain in-process).
 
+Builtins stay minimal by invariant: structured-editing hooks (TOML, JSON, INI, …)
+belong in packs, which can carry real dependencies via uv — `yaml_edit` remains the
+lone, historical builtin. The eventual home for common editors is a curated "std"
+pack, not core growth.
+
 Recipe references in `apply` resolve against the library (bare name when unique,
-`pack/name` otherwise) or a filesystem path (`./recipe.yml`, `./pack-dir` with a
-qualified recipe name).
+`pack/name` otherwise) or an **explicit** filesystem path. A path must be marked as
+one: it starts with `./`, `../`, `/`, or `~`, or ends in `.yml`/`.yaml`. Anything
+else — including `a/b` — is always a library ref, never sniffed against the working
+directory, so `apply ansible/playbook-migration` cannot change meaning because a
+local `ansible/` directory happens to exist.
 
 - Bare names that match more than one library pack are **errors**, listing the
   qualified candidates. Never first-match.
@@ -127,13 +179,13 @@ packs because packs are the only unit:
 | `new recipe <pack>/<name>` | scaffold a recipe inside a pack, updating the manifest |
 | `new hook <pack>/<name>` | scaffold a hook inside a pack, updating the manifest |
 | `add <path\|git-url> [--rev R] [--name N] [--force]` | install a pack into the library |
-| `remove <pack> --yes` | uninstall |
+| `remove <pack> [--yes]` | uninstall; destructive (library packs are editable in place, removal discards edits): interactive confirm, `--yes` skips, piped stdin refused without `--yes` |
 | `list [--hooks\|--packs]` | recipes by default (with source pack); hook and pack views |
 | `show <ref>` | structured pack, recipe, or hook detail (see below) |
 | `check [pack\|path]` | validate manifest, recipes, hook wiring (AST scan); no args = whole library |
 | `edit <ref>` | open the relevant file |
 | `hook run <ref> ...` | unchanged debugging verb (verb-selection rule above) |
-| `apply <recipe-ref\|path> ...` | unchanged |
+| `apply <recipe-ref\|path> ...` | apply semantics unchanged; ref-vs-path classification per Resolution (explicit paths only) |
 | `backup ...` | `restore` gains apply-parity confirmation (below); `list`/`show` unchanged |
 
 `new <kind>` is the single creation pattern, reusing qualified names. Personal one-off
@@ -186,6 +238,13 @@ doors), recording source + rev in `packs.toml`. Before installing, `add` prints 
 recipes and hooks the pack brings and asks for confirmation (`--yes` to skip):
 installing a pack installs trusted code, and that should be visible.
 
+Trust stance, explicitly: installing a pack is installing code, on the same trust
+model as `pip install` — there is deliberately no sandbox (see Never build). The
+mitigations are evaluate-before-trust surfaces: the `add` confirmation listing what
+comes in, structured `show`, `check`'s no-import AST scan, and (0.10) the test
+harness. A user who `add`s a pack is trusting its author; the tool's job is to make
+what they are trusting visible, not to pretend the code is contained.
+
 ## Wave 2 (0.10.0): recipe test harness
 
 Expanded into a full design at
@@ -235,6 +294,11 @@ tests/<recipe-name>/<case-name>/
   6. Pipe composability is a protected feature: `apply --stdin` ingests untaped
      NDJSON envelopes (kind tags, `target_path`), and input `from` expressions can
      read the piped `record` — other untaped tools' output drives recipes.
+  7. Hooks are pure at planning time: they may read the target tree and their own
+     pack directory (deterministic inputs), and must never write, reach the network,
+     or read outside those roots. Planning's truth depends on it; the 0.10 harness
+     catches violations as unstable goldens.
+  (AGENTS.md also carries invariant #0, the domain lock from §Domain.)
 - The recipe file schema stays `version: 1` in the 0.9 wave — the breaking changes
   are in manifests, the library, and the CLI, not in recipe.yml.
 - Hook-executor port collapse: `HookExecutorPort` and `HookDebugExecutorPort` are
@@ -259,6 +323,25 @@ Sole-user migration, no compat shims, no migration command:
   `packs/`; hook manifests drop `kind`; `requires_hook_api` floors bump to
   `>=0.9,<1`; scaffolded dev-dep floors bump to `untaped-recipe>=0.9`.
 - A short migration note in the changelog covers the manual steps.
+
+## Deferred designs (first post-0.9 minors; models locked 2026-07-03)
+
+- **Ensure semantics.** The plan layer already models create/remove/modify
+  (`FileChange.before/after`), and the schema already has `template`, `copy`, and
+  `remove` steps plus `files:` fan-out — the capability largely exists. The remaining
+  gap is flags, not a subsystem: an `ensure`-style step (or flags on existing steps)
+  covering `state: dir`, only-if-absent creation, and possibly glob patterns in
+  `files:`. Resolved at planning time against the target tree — declarative like an
+  Ansible module to read, but planned and previewed, never converged at execution
+  time.
+- **Follow-up declarations.** A recipe-level list of suggested follow-up commands
+  (pure data: command string + reason), rendered in preview and outcome. Never
+  executed by recipe.
+- **Recipe composition** (declarative include-lists, à la moderne's migration
+  recipes) is *expected eventually, not yet* — upgraded from the original brainstorm
+  rejection. Trigger: the first real pack where one recipe's step list duplicates
+  another's. Pre-locked constraint for that future design: include-lists only — no
+  conditions, no parameters beyond input pass-through.
 
 ## Deferred: SDK extraction candidates
 
@@ -288,6 +371,9 @@ SDK surface. Recorded here so the audit findings survive until that brainstorm.
 
 - PyPI-style pack distribution (revisit only if packs need inter-pack dependencies).
 - Standalone recipe projects as a library/sharing form.
-- Control flow, conditionals, or loops in the recipe schema.
+- Control flow, conditionals, or loops in the recipe schema (see §Domain — never).
+- Exec/shell/API step types and hook sandboxing (see §Domain — never).
 - Saved-plan / state / drift semantics (plan output stays ephemeral).
 - Pack `update` command (index records enough to add it later).
+- Recipe composition — not a permanent non-goal; deferred with a trigger (see
+  Deferred designs).

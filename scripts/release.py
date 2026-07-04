@@ -22,30 +22,32 @@ from packaging.version import Version
 
 from untaped_recipe._version import PACKAGE_VERSION
 from untaped_recipe.hook_api import HOOK_API_VERSION
-from untaped_recipe.infrastructure import hook_library
+from untaped_recipe.infrastructure import pack_scaffold
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "untaped-recipe"
 IMPORT_NAME = "untaped_recipe"
 SDK_PACKAGE_NAME = "untaped"
-SDK_REQUIREMENT = "untaped>=2.4.0,<3"
+SDK_REQUIREMENT = "untaped>=3.0.0,<4"
 
 
 def verify_versions(expected_version: str) -> None:
     """Require package and hook API scaffold version sources to be consistent."""
     root_version = _project_version(ROOT / "pyproject.toml")
-    project_requirement = f">={_major_minor(HOOK_API_VERSION)}"
-    dev_requirement = f"{PACKAGE_NAME}>={_major_minor(expected_version)},<1"
+    hook_api = Version(HOOK_API_VERSION)
+    package = Version(PACKAGE_VERSION)
+    project_requirement = f">={hook_api.major}.{hook_api.minor},<{hook_api.major + 1}"
+    dev_requirement = f"{PACKAGE_NAME}>={package.major}.{package.minor}"
 
     checks = [
         ("root pyproject", root_version, expected_version),
         ("PACKAGE_VERSION", PACKAGE_VERSION, expected_version),
         (
             "scaffold requires_hook_api floor",
-            hook_library._HOOK_API_PROJECT_REQUIREMENT,
+            pack_scaffold._HOOK_API_PROJECT_REQUIREMENT,
             project_requirement,
         ),
-        ("scaffold dev dependency", hook_library._HOOK_API_DEV_REQUIREMENT, dev_requirement),
+        ("scaffold dev dependency", pack_scaffold._HOOK_API_DEV_REQUIREMENT, dev_requirement),
     ]
     mismatches = [
         (label, actual, expected) for label, actual, expected in checks if actual != expected
@@ -103,13 +105,13 @@ def wait_published(
     raise SystemExit(f"{PACKAGE_NAME}=={version} was not available before timeout\n{last_error}")
 
 
-def smoke_hook_init(
+def smoke_new(
     version: str,
     *,
     index_url: str | None = None,
     find_links: Path | None = None,
 ) -> None:
-    """Run a real CLI hook scaffold in a temporary directory outside this workspace."""
+    """Run real CLI pack/hook scaffolds in a temporary directory outside this workspace."""
     with tempfile.TemporaryDirectory(prefix="untaped-recipe-smoke-") as temp:
         temp_root = Path(temp)
         library = temp_root / "library"
@@ -124,28 +126,23 @@ def smoke_hook_init(
         if find_links is not None:
             env["UV_FIND_LINKS"] = str(find_links.resolve())
 
-        _run(
-            [
-                "uv",
-                "run",
-                "--no-project",
-                "--refresh-package",
-                PACKAGE_NAME,
-                "--with",
-                f"{PACKAGE_NAME}=={version}",
-                "untaped-recipe",
-                "hook",
-                "init",
-                "hook_api_smoke",
-            ],
-            cwd=temp_root,
-            env=env,
-        )
-        lockfile = library / "hooks" / "hook_api_smoke" / "uv.lock"
+        command = [
+            "uv",
+            "run",
+            "--no-project",
+            "--refresh-package",
+            PACKAGE_NAME,
+            "--with",
+            f"{PACKAGE_NAME}=={version}",
+            "untaped-recipe",
+        ]
+        _run([*command, "new", "pack", "hook_api_smoke"], cwd=temp_root, env=env)
+        _run([*command, "new", "hook", "./hook_api_smoke/probe"], cwd=temp_root, env=env)
+        lockfile = temp_root / "hook_api_smoke" / "uv.lock"
         lock = lockfile.read_text()
         if PACKAGE_NAME not in lock or version not in lock:
             raise SystemExit(
-                f"smoke hook lockfile did not include {PACKAGE_NAME}=={version}: {lockfile}"
+                f"smoke lockfile did not include {PACKAGE_NAME}=={version}: {lockfile}"
             )
 
 
@@ -275,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     wait.add_argument("--index-url")
     wait.add_argument("--timeout-seconds", type=int, default=300)
 
-    smoke = subparsers.add_parser("smoke-hook-init")
+    smoke = subparsers.add_parser("smoke-new")
     smoke.add_argument("version")
     smoke.add_argument("--index-url")
     smoke.add_argument("--find-links", type=Path)
@@ -297,8 +294,8 @@ def main(argv: list[str] | None = None) -> int:
             index_url=args.index_url,
             timeout_seconds=args.timeout_seconds,
         )
-    elif args.command == "smoke-hook-init":
-        smoke_hook_init(
+    elif args.command == "smoke-new":
+        smoke_new(
             args.version,
             index_url=args.index_url,
             find_links=args.find_links,

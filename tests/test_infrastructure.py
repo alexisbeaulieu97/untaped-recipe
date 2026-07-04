@@ -9,8 +9,6 @@ from pathlib import Path
 import pytest
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
-import untaped_recipe.infrastructure.hook_library as hook_library_module
-import untaped_recipe.infrastructure.recipe_library as recipe_library_module
 import untaped_recipe.infrastructure.ruamel_io as ruamel_io_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
@@ -21,201 +19,9 @@ from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.hook_worker import HookHelpers as WorkerHookHelpers
 from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
-from untaped_recipe.infrastructure.hook_library import HookLibrary, add_hook_to_project
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
-from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
 from untaped_recipe.infrastructure.ruamel_io import dump_yaml, load_yaml
-
-
-def test_recipe_library_project_crud_and_errors(tmp_path: Path) -> None:
-    root = tmp_path / "library"
-    single_source = tmp_path / "single-source"
-    _write_recipe_project(single_source, recipe_id="single")
-    package_source = tmp_path / "package-source"
-    _write_recipe_project(package_source, recipe_id="package")
-    library = RecipeLibrary(root)
-
-    assert library.list() == []
-    single = library.add(single_source)
-    package = library.add(package_source)
-
-    assert library.resolve("single") == single / "recipe.yml"
-    assert library.resolve("package") == package / "recipe.yml"
-    assert [entry.kind for entry in library.list()] == ["recipe", "recipe"]
-    with pytest.raises(ValueError, match="already exists"):
-        library.add(single_source)
-    with pytest.raises(ValueError, match="source not found"):
-        library.add(tmp_path / "missing.yml")
-    file_source = tmp_path / "single.yml"
-    file_source.write_text("version: 1\nsteps: []\n")
-    with pytest.raises(ValueError, match="uv recipe project directory"):
-        library.add(file_source)
-
-    assert library.remove("single") == single
-    assert library.remove("package") == root / "recipes" / "package"
-    with pytest.raises(ValueError, match="recipe not found"):
-        library.resolve("single")
-    with pytest.raises(ValueError, match="recipe not found"):
-        library.remove("package")
-
-
-def _write_recipe_project(root: Path, *, recipe_id: str) -> None:
-    root.mkdir(parents=True)
-    (root / "recipe.yml").write_text("version: 1\nsteps: []\n")
-    (root / "pyproject.toml").write_text(
-        "[project]\n"
-        f'name = "untaped-recipe-{recipe_id}"\n'
-        'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
-        "dependencies = []\n\n"
-        "[tool.untaped_recipe.recipes]\n"
-        f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'
-    )
-    (root / "uv.lock").write_text("version = 1\n")
-
-
-def test_hook_library_crud_and_errors(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    _write_hook_project(source, hook_name="shared")
-    library = HookLibrary(tmp_path / "library")
-
-    assert library.list() == []
-    hook = library.add(source)
-
-    assert hook == tmp_path / "library" / "hooks" / "shared"
-    assert library.resolve("shared") == hook
-    assert library.resolve(str(source)) == source
-    entries = library.list()
-    assert [entry.name for entry in entries] == ["shared"]
-    assert entries[0].hooks == ("shared",)
-    assert library.resolve_editable("shared").name == "shared.py"
-    with pytest.raises(ValueError, match="already exists"):
-        library.add(source, name="shared")
-    with pytest.raises(ValueError, match="must match declared hook namespace"):
-        library.add(source, name="wrong")
-    with pytest.raises(ValueError, match="source not found"):
-        library.add(tmp_path / "missing")
-    (tmp_path / "not-a-dir.py").write_text("VALUE = 1\n")
-    with pytest.raises(ValueError, match="uv hook project directory"):
-        library.add(tmp_path / "not-a-dir.py")
-
-    assert library.remove("shared") == hook
-    with pytest.raises(ValueError, match="hook not found"):
-        library.resolve("shared")
-    with pytest.raises(ValueError, match="hook not found"):
-        library.remove("shared")
-
-
-def test_scoped_hook_init_rolls_back_on_lock_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(recipe_library_module, "lock_project", lambda project_root: None)
-    project = RecipeLibrary(tmp_path / "library").init("demo", base_dir=tmp_path)
-    before = (project / "pyproject.toml").read_text()
-
-    def fail_lock(project_root: Path) -> None:
-        raise ValueError(f"lock failed: {project_root}")
-
-    monkeypatch.setattr(hook_library_module, "lock_project", fail_lock, raising=False)
-
-    with pytest.raises(ValueError, match="lock failed"):
-        add_hook_to_project(project, "check", kind="validate")
-
-    assert (project / "pyproject.toml").read_text() == before
-    assert not (project / "src" / "demo_hooks" / "hooks" / "check.py").exists()
-    assert not (project / "src" / "demo_hooks").exists()
-
-
-def test_hook_library_add_rejects_empty_or_mixed_namespace_projects(tmp_path: Path) -> None:
-    library = HookLibrary(tmp_path / "library")
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    (empty / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "empty-hooks"\n'
-        'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
-        "dependencies = []\n\n"
-        "[tool.untaped_recipe.hooks]\n"
-    )
-    (empty / "uv.lock").write_text("version = 1\n")
-    mixed = tmp_path / "mixed"
-    _write_hook_project(mixed, hook_name="ansible.add_play_collections")
-    with (mixed / "pyproject.toml").open("a") as pyproject:
-        pyproject.write(
-            '"awx.update_job_template" = { kind = "transform", '
-            'module = "shared_hooks.hooks.awx" }\n'
-        )
-
-    with pytest.raises(ValueError, match="at least one hook"):
-        library.add(empty)
-    with pytest.raises(ValueError, match="same namespace"):
-        library.add(mixed)
-
-
-def test_hook_library_namespaced_add_show_remove_round_trip(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    _write_hook_project(
-        source,
-        hook_name="ansible.add_play_collections",
-        module_name="add_play_collections",
-    )
-    library = HookLibrary(tmp_path / "library")
-
-    added = library.add(source)
-
-    assert added == tmp_path / "library" / "hooks" / "ansible"
-    assert library.resolve("ansible.add_play_collections") == added
-    assert library.resolve_editable("ansible.add_play_collections").name == (
-        "add_play_collections.py"
-    )
-    assert library.remove("ansible.add_play_collections") == added
-
-
-def test_hook_library_rejects_declared_modules_missing_from_src(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    _write_hook_project(source, hook_name="shared")
-    (source / "src" / "shared_hooks" / "hooks" / "shared.py").unlink()
-    library = HookLibrary(tmp_path / "library")
-
-    with pytest.raises(ValueError, match="hook module file not found"):
-        library.add(source)
-
-
-def test_hook_library_bare_names_do_not_resolve_cwd_projects(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "source"
-    _write_hook_project(source, hook_name="shared")
-    library = HookLibrary(tmp_path / "library")
-    added = library.add(source)
-    cwd_project = tmp_path / "shared"
-    _write_hook_project(cwd_project, hook_name="other")
-    monkeypatch.chdir(tmp_path)
-
-    assert library.resolve("shared") == added
-    assert library.resolve("./shared") == cwd_project
-
-
-def test_hook_library_init_cleans_up_partial_project_on_lock_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    library = HookLibrary(tmp_path / "library")
-
-    def fail_lock(project_root: Path) -> None:
-        raise ValueError("failed to create project uv.lock")
-
-    monkeypatch.setattr(hook_library_module, "lock_project", fail_lock)
-
-    with pytest.raises(ValueError, match="untaped-recipe"):
-        library.init("check")
-
-    assert not (tmp_path / "library" / "hooks" / "check").exists()
-    assert library.list() == []
 
 
 def test_build_package_wheel_writes_recipe_wheel(
@@ -227,10 +33,10 @@ def test_build_package_wheel_writes_recipe_wheel(
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     release.build_package_wheel(dist_dir)
 
-    assert list(dist_dir.glob("untaped_recipe-0.8.1-*.whl"))
+    assert list(dist_dir.glob("untaped_recipe-0.9.0-*.whl"))
 
 
-def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(
+def test_release_smoke_new_runs_outside_workspace_with_local_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -242,27 +48,28 @@ def test_release_smoke_hook_init_runs_outside_workspace_with_local_index(
     def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
         assert env is not None
         calls.append((command, cwd, env))
-        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
-        hook = library / "hooks" / "hook_api_smoke"
-        hook.mkdir(parents=True)
-        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+        pack = cwd / "hook_api_smoke"
+        pack.mkdir(exist_ok=True)
+        (pack / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.9.0"\n')
 
     monkeypatch.setattr(release, "_run", fake_run)
 
-    release.smoke_hook_init("0.8.0", find_links=dist_dir)
+    release.smoke_new("0.9.0", find_links=dist_dir)
 
-    assert calls
-    command, cwd, env = calls[0]
+    assert len(calls) == 2
+    first, second = calls
+    command, cwd, env = first
     assert cwd != Path(release.ROOT)
     assert "--no-project" in command
     assert "--project" not in command
-    assert "untaped-recipe==0.8.0" in command
-    assert command[-4:] == ["untaped-recipe", "hook", "init", "hook_api_smoke"]
+    assert "untaped-recipe==0.9.0" in command
+    assert command[-4:] == ["untaped-recipe", "new", "pack", "hook_api_smoke"]
+    assert second[0][-4:] == ["untaped-recipe", "new", "hook", "./hook_api_smoke/probe"]
     assert env is not None
     assert env["UV_FIND_LINKS"] == str(dist_dir.resolve())
 
 
-def test_release_smoke_hook_init_resolves_relative_local_index(
+def test_release_smoke_new_resolves_relative_local_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -272,23 +79,22 @@ def test_release_smoke_hook_init_resolves_relative_local_index(
     captured_find_links: list[str] = []
 
     def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
-        del command, cwd
+        del command
         assert env is not None
         captured_find_links.append(env["UV_FIND_LINKS"])
-        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
-        hook = library / "hooks" / "hook_api_smoke"
-        hook.mkdir(parents=True)
-        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+        pack = cwd / "hook_api_smoke"
+        pack.mkdir(exist_ok=True)
+        (pack / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.9.0"\n')
 
     monkeypatch.setattr(release, "_run", fake_run)
     monkeypatch.chdir(tmp_path)
 
-    release.smoke_hook_init("0.8.0", find_links=Path("dist"))
+    release.smoke_new("0.9.0", find_links=Path("dist"))
 
-    assert captured_find_links == [str(dist_dir.resolve())]
+    assert captured_find_links == [str(dist_dir.resolve()), str(dist_dir.resolve())]
 
 
-def test_release_smoke_hook_init_uses_published_index_and_isolated_env(
+def test_release_smoke_new_uses_published_index_and_isolated_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -301,21 +107,20 @@ def test_release_smoke_hook_init_uses_published_index_and_isolated_env(
     def fake_run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
         assert env is not None
         calls.append((command, cwd, env))
-        library = Path(env["UNTAPED_RECIPE__LIBRARY_ROOT"])
-        hook = library / "hooks" / "hook_api_smoke"
-        hook.mkdir(parents=True)
-        (hook / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.8.0"\n')
+        pack = cwd / "hook_api_smoke"
+        pack.mkdir(exist_ok=True)
+        (pack / "uv.lock").write_text('name = "untaped-recipe"\nversion = "0.9.0"\n')
 
     monkeypatch.setattr(release, "_run", fake_run)
 
-    release.smoke_hook_init("0.8.0", index_url="https://test.pypi.org/simple/")
+    release.smoke_new("0.9.0", index_url="https://test.pypi.org/simple/")
 
-    assert calls
+    assert len(calls) == 2
     command, cwd, env = calls[0]
     assert cwd != Path(release.ROOT)
     assert "--no-project" in command
     assert "--project" not in command
-    assert "untaped-recipe==0.8.0" in command
+    assert "untaped-recipe==0.9.0" in command
     assert env is not None
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONPATH" not in env
@@ -357,7 +162,7 @@ def test_release_verify_sdk_published_uses_isolated_uv_environment(
     command, cwd, env = calls[0]
     assert cwd != Path(release.ROOT)
     assert "--with" in command
-    assert "untaped>=2.4.0,<3" in command
+    assert "untaped>=3.0.0,<4" in command
     assert env is not None
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONPATH" not in env
@@ -451,78 +256,6 @@ def _release_module() -> object:
     return module
 
 
-@pytest.mark.parametrize("kind", ["transform", "validate"])
-def test_hook_init_stubs_use_type_checking_helper_annotations(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    kind: str,
-) -> None:
-    monkeypatch.setattr(hook_library_module, "lock_project", lambda project_root: None)
-
-    project = HookLibrary(tmp_path / "library").init("check", kind=kind)
-
-    source = next((project / "src").glob("*/hooks/check.py")).read_text()
-    pyproject = (project / "pyproject.toml").read_text()
-    assert "from typing import TYPE_CHECKING" in source
-    assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe.hook_api import HookHelpers" in source
-    assert 'helpers: "HookHelpers"' in source
-    assert 'requires-python = ">=3.14,<3.15"' in pyproject
-    assert 'requires_hook_api = ">=0.8"' in pyproject
-    assert 'dev = ["untaped-recipe>=0.8,<1"]' in pyproject
-    if kind == "validate":
-        assert "return helpers.pass_()" in source
-    else:
-        assert "return content" in source
-
-
-@pytest.mark.parametrize("kind", ["transform", "validate"])
-def test_scoped_hook_stubs_use_type_checking_helper_annotations(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    kind: str,
-) -> None:
-    monkeypatch.setattr(recipe_library_module, "lock_project", lambda project_root: None)
-    project = RecipeLibrary(tmp_path / "library").init("demo", base_dir=tmp_path)
-    monkeypatch.setattr(hook_library_module, "lock_project", lambda project_root: None)
-
-    module = add_hook_to_project(project, "check", kind=kind)
-
-    source = module.read_text()
-    pyproject = (project / "pyproject.toml").read_text()
-    assert "from typing import TYPE_CHECKING" in source
-    assert "if TYPE_CHECKING:" in source
-    assert "from untaped_recipe.hook_api import HookHelpers" in source
-    assert 'helpers: "HookHelpers"' in source
-    assert 'requires_hook_api = ">=0.8"' in pyproject
-    assert 'dev = ["untaped-recipe>=0.8,<1"]' in pyproject
-    if kind == "validate":
-        assert "return helpers.pass_()" in source
-    else:
-        assert "return content" in source
-
-
-def _write_hook_project(root: Path, *, hook_name: str, module_name: str | None = None) -> None:
-    package = "shared_hooks"
-    (root / "src" / package / "hooks").mkdir(parents=True, exist_ok=True)
-    (root / "src" / package / "__init__.py").write_text("")
-    (root / "src" / package / "hooks" / "__init__.py").write_text("")
-    module_leaf = module_name or hook_name.rsplit(".", maxsplit=1)[-1]
-    (root / "src" / package / "hooks" / f"{module_leaf}.py").write_text(
-        "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
-    )
-    (root / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "shared-hooks"\n'
-        'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
-        "dependencies = []\n\n"
-        "[tool.untaped_recipe.hooks]\n"
-        f'"{hook_name}" = {{ kind = "transform", module = "{package}.hooks.{module_leaf}" }}\n'
-    )
-    (root / "uv.lock").write_text("version = 1\n")
-
-
 def test_public_hook_api_exposes_yaml_option_types() -> None:
     from untaped_recipe.hook_api import HOOK_API_VERSION, YamlDumpOptions, YamlIndentOptions
     from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers
@@ -530,7 +263,7 @@ def test_public_hook_api_exposes_yaml_option_types() -> None:
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
-    assert HOOK_API_VERSION == "0.8.0"
+    assert HOOK_API_VERSION == "0.9.0"
     assert options["indent"]["sequence"] == 4
     assert ExternalHookHelpers.__name__ == "HookHelpers"
 
@@ -690,6 +423,31 @@ def test_hook_helpers_and_builtin_yaml_edit_preserve_round_trip_yaml(tmp_path: P
     assert "enabled: true" in empty
 
 
+def test_builtin_yaml_edit_forwards_unknown_token_policy(tmp_path: Path) -> None:
+    helpers = HookHelpers()
+    args = {
+        "unknown_tokens": "keep",
+        "edits": [
+            {
+                "op": "set",
+                "path": ["ref"],
+                "value": "${{ github.ref }}",
+            }
+        ],
+    }
+
+    result = yaml_edit.transform(
+        "{}\n",
+        inputs={},
+        target=tmp_path,
+        file=tmp_path / "config.yml",
+        args=args,
+        helpers=helpers,
+    )
+
+    assert "ref: ${{ github.ref }}" in result
+
+
 def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
@@ -706,7 +464,7 @@ def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> No
     )
     planner = ApplyRecipe(
         HookExecutor(
-            HookResolver(global_hooks=tmp_path / "global"),
+            HookResolver(),
             workers=UvHookWorkerPool(),
             helpers=HookHelpers(),
         )
@@ -771,7 +529,7 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )
@@ -839,7 +597,7 @@ def test_bulk_plan_resolves_per_target_inputs_and_preserves_duplicate_order(
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )
@@ -894,7 +652,7 @@ def test_bulk_plan_error_rows_preserve_resolved_input_display(
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )
@@ -928,7 +686,7 @@ def test_bulk_plan_input_resolution_errors_have_empty_inputs(tmp_path: Path) -> 
     runner = RunBulkApply(
         ApplyRecipe(
             HookExecutor(
-                HookResolver(global_hooks=tmp_path / "global"),
+                HookResolver(),
                 workers=UvHookWorkerPool(),
                 helpers=HookHelpers(),
             )

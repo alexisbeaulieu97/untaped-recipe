@@ -24,9 +24,15 @@ class HookHelpers:
         """Return a failing validation verdict."""
         return Verdict(status="fail", message=message)
 
-    def render_template(self, template: str, inputs: dict[str, object]) -> str:
+    def render_template(
+        self,
+        template: str,
+        inputs: dict[str, object],
+        *,
+        unknown_tokens: str = "error",
+    ) -> str:
         """Render simple recipe placeholders."""
-        return render_template(template, inputs)
+        return render_template(template, inputs, unknown_tokens=unknown_tokens)
 
     def load_yaml(self, content: str) -> object:
         """Round-trip-load YAML content."""

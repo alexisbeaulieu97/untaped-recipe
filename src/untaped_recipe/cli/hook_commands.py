@@ -12,75 +12,52 @@ from cyclopts import Parameter
 from untaped.api import (
     ColumnsOption,
     ConfigError,
-    FormatOption,
-    batch_apply,
     create_app,
     echo,
     emit,
+    finish,
     parse_kv_pairs,
-    render_rows,
     ui_context,
 )
 
-from untaped_recipe.application.run_hook import RunHook, TransformHookRun, ValidateHookRun
+from untaped_recipe.application.run_hook import (
+    AmbiguousHookVerbError,
+    RunHook,
+    TransformHookRun,
+    ValidateHookRun,
+    select_verb,
+)
 from untaped_recipe.cli.common import (
-    edit_path,
+    hook_timeout_seconds,
     library_root,
     load_yaml_mapping_file,
     report_config_errors,
-    settings,
 )
 from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata
 from untaped_recipe.domain.plan import FileChange, Verdict
 from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_executor import HookExecutionError, HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
-from untaped_recipe.infrastructure.hook_library import HookLibrary
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 
-app = create_app(name="hook", help="Manage reusable hooks.")
+app = create_app(name="hook", help="Run installed recipe hooks.")
 HookRunFormat = Literal["json", "yaml", "table", "pipe"]
-
-
-@app.command(name="list")
-def list_command(*, fmt: FormatOption = "table", columns: ColumnsOption = None) -> None:
-    """List hooks."""
-    with report_config_errors():
-        rows: list[dict[str, object]] = [
-            {"name": entry.name, "hooks": ", ".join(entry.hooks), "path": str(entry.path)}
-            for entry in HookLibrary(library_root()).list()
-        ]
-        rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.hook")
-        if rendered:
-            echo(rendered)
-
-
-@app.command(name="init")
-def init_command(
-    name: Annotated[str, Parameter(help="Global hook name.")],
-    /,
-    *,
-    kind: Annotated[
-        Literal["transform", "validate"],
-        Parameter(name="--kind", help="Hook callable kind."),
-    ] = "transform",
-) -> None:
-    """Scaffold a uv hook project."""
-    with report_config_errors():
-        path = HookLibrary(library_root()).init(name, kind=kind)
-        echo(str(path))
 
 
 @app.command(name="run")
 def run_command(
-    name: Annotated[str, Parameter(help="Hook name.")],
+    name: Annotated[str, Parameter(help="Hook name or <pack>/<hook> ref.")],
     /,
     *,
     target: Annotated[Path, Parameter(name="--target", help="Target directory.")],
     project: Annotated[
         Path | None,
-        Parameter(name="--project", help="Hook project to search before global hooks."),
+        Parameter(name="--project", help="Hook project to search before installed packs."),
+    ] = None,
+    kind: Annotated[
+        Literal["transform", "validate"] | None,
+        Parameter(name="--kind", help="Hook callable kind for dual-export hooks."),
     ] = None,
     file: Annotated[
         Path | None,
@@ -132,12 +109,18 @@ def run_command(
     with report_config_errors():
         root = library_root()
         local_hook_project = _local_hook_project(project)
-        resolver = HookResolver(global_hooks=root / "hooks")
+        resolver = HookResolver(library_root=root)
         ref = resolver.resolve(name, local_hook_project)
-        if ref.kind == "validate" and diff:
+        try:
+            verb = select_verb(ref.exports, file_given=file is not None, kind=kind)
+        except AmbiguousHookVerbError as exc:
+            raise ConfigError(
+                f"hook {name!r} exports both transform() and validate(); pass --kind or --file"
+            ) from exc
+        if verb == "validate" and diff:
             raise ConfigError("validate hooks do not accept --file or content options")
         RunHook.validate_context(
-            kind=ref.kind,
+            kind=verb,
             target=target,
             file=file,
             content=content,
@@ -151,7 +134,7 @@ def run_command(
         )
         args = _fixture_mapping(args_file, raw_args or [], file_flag="--args", kv_flag="--arg")
         prepared_content = _content_value(content)
-        with UvHookWorkerPool(hook_timeout_seconds=_hook_timeout_seconds(hook_timeout)) as workers:
+        with UvHookWorkerPool(hook_timeout_seconds=hook_timeout_seconds(hook_timeout)) as workers:
             executor = HookExecutor(
                 resolver,
                 workers=workers,
@@ -160,7 +143,7 @@ def run_command(
             try:
                 execution = RunHook(executor).run(
                     name,
-                    kind=ref.kind,
+                    kind=verb,
                     local_hook_project=local_hook_project,
                     target=target,
                     file=file,
@@ -201,68 +184,6 @@ def run_command(
                     fmt=fmt,
                     columns=columns,
                 )
-
-
-@app.command(name="show")
-def show_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) -> None:
-    """Print a hook project file."""
-    with report_config_errors():
-        echo(
-            HookLibrary(library_root()).resolve_editable(name).read_text(encoding="utf-8"),
-            nl=False,
-        )
-
-
-@app.command(name="add")
-def add_command(
-    source: Annotated[Path, Parameter(help="Hook project directory.")],
-    /,
-    *,
-    name: Annotated[str | None, Parameter(name="--name", help="Library name.")] = None,
-) -> None:
-    """Copy a hook project into the library."""
-    with report_config_errors():
-        path = HookLibrary(library_root()).add(source, name=name)
-        echo(str(path))
-
-
-@app.command(name="remove")
-def remove_command(
-    name: Annotated[str, Parameter(help="Hook name.")],
-    /,
-    *,
-    yes: Annotated[
-        bool,
-        Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
-    ] = False,
-) -> None:
-    """Remove a hook project from the library."""
-    with report_config_errors():
-        library = HookLibrary(library_root())
-
-        def _remove(item: str) -> Path:
-            return library.remove(item)
-
-        outcome = batch_apply(
-            [name],
-            _remove,
-            verb="remove",
-            noun="hook",
-            label=str,
-            describe=lambda item: {"name": item},
-            ui=ui_context(strict=False),
-            destructive=True,
-            assume_yes=yes,
-        )
-        if outcome.results:
-            echo(str(outcome.results[0][1]))
-
-
-@app.command(name="edit")
-def edit_command(name: Annotated[str, Parameter(help="Hook name or path.")], /) -> None:
-    """Open a hook project file in $VISUAL or $EDITOR."""
-    with report_config_errors():
-        edit_path(HookLibrary(library_root()).resolve_editable(name))
 
 
 def _run_transform(
@@ -310,8 +231,7 @@ def _run_validate(
     _print_hook_diagnostics(execution.diagnostics)
     record = _validate_record(execution.hook, target=execution.target, verdict=execution.verdict)
     emit(record, fmt=fmt or "table", columns=columns, kind="recipe.hook_run")
-    if execution.verdict.failed:
-        raise SystemExit(1)
+    finish(execution.verdict.failed)
 
 
 def _local_hook_project(project: Path | None) -> Path | None:
@@ -399,15 +319,8 @@ def _json_context(value: dict[str, object]) -> str:
 
 def _print_hook_diagnostics(diagnostics: str) -> None:
     if diagnostics:
-        sys.stderr.write(diagnostics.rstrip() + "\n")
+        echo(diagnostics.rstrip(), err=True)
 
 
 def _print_hook_failure(message: str) -> None:
-    sys.stderr.write(message.rstrip() + "\n")
-
-
-def _hook_timeout_seconds(override: float | None) -> float:
-    timeout = settings().hook_timeout_seconds if override is None else override
-    if timeout < 0:
-        raise ConfigError("--hook-timeout must be greater than or equal to 0")
-    return timeout
+    echo(message.rstrip(), err=True)

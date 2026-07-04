@@ -120,6 +120,7 @@ class TemplateStep(BaseStep):
     type: Literal["template"]
     template: Path
     dest: Path
+    unknown_tokens: Literal["error", "keep"] = "error"
 
     @field_validator("template", "dest")
     @classmethod

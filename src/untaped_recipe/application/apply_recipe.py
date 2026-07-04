@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
+from untaped_recipe.application.files import read_existing_text_file
 from untaped_recipe.application.ports import HookExecutorPort
 from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.plan import FileChange, TargetPlan
@@ -22,14 +22,8 @@ from untaped_recipe.domain.templates import render_template
 class ApplyRecipe:
     """Build an in-memory target plan."""
 
-    def __init__(
-        self,
-        hook_executor: HookExecutorPort,
-        *,
-        template_renderer: Callable[[str, dict[str, object]], str] = render_template,
-    ) -> None:
+    def __init__(self, hook_executor: HookExecutorPort) -> None:
         self._hooks = hook_executor
-        self._render_template = template_renderer
 
     def __call__(
         self,
@@ -89,13 +83,14 @@ class ApplyRecipe:
         inputs: dict[str, object],
         warnings: list[str],
     ) -> None:
-        verdict = self._hooks.validate(
+        execution = self._hooks.validate(
             hook,
             local_hook_project=local_hook_project,
             target=target,
             inputs=inputs,
             args=args,
         )
+        verdict = execution.result
         if verdict.status == "warn":
             warnings.append(verdict.message)
         if verdict.failed:
@@ -111,9 +106,10 @@ class ApplyRecipe:
         source = confined_path(recipe_dir, step.template, field="template")
         if not source.is_file():
             raise ValueError(f"template not found: {step.template}")
-        buffer[step.dest] = self._render_template(
+        buffer[step.dest] = render_template(
             source.read_text(encoding="utf-8", newline=""),
             inputs,
+            unknown_tokens=step.unknown_tokens,
         )
 
     def _plan_copy(self, step: CopyStep, recipe_dir: Path, buffer: dict[Path, str | None]) -> None:
@@ -146,15 +142,15 @@ class ApplyRecipe:
         if current is None:
             if step.file in buffer:
                 raise ValueError(f"cannot transform deleted file: {step.file}")
-            if not path.exists():
-                if step.optional:
-                    warnings.append(f"optional transform skipped missing file: {step.file}")
-                    return
-                raise ValueError(f"transform file not found: {step.file}")
-            if not path.is_file():
-                raise ValueError(f"transform path is not a file: {step.file}")
-            current = path.read_text(encoding="utf-8", newline="")
-        buffer[step.file] = self._hooks.transform(
+            if not path.exists() and step.optional:
+                warnings.append(f"optional transform skipped missing file: {step.file}")
+                return
+            current = read_existing_text_file(
+                path,
+                missing=f"transform file not found: {step.file}",
+                not_file=f"transform path is not a file: {step.file}",
+            )
+        execution = self._hooks.transform(
             step.hook,
             current,
             local_hook_project=local_hook_project,
@@ -163,6 +159,7 @@ class ApplyRecipe:
             file=path,
             args=step.args,
         )
+        buffer[step.file] = execution.result
 
     def _changes(self, target: Path, buffer: dict[Path, str | None]) -> list[FileChange]:
         changes: list[FileChange] = []

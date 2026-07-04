@@ -6,11 +6,62 @@ workflow changes, update this file and the packaged skill in the same change.
 
 ## Mission
 
-`untaped-recipe` applies trusted local recipe projects and packs across one or more
-plain directories. It is intentionally VCS-agnostic: no clone, branch, git
-diff, commit, push, or PR behavior belongs here. Workspace selection can come
-from another tool through stdin or pipe records, but this repo owns only
-recipe execution, previews, backups, and restore.
+`untaped-recipe` applies trusted local recipe packs and explicit recipe files
+across one or more plain directories. It is intentionally VCS-agnostic: no
+clone, branch, git diff, commit, push, or PR behavior belongs here. Workspace
+selection can come from another tool through stdin or pipe records, but this
+repo owns only recipe execution, previews, backups, and restore.
+
+## Domain (invariant #0)
+
+**untaped-recipe is a deterministic transformation engine over file trees — "moderne
+for files, driven by hooks."** A recipe's scope is anything expressible as planned
+file edits: version migrations, bulk config rewrites, scaffolding, drift checks. The
+comparison that holds is OpenRewrite/moderne (transformation recipes, previewable at
+scale), not Ansible (general task execution): "you could write a recipe for anything"
+is bounded to *anything that is a file transformation*. This sentence wins every
+future scope argument and joins AGENTS.md alongside the Wave-3 invariants.
+
+Two consequences are load-bearing:
+
+- **Truthful preview is the product.** Plan → preview → confirm → flush is only
+  trustworthy while every step is a planned file mutation. Agent-authored packs are a
+  first-class north-star use case precisely because the human reviews the plan, not
+  the agent; anything that executed at apply time outside the plan buffer would make
+  the preview lie.
+- **Follow-up commands are data.** Real migrations often end with "now run `uv lock`"
+  or "re-run the formatter". Recipes will be able to *declare* follow-ups; preview
+  and outcome *display* them; recipe never executes them (model locked, design
+  deferred — see Deferred designs).
+
+**Never build** (recorded with reasons so future scope arguments end here):
+
+- Exec/shell/API step types — they kill truthful preview; this is the boundary
+  decision itself. "Ensure"-style capabilities enter as *planned* mutations resolved
+  at planning time (see Deferred designs), never as execution-time convergence.
+- Control flow in the recipe schema (`when:`, loops) — a decision is a hook.
+- State, inventory, or remote execution — targets come from arguments and pipes.
+- Hook sandboxing — packs are trusted code, on the same model as `pip install`; the
+  mitigations are evaluate-before-trust surfaces (`show`, `check`'s AST scan, the
+  `add` confirmation, the 0.10 harness), not a sandbox.
+
+## Permanent Invariants
+
+- AGENTS.md gains permanent invariants:
+  1. Control flow never enters the recipe schema; a decision is a hook.
+  2. Planning is the only execution; writes are a flush of the plan buffer.
+  3. No state, no inventory; targets come from arguments and pipes.
+  4. Builtins stay minimal; typed uv hook packs are the extension story.
+  5. The hook boundary stays pure data (stdlib-only worker, JSON protocol, no runtime
+     import of untaped-recipe in hooks).
+  6. Pipe composability is a protected feature: `apply --stdin` ingests untaped
+     NDJSON envelopes (kind tags, `target_path`), and input `from` expressions can
+     read the piped `record` — other untaped tools' output drives recipes.
+  7. Hooks are pure at planning time: they may read the target tree and their own
+     pack directory (deterministic inputs), and must never write, reach the network,
+     or read outside those roots. Planning's truth depends on it; the 0.10 harness
+     catches violations as unstable goldens.
+  (AGENTS.md also carries invariant #0, the domain lock from §Domain.)
 
 ## Hard Rules
 
@@ -32,7 +83,7 @@ recipe execution, previews, backups, and restore.
 7. Do not add shell-command steps without a new design review. V1 writes are
    engine-mediated so preview, backups, and per-target transactional writes stay
    coherent.
-8. External Python hooks are trusted local uv hook projects executed by pooled
+8. External Python hooks are trusted local uv pack hooks executed by pooled
    workers. Built-ins are engine-owned direct imports. Do not reintroduce
    importlib file loading for arbitrary `.py` hooks, pluggy, or PEP 723 hooks
    without a new design review.
@@ -82,63 +133,66 @@ request timeouts.
 The directory layout is:
 
 ```text
-recipes/
 packs/
-hooks/
+packs.toml
 backups/
 ```
 
-Library entries are uv projects:
+Installed library entries are uv pack projects under `packs/<pack-id>/`.
+`packs.toml` records source path or git URL, rev, and installed version. The
+installed key is the pack identity everywhere: refs, `list`, `check`,
+`remove`, ambiguity messages, and output rows.
 
-- `recipes/<recipe-id>/` is a standalone recipe project.
-- `packs/<pack-id>/` is a recipe pack project exposing zero or more recipes.
-- `hooks/<hook-id>/` is a reusable global hook project.
-
-Standalone recipe and pack identity comes from top-level `pyproject.toml`
-metadata, not from `recipe.yml`. A standalone recipe project declares exactly
-one recipe:
-
-```toml
-[tool.untaped_recipe.recipes]
-"add-config" = { path = "recipe.yml" }
-```
-
-A pack declares its pack id plus zero or more recipe paths:
+Pack identity comes from top-level `[project].name`, not from `recipe.yml`.
+Project names may use the `untaped-recipe-` prefix; the public pack name drops
+that prefix. A pack may expose zero or more recipe paths and zero or more hook
+modules:
 
 ```toml
+[project]
+name = "untaped-recipe-ansible"
+version = "0.1.0"
+
+[dependency-groups]
+dev = ["untaped-recipe>=0.9"]
+
 [tool.untaped_recipe]
-pack = "ansible"
+requires_hook_api = ">=0.9,<1"
 
 [tool.untaped_recipe.recipes]
 "playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
+
+[tool.untaped_recipe.hooks]
+"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
 ```
 
-Nested uv projects or uv workspaces inside a recipe or pack are opaque to this
-tool. Only the top-level project metadata and declared recipe paths are read.
+Nested uv projects or uv workspaces inside a pack are opaque to this tool. Only
+the top-level project metadata and declared recipe paths are read.
 
 Recipes resolve as follows:
 
-1. bare `apply <recipe>` resolves only `recipes/<recipe>/`
-2. `apply <pack>:<recipe>` resolves `packs/<pack>/`
+1. bare `apply <recipe>` resolves an installed pack recipe only when unique
+2. `apply <pack>/<recipe>` resolves an installed pack recipe
 3. explicit `apply ./recipe.yml` runs a path-only single-file recipe
-4. explicit `apply ./recipe-project` runs a local standalone recipe project
-5. explicit `apply ./pack-project --recipe <recipe>` runs a local pack recipe
+4. explicit `apply ./pack-project --recipe <recipe>` runs a local pack recipe
+
+For `apply`, a path must be explicit: it starts with `./`, `../`, `/`, or `~`,
+or ends in `.yml`/`.yaml`. Anything else, including `a/b`, is a library ref and
+must not be classified by on-disk existence.
 
 Hooks resolve in this order:
 
-1. standalone recipe or pack project `pyproject.toml` entries under
-   `[tool.untaped_recipe.hooks]`
-2. global hook projects under `hooks/<name>/`
+1. the recipe's own pack project
+2. installed packs
 3. packaged built-ins registered in `src/untaped_recipe/builtins/registry.py`
 
 Hook names in recipes must be safe logical names, not filesystem paths.
 Recipes never declare hook runtimes. The resolver returns either a built-in
-reference or a uv hook project reference with a declared hook kind.
+reference or a uv pack hook reference with exported hook verbs.
 
 `hook run <hook>` is not recipe step execution. It resolves explicit
-`--project PATH` first, then the current working directory when it has hook
-metadata, then global hooks, then built-ins. Keep it a single-hook, no-write
-debug harness.
+`--project PATH` first, then installed packs, then built-ins. Keep it a
+single-hook, no-write debug harness.
 
 ## Recipe Schema
 
@@ -154,6 +208,8 @@ metadata. Step types are:
   skipped with a warning, but files deleted earlier in the same plan still
   error.
 - `template`: render a recipe-local template into a target-relative path.
+  `unknown_tokens` is `error` by default and may be `keep` only for templates
+  that intentionally emit other tools' template syntax.
 - `copy`: copy a recipe-local text file into a target-relative path.
 - `remove`: remove one target-relative file if it exists.
 
@@ -199,20 +255,19 @@ full incoming pipe record into rows or backups.
 
 ## Hook Contracts
 
-External hook projects are uv-managed directories with `pyproject.toml`,
-`uv.lock`, package code under `src/`, and a hook metadata table. The same hook
-table is used for global hook projects and for hooks local to a standalone
-recipe or pack project:
+External hook code lives in uv-managed pack directories with `pyproject.toml`,
+`uv.lock`, package code under `src/`, and a hook metadata table:
 
 ```toml
 [tool.untaped_recipe.hooks]
-"ansible.add_play_collections" = { kind = "transform", module = "ansible_hooks.hooks.add_play_collections" }
+"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
 ```
 
-`kind` is required and must be `transform` or `validate`; old hook rows that
-only declare `module` are invalid and must be migrated. `recipe check` and
-`pack check` reject recipe steps whose type does not match the resolved hook
-kind.
+The exported function name is the contract: a module exports `transform()`,
+`validate()`, or both. Recipe step `type` selects which function runs. `check`
+must keep its no-import guarantee by AST-scanning resolved module files for
+`def transform` and `def validate`, rejecting steps wired to a hook that does
+not export the required function.
 
 External hooks run out-of-process through NDJSON stdin/stdout workers. Worker
 stdout is protocol-only; hook `print()` output is redirected to stderr. The
@@ -226,8 +281,10 @@ surface as per-target planning failures rather than hanging the full batch.
 `HookHelpers`. Transform mode requires `--target` and `--file`, writes raw
 transformed content to stdout by default, and can emit `--diff`; validate mode
 emits a `recipe.hook_run` verdict record. Fixture context and hook diagnostics
-belong on stderr. Successful external hook diagnostics stay discarded for
-`apply`, but are surfaced by `hook run` with a 10 MiB per-invocation cap.
+belongs on stderr. If a hook exports both functions, `--file` implies
+transform; otherwise `--kind` is required. Successful external hook diagnostics
+stay discarded for `apply`, but are surfaced by `hook run` with a 10 MiB
+per-invocation cap.
 
 Built-ins use the direct registry and run in-process. Keep built-ins reserved
 for engine-owned code such as `yaml_edit`.
@@ -279,16 +336,18 @@ External hook typing lives in `untaped_recipe.hook_api`. Hook projects may use
 on `untaped-recipe` at runtime. External uv workers run with `uv run --locked
 --no-dev`, so hook runtime dependencies belong in `[project].dependencies`;
 type-only authoring dependencies belong in `[dependency-groups].dev`. Hook
-projects can declare `[tool.untaped_recipe].requires_hook_api` to fail fast
-when the installed CLI's helper API is too old. The public
+projects declare `[tool.untaped_recipe].requires_hook_api = ">=0.9,<1"` to fail
+fast when the installed CLI's helper API is incompatible. The public
 `untaped_recipe.hook_api.HookHelpers` protocol models external worker helpers,
 where verdict helpers return dict-shaped verdicts. Keep the application-layer
 `HookHelpersPort` separate for in-process built-ins, where verdict helpers
-return `Verdict`. External `helpers.dump_yaml(data, options=...)` accepts plain
-dict options for width, quote preservation, indent, block sequence indent, and
-explicit document start/end; worker and in-process defaults are
-`preserve_quotes=True` and `width=4096`. Unsupported option keys must be
-rejected rather than ignored.
+return `Verdict`. External `helpers.render_template(template, inputs,
+unknown_tokens="error")` is strict by default; `unknown_tokens="keep"` is the
+escape hatch for GitHub Actions, Helm, and other nested template syntaxes.
+External `helpers.dump_yaml(data, options=...)` accepts plain dict options for
+width, quote preservation, indent, block sequence indent, and explicit document
+start/end; worker and in-process defaults are `preserve_quotes=True` and
+`width=4096`. Unsupported option keys must be rejected rather than ignored.
 
 ## Release Workflow
 
@@ -298,7 +357,7 @@ scaffold locking against the target index, and only creates the production
 GitHub release/tag after PyPI verification passes. The production `pypi`
 GitHub environment should be protected with required reviewers.
 The SDK package `untaped` must be published to PyPI first. The release workflow
-checks that `untaped>=2.4.0,<3` resolves from PyPI before publishing
+checks that `untaped>=3.0.0,<4` resolves from PyPI before publishing
 `untaped-recipe`.
 
 Do not manually create a GitHub release/tag for a version whose PyPI package has

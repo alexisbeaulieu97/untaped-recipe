@@ -31,14 +31,21 @@ def transform(
     edits = args.get("edits")
     if not isinstance(edits, Sequence) or isinstance(edits, str):
         raise ValueError("yaml_edit requires args.edits as a list")
+    unknown_tokens = _unknown_tokens(args.get("unknown_tokens", "error"))
     for edit in edits:
         if not isinstance(edit, Mapping):
             raise ValueError("yaml_edit edit entries must be mappings")
-        _apply_edit(data, edit, inputs)
+        _apply_edit(data, edit, inputs, unknown_tokens=unknown_tokens)
     return helpers.dump_yaml(data)
 
 
-def _apply_edit(data: object, edit: Mapping[str, object], inputs: dict[str, object]) -> None:
+def _apply_edit(
+    data: object,
+    edit: Mapping[str, object],
+    inputs: dict[str, object],
+    *,
+    unknown_tokens: str,
+) -> None:
     op = edit.get("op")
     if op not in {"set", "merge", "delete"}:
         raise ValueError(f"yaml_edit invalid op: {op!r}")
@@ -46,7 +53,7 @@ def _apply_edit(data: object, edit: Mapping[str, object], inputs: dict[str, obje
     if op == "delete":
         _delete(data, path)
         return
-    value = _render_value(edit.get("value"), inputs)
+    value = _render_value(edit.get("value"), inputs, unknown_tokens=unknown_tokens)
     if op == "set":
         _set(data, path, value)
         return
@@ -64,13 +71,22 @@ def _path(raw: object) -> list[PathSegment]:
     return [cast(PathSegment, segment) for segment in raw]
 
 
-def _render_value(value: object, inputs: dict[str, object]) -> object:
+def _unknown_tokens(raw: object) -> str:
+    if raw in {"error", "keep"}:
+        return raw
+    raise ValueError("unknown_tokens must be 'error' or 'keep'")
+
+
+def _render_value(value: object, inputs: dict[str, object], *, unknown_tokens: str) -> object:
     if isinstance(value, str):
-        return render_template(value, inputs)
+        return render_template(value, inputs, unknown_tokens=unknown_tokens)
     if isinstance(value, list):
-        return [_render_value(item, inputs) for item in value]
+        return [_render_value(item, inputs, unknown_tokens=unknown_tokens) for item in value]
     if isinstance(value, dict):
-        return {key: _render_value(item, inputs) for key, item in value.items()}
+        return {
+            key: _render_value(item, inputs, unknown_tokens=unknown_tokens)
+            for key, item in value.items()
+        }
     return value
 
 

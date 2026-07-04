@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from untaped_recipe.application.ports import HookDebugExecutorPort
+from untaped_recipe.application.files import read_existing_text_file
+from untaped_recipe.application.ports import HookExecutorPort
 from untaped_recipe.domain.hook_project import HookKind
 from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.plan import Verdict
@@ -40,10 +41,34 @@ class ValidateHookRun:
 HookRun = TransformHookRun | ValidateHookRun
 
 
+class AmbiguousHookVerbError(ValueError):
+    """Raised when hook exports need an explicit debug-run verb."""
+
+
+def select_verb(
+    exports: frozenset[str],
+    *,
+    file_given: bool,
+    kind: HookKind | None,
+) -> HookKind:
+    """Select which hook function to invoke for one debug run."""
+    if kind is not None:
+        return kind
+    if exports == frozenset({"transform"}):
+        return "transform"
+    if exports == frozenset({"validate"}):
+        return "validate"
+    if "transform" in exports and "validate" in exports:
+        if file_given:
+            return "transform"
+        raise AmbiguousHookVerbError("ambiguous hook verb")
+    raise ValueError("hook exports neither transform() nor validate()")
+
+
 class RunHook:
     """Run a resolved hook kind once without writing target files."""
 
-    def __init__(self, executor: HookDebugExecutorPort) -> None:
+    def __init__(self, executor: HookExecutorPort) -> None:
         self._executor = executor
 
     @staticmethod
@@ -93,12 +118,13 @@ class RunHook:
                 args=args,
             )
         _validate_validate_context(file=file, content=content, content_file=content_file)
-        execution = self._executor.validate_for_debug(
+        execution = self._executor.validate(
             hook,
             local_hook_project=local_hook_project,
             target=resolved_target,
             inputs=inputs,
             args=args,
+            capture_diagnostics=True,
         )
         return ValidateHookRun(
             hook=hook,
@@ -126,7 +152,7 @@ class RunHook:
             content=content,
             content_file=content_file,
         )
-        execution = self._executor.transform_for_debug(
+        execution = self._executor.transform(
             hook,
             before,
             local_hook_project=local_hook_project,
@@ -134,6 +160,7 @@ class RunHook:
             file=resolved_file,
             inputs=inputs,
             args=args,
+            capture_diagnostics=True,
         )
         return TransformHookRun(
             hook=hook,
@@ -187,8 +214,12 @@ def _transform_content(
             raise ValueError(f"--content-file file not found: {content_file}") from exc
     if content is not None:
         return content, resolved_file, file
-    if not resolved_file.exists():
-        raise ValueError(f"transform file not found: {file}")
-    if not resolved_file.is_file():
-        raise ValueError(f"transform path is not a file: {file}")
-    return resolved_file.read_text(encoding="utf-8", newline=""), resolved_file, file
+    return (
+        read_existing_text_file(
+            resolved_file,
+            missing=f"transform file not found: {file}",
+            not_file=f"transform path is not a file: {file}",
+        ),
+        resolved_file,
+        file,
+    )

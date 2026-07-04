@@ -21,11 +21,16 @@ from pydantic import ValidationError
 
 import untaped_recipe.infrastructure.hook_resolver as hook_resolver_module
 import untaped_recipe.infrastructure.hook_worker_client as worker_client
-from untaped_recipe.domain.hook_project import HookProjectMetadata
+from untaped_recipe.domain.hook_project import HookProjectMetadata, read_hook_metadata
 from untaped_recipe.domain.plan import Verdict
 from untaped_recipe.infrastructure.hook_executor import HookExecutor
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
-from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
+from untaped_recipe.infrastructure.hook_resolver import (
+    BuiltinHookRef,
+    HookResolver,
+    UvHookRef,
+    ensure_hook_supports,
+)
 from untaped_recipe.infrastructure.hook_worker_client import (
     HookWorkerCallResult,
     HookWorkerResponse,
@@ -39,7 +44,8 @@ def _write_hook_project(
     *,
     hooks: dict[str, str],
     package: str = "project_hooks",
-    kind: Literal["transform", "validate"] = "transform",
+    kind: Literal["transform", "validate"] | None = None,
+    exports: tuple[Literal["transform", "validate"], ...] = ("transform",),
     lock: bool = True,
     dependencies: list[str] | None = None,
     requires_hook_api: str | None = None,
@@ -51,13 +57,14 @@ def _write_hook_project(
     for module in hooks.values():
         module_path = root / "src" / Path(*module.split(".")).with_suffix(".py")
         module_path.parent.mkdir(parents=True, exist_ok=True)
-        module_path.write_text(
-            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
-        )
-    hook_rows = "\n".join(
-        f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}'
-        for public_name, module in sorted(hooks.items())
-    )
+        module_path.write_text(_hook_source(exports))
+    hook_row_values = []
+    for public_name, module in sorted(hooks.items()):
+        if kind is None:
+            hook_row_values.append(f'"{public_name}" = {{ module = "{module}" }}')
+        else:
+            hook_row_values.append(f'"{public_name}" = {{ kind = "{kind}", module = "{module}" }}')
+    hook_rows = "\n".join(hook_row_values)
     dependency_rows = ", ".join(json.dumps(dependency) for dependency in dependencies or [])
     tool_table = (
         f'[tool.untaped_recipe]\nrequires_hook_api = "{requires_hook_api}"\n\n'
@@ -78,6 +85,19 @@ def _write_hook_project(
         (root / "uv.lock").write_text("version = 1\n")
 
 
+def _hook_source(exports: tuple[Literal["transform", "validate"], ...]) -> str:
+    parts: list[str] = []
+    if "transform" in exports:
+        parts.append(
+            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
+        )
+    if "validate" in exports:
+        parts.append(
+            "def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n"
+        )
+    return "\n".join(parts)
+
+
 def test_hook_project_metadata_validates_pyproject_hook_table() -> None:
     metadata = HookProjectMetadata.from_pyproject(
         {
@@ -85,7 +105,6 @@ def test_hook_project_metadata_validates_pyproject_hook_table() -> None:
                 "untaped_recipe": {
                     "hooks": {
                         "ansible.add_play_collections": {
-                            "kind": "transform",
                             "module": "project_hooks.hooks.add_play_collections",
                         }
                     }
@@ -97,30 +116,16 @@ def test_hook_project_metadata_validates_pyproject_hook_table() -> None:
     assert metadata.hooks["ansible.add_play_collections"].module == (
         "project_hooks.hooks.add_play_collections"
     )
-    assert metadata.hooks["ansible.add_play_collections"].kind == "transform"
 
     with pytest.raises(ValueError, match="invalid hook name"):
         HookProjectMetadata.from_pyproject(
-            {
-                "tool": {
-                    "untaped_recipe": {
-                        "hooks": {"bad-name": {"kind": "transform", "module": "pkg.hook"}}
-                    }
-                }
-            }
+            {"tool": {"untaped_recipe": {"hooks": {"bad-name": {"module": "pkg.hook"}}}}}
         )
 
     with pytest.raises(ValueError, match="module is required"):
-        HookProjectMetadata.from_pyproject(
-            {"tool": {"untaped_recipe": {"hooks": {"check": {"kind": "transform"}}}}}
-        )
+        HookProjectMetadata.from_pyproject({"tool": {"untaped_recipe": {"hooks": {"check": {}}}}})
 
-    with pytest.raises(ValueError, match="hook kind is required"):
-        HookProjectMetadata.from_pyproject(
-            {"tool": {"untaped_recipe": {"hooks": {"check": {"module": "pkg.hook"}}}}}
-        )
-
-    with pytest.raises(ValueError, match="invalid hook kind"):
+    with pytest.raises(ValueError, match=r"kind was removed in 0\.9"):
         HookProjectMetadata.from_pyproject(
             {
                 "tool": {
@@ -132,41 +137,78 @@ def test_hook_project_metadata_validates_pyproject_hook_table() -> None:
         )
 
 
-def test_hook_resolver_uses_recipe_local_global_namespaced_then_builtin(tmp_path: Path) -> None:
+def test_manifest_kind_is_rejected(tmp_path: Path) -> None:
+    project_root = tmp_path / "recipe"
+    _write_hook_project(
+        project_root,
+        hooks={"x": "project_hooks.hooks.x"},
+        kind="transform",
+    )
+
+    with pytest.raises(ValueError, match=r"kind was removed in 0\.9"):
+        HookProjectMetadata.from_pyproject(
+            {
+                "tool": {
+                    "untaped_recipe": {
+                        "hooks": {
+                            "x": {
+                                "kind": "transform",
+                                "module": "project_hooks.hooks.x",
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    with pytest.raises(ValueError, match=r"kind was removed in 0\.9"):
+        read_hook_metadata(project_root)
+
+
+def test_hook_resolver_uses_recipe_local_then_builtin(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
-    global_hooks = tmp_path / "library" / "hooks"
     _write_hook_project(
         recipe_dir,
         hooks={"pick": "local_hooks.hooks.pick"},
         package="local_hooks",
     )
-    _write_hook_project(
-        global_hooks / "pick",
-        hooks={"pick": "global_hooks.hooks.pick"},
-        package="global_hooks",
-    )
-    _write_hook_project(
-        global_hooks / "ansible",
-        hooks={"ansible.add_play_collections": "ansible_hooks.hooks.add_play_collections"},
-        package="ansible_hooks",
-    )
-    resolver = HookResolver(global_hooks=global_hooks)
+    resolver = HookResolver()
 
     local = resolver.resolve("pick", recipe_dir)
     assert isinstance(local, UvHookRef)
     assert local.project_root == recipe_dir
     assert local.module == "local_hooks.hooks.pick"
-    assert local.kind == "transform"
-
-    global_ref = resolver.resolve("ansible.add_play_collections", recipe_dir)
-    assert isinstance(global_ref, UvHookRef)
-    assert global_ref.project_root == global_hooks / "ansible"
-    assert global_ref.module == "ansible_hooks.hooks.add_play_collections"
-    assert global_ref.kind == "transform"
+    assert local.exports == frozenset({"transform"})
 
     builtin = resolver.resolve("yaml_edit", recipe_dir)
     assert isinstance(builtin, BuiltinHookRef)
-    assert builtin.kind == "transform"
+    assert builtin.exports == frozenset({"transform"})
+
+
+def test_resolver_carries_exports_from_ast_scan(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"check": "project_hooks.hooks.check"},
+        exports=("validate",),
+    )
+    resolver = HookResolver()
+
+    ref = resolver.resolve("check", recipe_dir)
+
+    assert isinstance(ref, UvHookRef)
+    assert ref.exports == frozenset({"validate"})
+
+
+def test_ensure_hook_supports_rejects_missing_verb(tmp_path: Path) -> None:
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
+
+    with pytest.raises(ValueError, match=r"does not export a validate\(\) function"):
+        ensure_hook_supports(ref, "sample", verb="validate")
 
 
 def test_hook_resolver_rejects_missing_lockfile(tmp_path: Path) -> None:
@@ -178,7 +220,7 @@ def test_hook_resolver_rejects_missing_lockfile(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match=r"missing uv\.lock"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_resolver_rejects_runtime_untaped_recipe_dependency(tmp_path: Path) -> None:
@@ -190,7 +232,7 @@ def test_hook_resolver_rejects_runtime_untaped_recipe_dependency(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="must not depend on untaped-recipe"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 @pytest.mark.parametrize(
@@ -212,7 +254,7 @@ def test_hook_resolver_rejects_pep508_runtime_untaped_recipe_dependencies(
     )
 
     with pytest.raises(ValueError, match="must not depend on untaped-recipe"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_project_metadata_rejects_invalid_dependency_declarations() -> None:
@@ -224,7 +266,6 @@ def test_hook_project_metadata_rejects_invalid_dependency_declarations() -> None
                     "untaped_recipe": {
                         "hooks": {
                             "check": {
-                                "kind": "transform",
                                 "module": "project_hooks.hooks.check",
                             }
                         }
@@ -243,7 +284,7 @@ def test_hook_resolver_rejects_newer_required_hook_api(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="requires hook API >=99"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_resolver_ignores_unrelated_local_project_contract_for_builtin(
@@ -256,32 +297,10 @@ def test_hook_resolver_ignores_unrelated_local_project_contract_for_builtin(
         dependencies=["untaped-recipe>=0.8"],
     )
 
-    ref = HookResolver(global_hooks=tmp_path / "hooks").resolve("yaml_edit", recipe_dir)
+    ref = HookResolver().resolve("yaml_edit", recipe_dir)
 
     assert isinstance(ref, BuiltinHookRef)
     assert ref.name == "yaml_edit"
-
-
-def test_hook_resolver_ignores_unrelated_local_project_contract_for_global_hook(
-    tmp_path: Path,
-) -> None:
-    recipe_dir = tmp_path / "recipe"
-    global_hooks = tmp_path / "global" / "hooks"
-    _write_hook_project(
-        recipe_dir,
-        hooks={"local_only": "project_hooks.hooks.local_only"},
-        dependencies=["untaped-recipe>=0.8"],
-    )
-    _write_hook_project(
-        global_hooks / "shared",
-        hooks={"shared.check": "shared_hooks.hooks.check"},
-        package="shared_hooks",
-    )
-
-    ref = HookResolver(global_hooks=global_hooks).resolve("shared.check", recipe_dir)
-
-    assert isinstance(ref, UvHookRef)
-    assert ref.project_root == global_hooks / "shared"
 
 
 def test_hook_resolver_rejects_missing_declared_module_file(tmp_path: Path) -> None:
@@ -290,13 +309,13 @@ def test_hook_resolver_rejects_missing_declared_module_file(tmp_path: Path) -> N
     (recipe_dir / "src" / "project_hooks" / "hooks" / "check.py").unlink()
 
     with pytest.raises(ValueError, match="hook module file not found"):
-        HookResolver(global_hooks=tmp_path / "hooks").resolve("check", recipe_dir)
+        HookResolver().resolve("check", recipe_dir)
 
 
 def test_hook_resolver_caches_metadata_for_apply_lifetime(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"})
-    resolver = HookResolver(global_hooks=tmp_path / "hooks")
+    resolver = HookResolver()
 
     first = resolver.resolve("check", recipe_dir)
     (recipe_dir / "pyproject.toml").write_text("not toml = [\n")
@@ -320,7 +339,7 @@ def test_hook_resolver_validates_project_contract_once_per_metadata_cache(
         calls.append(project_root)
 
     monkeypatch.setattr(hook_resolver_module, "validate_hook_project_contract", validate)
-    resolver = HookResolver(global_hooks=tmp_path / "hooks")
+    resolver = HookResolver()
 
     resolver.resolve("check", recipe_dir)
     resolver.resolve("check", recipe_dir)
@@ -600,7 +619,12 @@ def test_uv_hook_worker_pool_leases_parallel_workers(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
 
     with (
         UvHookWorkerPool(max_workers_per_project=2) as pool,
@@ -642,7 +666,12 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
 
     with UvHookWorkerPool(max_workers_per_project=3) as pool:
         results = [pool.request(ref, {"kind": "transform"}).result for _ in range(3)]
@@ -677,7 +706,12 @@ def test_uv_hook_worker_pool_passes_timeout_to_workers(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
 
     with UvHookWorkerPool(max_workers_per_project=1, hook_timeout_seconds=12) as pool:
         assert pool.request(ref, {"kind": "transform"}).result == "ok"
@@ -713,7 +747,12 @@ def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
 
     with UvHookWorkerPool(max_workers_per_project=1) as pool:
         with pytest.raises(ValueError, match="malformed hook worker response"):
@@ -757,7 +796,12 @@ def test_uv_hook_worker_pool_wakes_waiters_after_fatal_retirement(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
 
     with (
         UvHookWorkerPool(max_workers_per_project=1) as pool,
@@ -813,7 +857,12 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
             self.closed = True
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
 
     with UvHookWorkerPool(max_workers_per_project=1) as pool:
         with pytest.raises(ValueError, match="validate hook failed"):
@@ -854,7 +903,12 @@ def test_uv_hook_worker_pool_close_survives_one_failing_worker(
                 raise BrokenPipeError("worker stdin already closed")
 
     monkeypatch.setattr(worker_client, "UvHookWorker", FakeWorker)
-    ref = UvHookRef(name="sample", kind="transform", project_root=tmp_path, module="hooks.sample")
+    ref = UvHookRef(
+        name="sample",
+        exports=frozenset({"transform"}),
+        project_root=tmp_path,
+        module="hooks.sample",
+    )
     pool = UvHookWorkerPool(max_workers_per_project=3)
     with ThreadPoolExecutor(max_workers=3) as executor:
         results = [
@@ -939,7 +993,7 @@ def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None
             raise AssertionError("worker should not be used for built-ins")
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=ExplodingWorkers(),
         helpers=HookHelpers(),
     )
@@ -954,7 +1008,8 @@ def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None
         args={"edits": [{"op": "set", "path": ["enabled"], "value": True}]},
     )
 
-    assert "enabled: true" in result
+    assert "enabled: true" in result.result
+    assert result.diagnostics == ""
 
 
 def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> None:
@@ -975,7 +1030,7 @@ def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> Non
             return HookWorkerCallResult(result="after\n", diagnostics="discarded\n")
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=RecordingWorkers(),
         helpers=HookHelpers(),
     )
@@ -990,7 +1045,8 @@ def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> Non
         args={"flag": True},
     )
 
-    assert result == "after\n"
+    assert result.result == "after\n"
+    assert result.diagnostics == ""
     assert len(calls) == 1
     payload = calls[0]["payload"]
     assert payload["kind"] == "transform"
@@ -1015,12 +1071,12 @@ def test_hook_executor_debug_returns_external_diagnostics(tmp_path: Path) -> Non
             return HookWorkerCallResult(result="after\n", diagnostics="diagnostic\n")
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=RecordingWorkers(),
         helpers=HookHelpers(),
     )
 
-    result = executor.transform_for_debug(
+    result = executor.transform(
         "suffix",
         "before\n",
         local_hook_project=recipe_dir,
@@ -1028,6 +1084,7 @@ def test_hook_executor_debug_returns_external_diagnostics(tmp_path: Path) -> Non
         file=tmp_path / "target" / "local.yml",
         inputs={},
         args={},
+        capture_diagnostics=True,
     )
 
     assert result.result == "after\n"
@@ -1198,7 +1255,11 @@ def test_worker_script_rejects_invalid_validate_return_object(tmp_path: Path) ->
 
 def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
-    _write_hook_project(recipe_dir, hooks={"check": "project_hooks.hooks.check"}, kind="validate")
+    _write_hook_project(
+        recipe_dir,
+        hooks={"check": "project_hooks.hooks.check"},
+        exports=("validate",),
+    )
 
     class WarningWorkers:
         def request(
@@ -1215,12 +1276,12 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
             )
 
     executor = HookExecutor(
-        HookResolver(global_hooks=tmp_path / "hooks"),
+        HookResolver(),
         workers=WarningWorkers(),
         helpers=HookHelpers(),
     )
 
-    verdict = executor.validate(
+    result = executor.validate(
         "check",
         local_hook_project=recipe_dir,
         target=tmp_path / "target",
@@ -1228,7 +1289,8 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
         args={},
     )
 
-    assert verdict == Verdict(status="warn", message="check this")
+    assert result.result == Verdict(status="warn", message="check this")
+    assert result.diagnostics == ""
 
 
 class _FakeProcess:

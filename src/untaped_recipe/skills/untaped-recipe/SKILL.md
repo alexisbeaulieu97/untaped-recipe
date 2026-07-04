@@ -1,6 +1,6 @@
 ---
 name: untaped-recipe
-description: Use the untaped-recipe CLI to apply local recipe projects and packs.
+description: Use the untaped-recipe CLI to apply local recipe packs.
 ---
 
 # Untaped Recipe
@@ -33,33 +33,35 @@ plain directories.
 - Backups are created by default; use `--no-backup` only when the target tree is already protected.
 - `untaped-recipe backup list|show|restore` manages backup bundles; `show` and
   `restore` accept full ids, unambiguous prefixes, or `latest`.
-- `untaped-recipe recipe init|list|show|add|check|remove|edit` manages
-  standalone recipe projects; `check` is static preflight that validates schema,
-  input source expressions, assets, and hook metadata without targets or hook
-  execution. `remove` is destructive and requires confirmation or `--yes`.
-- `untaped-recipe pack init|list|show|add|check|remove|edit` manages recipe pack
-  projects. `untaped-recipe pack recipe init|list|show|edit|remove` manages
-  recipes inside a pack; pack recipe removal is destructive and requires
-  confirmation or `--yes`.
-- `untaped-recipe hook init|list|show|add|remove|edit` manages uv hook
-  project directories; `remove` is destructive and requires confirmation or
-  `--yes`. `hook add` derives the library directory from the declared hook
-  metadata; `--name`, if passed, must match that derived name.
-- `untaped-recipe hook run <hook> --target DIR` invokes one hook against
+- `untaped-recipe new pack <name>` scaffolds a pack.
+- `untaped-recipe new recipe <pack>/<recipe>` scaffolds a recipe inside a pack.
+- `untaped-recipe new hook <pack>/<hook>` scaffolds a hook inside a pack.
+- `untaped-recipe add <path|git-url>` installs a pack after previewing its
+  recipes and hooks; use `--yes` for non-interactive installs, `--name` for an
+  installed-key override, `--rev` for git sources, and `--force` to replace.
+- `untaped-recipe list [--packs|--hooks]`, `show <ref>`, `check [ref|path]`,
+  `edit <ref>`, and `remove <pack>` operate on the unified pack library.
+  `check` with no ref validates the whole library and `packs.toml`.
+  `remove <pack>` is destructive and requires confirmation or `--yes`.
+- `untaped-recipe hook run <hook-ref> --target DIR` invokes one hook against
   explicit fixture context without running a full recipe or writing target
   files.
 
 ## Recipe Model
 
 - Library root defaults to `~/.untaped/untaped-recipes`.
-- Library items are uv projects: standalone recipes under
-  `<library_root>/recipes/<recipe-id>/`, packs under
-  `<library_root>/packs/<pack-id>/`, and reusable global hooks under
-  `<library_root>/hooks/<hook-id>/`.
-- Public recipe and pack identity comes from top-level `pyproject.toml`
-  metadata, not from `recipe.yml`.
+- Installed library items are uv pack projects under
+  `<library_root>/packs/<pack-id>/`; source bookkeeping lives in
+  `<library_root>/packs.toml`.
+- Public pack identity comes from top-level `[project].name`, not from
+  `recipe.yml`. Project names may use the `untaped-recipe-` prefix; the public
+  pack name drops it.
+- The installed library key is the pack identity everywhere: refs, `list`,
+  `check`, `remove`, ambiguity messages, and output rows. `add --name <name>`
+  overrides that installed key.
 - Recipe YAML is behavior-only: `version`, optional `description`, optional
-  `inputs`, and `steps`. `name:` is rejected.
+  `inputs`, and `steps`. `name:` is rejected. The recipe file schema remains
+  `version: 1` in 0.9.
 - Input specs support `type`, `default`, `required`, `description`,
   `sensitive`, `scope`, and `from`; unknown input-spec fields are rejected.
   Omitted `scope` infers `target` when `from` is present and `global`
@@ -81,27 +83,28 @@ plain directories.
   value and `--input-from` source override for the same input is a usage error.
   Empty interactive answers accept the default when one exists; sensitive
   defaults are not displayed to the prompt backend.
-- `apply foo` resolves only standalone library recipe `recipes/foo/`.
-- `apply pack:recipe` resolves an installed pack recipe from `packs/pack/`.
+- `apply foo` resolves an installed pack recipe only when unique.
+- `apply pack/recipe` resolves an installed pack recipe from `packs/pack/`.
 - `apply ./recipe.yml` runs a path-only single-file recipe.
-- `apply ./recipe-project` runs a local standalone recipe project.
 - `apply ./pack-project --recipe recipe` runs a recipe from a local pack.
-- Recipe-local and pack-local hooks are declared in the top-level project
-  `pyproject.toml`. Global hooks live under `<library_root>/hooks/<name>/`.
+- For `apply`, paths must be explicit: they start with `./`, `../`, `/`, or
+  `~`, or end in `.yml`/`.yaml`. Bare `a/b` is always a library ref, never an
+  on-disk path probe.
+- Pack-local hooks are declared in the top-level pack `pyproject.toml`.
 - Recipes only name hooks; they do not declare runtimes.
-- Hook resolution checks recipe-local pyproject metadata, then global hook
-  projects, then packaged built-ins.
-- Hook metadata rows must declare `kind = "transform"` or `kind = "validate"`
-  alongside `module`; old rows that only declare `module` are invalid.
-- `recipe check` and `pack check` reject steps whose type does not match the
-  resolved hook kind.
-- `hook run` resolves explicit `--project PATH`, then a cwd hook project, then
-  global hooks, then built-ins. An explicit `--project` must point at a hook
-  project with hook metadata and never falls through to later sources.
-  Transform hooks require `--file`; default
-  stdout is exact transformed content with no added newline, and `--diff`
-  switches stdout to a unified diff. Validate hooks reject file/content options
-  and emit a `recipe.hook_run` verdict record.
+- Hook resolution checks the recipe's own pack, then installed packs, then
+  packaged built-ins.
+- Hook metadata rows declare only `module`. The exported function name is the
+  contract: a module exports `transform()`, `validate()`, or both, and the
+  recipe step `type` selects which function runs. `check` AST-scans modules
+  without importing them and rejects missing exports.
+- `hook run` resolves explicit `--project PATH`, then installed packs, then
+  built-ins. An explicit `--project` must point at a pack with hook metadata and
+  never falls through to later sources. If a hook exports both functions,
+  `--file` implies transform; otherwise pass `--kind`. Transform hooks require
+  `--file`; default stdout is exact transformed content with no added newline,
+  and `--diff` switches stdout to a unified diff. Validate hooks reject
+  file/content options and emit a `recipe.hook_run` verdict record.
 - `hook run` accepts `--inputs`/`--args` YAML mapping files plus repeated
   YAML-parsed `--input KEY=VALUE` and `--arg KEY=VALUE` overrides. It prints
   resolved context and hook diagnostics to stderr; SDK `--quiet` suppresses
@@ -109,12 +112,16 @@ plain directories.
   ad-hoc fixture values, so use `--quiet` for sensitive values in shared
   terminals. Structured `--format json|yaml|table|pipe` omits raw input and arg
   values. Successful hook-run diagnostics are capped at 10 MiB per invocation.
-- Use `untaped-recipe recipe init <name>` and
-  `untaped-recipe pack init <name>` to scaffold authoring projects. Add local
-  hooks with `untaped-recipe recipe hook init <recipe> <hook>` or
-  `untaped-recipe pack hook init <pack> <hook>`.
+- Use `untaped-recipe new pack <pack>`, `new recipe <pack>/<recipe>`, and
+  `new hook <pack>/<hook>` to scaffold authoring projects. For local explicit
+  paths, `new hook ./some-local-pack/probe` targets `./some-local-pack` and
+  creates `probe`; bare multi-segment refs must be exactly `<pack>/<name>`.
 - V1 step types are `validate`, `transform`, `template`, `copy`, and
   `remove`.
+- Template steps are strict by default. Unknown bare names and non-bare
+  `{{ ... }}` tokens fail unless the step sets `unknown_tokens: keep`, which
+  preserves tokens like `${{ github.ref }}` and `{{ .Values.x }}` while still
+  rendering known inputs.
 - `transform` accepts either `file` or explicit `files`; `files` expands to
   one step per listed file. Missing transform targets fail unless the transform
   also sets `optional: true`.
@@ -125,25 +132,26 @@ plain directories.
 - Common YAML edits should use the built-in `yaml_edit` transform hook. It
   supports `set`, `merge`, and `delete` with mapping keys, list indexes, and
   `where` list-item selectors.
-- The engine does not provide a general YAML selector DSL; `yaml_edit` is a
-  shipped hook and custom behavior belongs in trusted Python hooks.
-- External hooks are uv-managed projects with `pyproject.toml`, `uv.lock`, and
-  `[tool.untaped_recipe.hooks]` metadata. Use
-  `untaped-recipe hook init <name>` to scaffold a reusable global hook.
+- The engine does not provide a general YAML selector DSL; `yaml_edit` is the
+  lone built-in hook and custom behavior belongs in trusted Python pack hooks.
+- External hooks live in uv-managed packs with `pyproject.toml`, `uv.lock`, and
+  `[tool.untaped_recipe.hooks]` metadata.
 - Scaffolded hooks use `TYPE_CHECKING` imports from
   `untaped_recipe.hook_api.HookHelpers` so editors can discover helper methods
   through the dev-only `untaped-recipe` dependency. That public protocol models
   external worker helpers; `pass_`, `warn`, and `fail` return dict-shaped
   verdicts.
-- Hook projects may declare `[tool.untaped_recipe].requires_hook_api` to fail
-  fast when the installed CLI's helper API is too old. The scaffold adds this
-  marker and the `untaped-recipe` dev dependency automatically.
+- Pack hooks declare `[tool.untaped_recipe].requires_hook_api = ">=0.9,<1"` to
+  fail fast when the installed CLI's helper API is incompatible. The scaffold
+  adds this marker and the `untaped-recipe>=0.9` dev dependency automatically.
 - Hook scaffolding refreshes `uv.lock`, so it needs package-index access or a
   configured uv source for `untaped-recipe`.
-- Do not add `untaped-recipe` to a hook project's runtime dependencies. The
+- Do not add `untaped-recipe` to a pack's runtime dependencies. The
   installed CLI owns the worker and helper implementation, and hook workers run
   with `uv run --locked --no-dev`; packages imported by hook code at runtime
   must be in `[project].dependencies`.
+- External helper `render_template(template, inputs, unknown_tokens="error")`
+  is strict by default; use `unknown_tokens="keep"` for nested template syntax.
 - External helper `dump_yaml(data, options=...)` accepts plain dict formatting
   options: `width`, `preserve_quotes`, nested `indent` keys `mapping`,
   `sequence`, and `offset`, `block_seq_indent`, `explicit_start`, and
@@ -156,9 +164,9 @@ plain directories.
   for the worker protocol and `print()` is redirected to stderr. Timed-out hook
   requests kill and retire the worker and are reported as per-target planning
   failures.
-- Hook projects use the scaffolded `src/` layout. Declared hook modules must
-  resolve to files under `src/`; use explicit paths like `./my-hook-project`
-  when managing a project in the current directory.
+- Pack hook modules use the scaffolded `src/` layout. Declared hook modules
+  must resolve to files under `src/`; use explicit paths like `./my-pack` when
+  managing a project in the current directory.
 
 ## Output And Agent Guidance
 
@@ -166,11 +174,12 @@ plain directories.
   when chaining into other untaped tools.
 - Use `--columns` to narrow list/output rows. `apply` emits `recipe.outcome`
   rows; `hook run` emits `recipe.hook_run`; library commands emit
-  `recipe.recipe`, `recipe.hook`, and `recipe.backup`.
+  `recipe.recipe`, `recipe.hook`, `recipe.pack`, `recipe.check`, and
+  `recipe.backup`.
 - Optional transform skips appear in the `warnings` field of `recipe.outcome`
   rows as a semicolon-delimited string.
-- Apply rows and backup metadata use canonical recipe refs: `foo` for
-  standalone recipes and `pack:recipe` for pack recipes.
+- Apply rows and backup metadata use canonical recipe refs such as
+  `pack/recipe`.
 - `recipe.outcome` rows include resolved declared `inputs`. Sensitive inputs
   render as `***`, row warnings/errors are redacted, and file-level previews
   and diffs are suppressed for targets with sensitive inputs; real values still
@@ -199,7 +208,9 @@ plain directories.
 Recipes are VCS-agnostic and do not call git. Review the preview before
 confirming broad changes; use `--preview diff` when exact hunks are needed.
 Python hooks are trusted local code; inspect hooks before running recipes from
-another person.
+another person. Installing a pack is installing code on the same trust model as
+`pip install`; use `add` preview, `show`, and `check` to evaluate before
+trusting it.
 
 `apply` plans every target before writing. A failed target plan or write does
 not block successful targets, and a failed target writes nothing for that

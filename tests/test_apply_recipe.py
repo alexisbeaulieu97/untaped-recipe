@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from untaped_recipe.application.apply_recipe import ApplyRecipe
+from untaped_recipe.application.ports import HookDebugResult
+from untaped_recipe.domain.plan import Verdict
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.hook_worker import handle_request
 from untaped_recipe.infrastructure.file_writer import flush_changes
@@ -44,7 +46,7 @@ class InlineWorkers:
 def _planner(tmp_path: Path):
     planner = ApplyRecipe(
         HookExecutor(
-            HookResolver(global_hooks=tmp_path / "global"),
+            HookResolver(),
             workers=InlineWorkers(),
             helpers=HookHelpers(),
         )
@@ -76,8 +78,7 @@ def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:
     hook_rows: list[str] = []
     for name, code in hooks.items():
         (recipe_dir / "src" / package / "hooks" / f"{name}.py").write_text(code)
-        kind = "validate" if "def validate" in code else "transform"
-        hook_rows.append(f'"{name}" = {{ kind = "{kind}", module = "{package}.hooks.{name}" }}')
+        hook_rows.append(f'"{name}" = {{ module = "{package}.hooks.{name}" }}')
     (recipe_dir / "pyproject.toml").write_text(
         "[project]\n"
         'name = "recipe-hooks"\n'
@@ -87,6 +88,67 @@ def _write_hook_project(recipe_dir: Path, hooks: dict[str, str]) -> None:
         "[tool.untaped_recipe.hooks]\n" + "\n".join(hook_rows) + "\n"
     )
     (recipe_dir / "uv.lock").write_text("version = 1\n")
+
+
+def test_apply_recipe_executor_calls_default_to_no_diagnostics(tmp_path: Path) -> None:
+    class SpyExecutor:
+        def __init__(self) -> None:
+            self.transform_capture_flags: list[bool] = []
+            self.validate_capture_flags: list[bool] = []
+
+        def transform(
+            self,
+            hook: str,
+            content: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            file: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[str]:
+            self.transform_capture_flags.append(capture_diagnostics)
+            return HookDebugResult(result=content + "!", diagnostics="ignored")
+
+        def validate(
+            self,
+            hook: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[Verdict]:
+            self.validate_capture_flags.append(capture_diagnostics)
+            return HookDebugResult(result=Verdict(status="pass"), diagnostics="ignored")
+
+    spy = SpyExecutor()
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {"type": "validate", "hook": "check"},
+                {"type": "transform", "file": "config.txt", "hook": "rewrite"},
+            ],
+        }
+    )
+
+    plan = ApplyRecipe(spy)(
+        recipe=recipe,
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=target,
+        inputs={},
+    )
+
+    assert spy.validate_capture_flags == [False]
+    assert spy.transform_capture_flags == [False]
+    assert plan.changes[0].after == "before!"
 
 
 def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -> None:
@@ -138,6 +200,42 @@ def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -
     ]
     assert (target / "legacy.txt").read_text() == "delete me\n"
     assert "name: api" in "\n".join(change.after or "" for change in plan.changes)
+
+
+def test_apply_recipe_template_step_can_keep_non_bare_tokens(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "workflow.yml").write_text(
+        "name: ci\non: push\nref: ${{ github.ref }}\nowner: {{ owner }}\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"owner": {"type": "str", "required": True}},
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "workflow.yml",
+                    "dest": ".github/workflows/ci.yml",
+                    "unknown_tokens": "keep",
+                }
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        target=target,
+        inputs={"owner": "platform"},
+    )
+
+    assert plan.status == "planned"
+    assert plan.changes[0].after == (
+        "name: ci\non: push\nref: ${{ github.ref }}\nowner: platform\n"
+    )
 
 
 def test_apply_recipe_failing_validate_aborts_target_without_changes(tmp_path: Path) -> None:
@@ -196,7 +294,10 @@ def test_apply_recipe_rejects_step_hook_kind_mismatch_before_worker_call(tmp_pat
         }
     )
 
-    with pytest.raises(ValueError, match="validate step hook 'check' resolves to transform hook"):
+    with pytest.raises(
+        ValueError,
+        match=r"validate step hook 'check' does not export a validate\(\) function",
+    ):
         _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
 
 

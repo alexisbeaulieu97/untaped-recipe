@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import shutil
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from untaped_recipe.domain.paths import confined_path
 from untaped_recipe.domain.plan import FileChange
@@ -23,6 +24,23 @@ class BackupBundle:
 
     id: str
     path: Path
+
+
+RestoreAction = Literal["restore", "create", "delete"]
+
+
+@dataclass(frozen=True)
+class RestoreItem:
+    """One file-level restore action."""
+
+    path: Path
+    action: RestoreAction
+
+
+@dataclass(frozen=True)
+class _PlannedRestore:
+    item: RestoreItem
+    change: FileChange
 
 
 @dataclass
@@ -142,17 +160,51 @@ class BackupStore:
             if (path / "metadata.json").is_file()
         ]
 
-    def restore(self, backup_id: str, *, force: bool = False) -> None:
+    def restore(
+        self,
+        backup_id: str,
+        *,
+        force: bool = False,
+        items: Sequence[RestoreItem] | None = None,
+    ) -> None:
         """Restore a backup bundle."""
+        if items is None:
+            planned = self._restore_plan(backup_id, force=force)
+        else:
+            selected_paths = {item.path for item in items}
+            planned = self._restore_plan(
+                backup_id,
+                force=force,
+                selected_paths=selected_paths,
+            )
+            found_paths = {entry.item.path for entry in planned}
+            missing = sorted(selected_paths - found_paths)
+            if missing:
+                raise ValueError(f"restore item not found: {missing[0]}")
+        flush_changes(tuple(planned_item.change for planned_item in planned))
+
+    def plan_restore(self, backup_id: str, *, force: bool = False) -> builtins.list[RestoreItem]:
+        """Return the file-level restore actions for a backup bundle."""
+        return [planned.item for planned in self._restore_plan(backup_id, force=force)]
+
+    def _restore_plan(
+        self,
+        backup_id: str,
+        *,
+        force: bool,
+        selected_paths: set[Path] | None = None,
+    ) -> builtins.list[_PlannedRestore]:
         bundle = self._resolve(backup_id)
         bundle_dir = bundle.path
         metadata_path = bundle_dir / "metadata.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        changes: list[FileChange] = []
+        planned: builtins.list[_PlannedRestore] = []
         for entry in metadata["files"]:
             target = Path(entry["target"])
             relative_path = Path(entry["relative_path"])
             path = confined_path(target, relative_path, field="relative_path")
+            if selected_paths is not None and path not in selected_paths:
+                continue
             current_hash = _current_hash(path)
             if not force and current_hash != entry["after_hash"]:
                 raise ValueError(
@@ -168,15 +220,18 @@ class BackupStore:
                     newline="",
                 )
             )
-            changes.append(
-                FileChange(
-                    target=target,
-                    relative_path=relative_path,
-                    before=before,
-                    after=after,
+            planned.append(
+                _PlannedRestore(
+                    item=RestoreItem(path=path, action=_restore_action(path, backup_file)),
+                    change=FileChange(
+                        target=target,
+                        relative_path=relative_path,
+                        before=before,
+                        after=after,
+                    ),
                 )
             )
-        flush_changes(tuple(changes))
+        return planned
 
     def metadata(self, backup_id: str) -> dict[str, object]:
         """Read raw metadata for a backup bundle."""
@@ -219,3 +274,11 @@ def _current_hash(path: Path) -> str | None:
     if path.exists():
         return "__untaped_recipe_non_file__"
     return None
+
+
+def _restore_action(path: Path, backup_file: object) -> RestoreAction:
+    if backup_file is None:
+        return "delete"
+    if path.exists():
+        return "restore"
+    return "create"

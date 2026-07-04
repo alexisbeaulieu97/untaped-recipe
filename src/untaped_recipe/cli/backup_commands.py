@@ -8,14 +8,17 @@ from cyclopts import Parameter
 from untaped.api import (
     ColumnsOption,
     FormatOption,
+    batch_apply,
     create_app,
     echo,
     emit,
+    finish,
     render_rows,
+    ui_context,
 )
 
 from untaped_recipe.cli.common import library_root, report_config_errors
-from untaped_recipe.infrastructure.backup import BackupStore
+from untaped_recipe.infrastructure.backup import BackupStore, RestoreItem
 
 app = create_app(name="backup", help="Manage recipe backups.")
 
@@ -56,8 +59,32 @@ def restore_command(
         bool,
         Parameter(name="--force", negative="", help="Overwrite files changed after backup."),
     ] = False,
+    yes: Annotated[
+        bool,
+        Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
+    ] = False,
 ) -> None:
     """Restore a backup bundle."""
     with report_config_errors():
-        BackupStore(library_root() / "backups").restore(backup_id, force=force)
-        echo(f"restored {backup_id}", err=True)
+        store = BackupStore(library_root() / "backups")
+        items = store.plan_restore(backup_id, force=force)
+        ui = ui_context(strict=False)
+
+        def _restore(item: RestoreItem) -> RestoreItem:
+            store.restore(backup_id, items=[item], force=force)
+            return item
+
+        outcome = batch_apply(
+            items,
+            _restore,
+            verb="restore",
+            noun="file",
+            label=lambda item: str(item.path),
+            describe=lambda item: {"path": str(item.path), "action": item.action},
+            ui=ui,
+            destructive=True,
+            assume_yes=yes,
+        )
+        if not outcome.any_failed:
+            ui.message("success", f"restored {backup_id}")
+        finish(outcome)

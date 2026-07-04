@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from untaped_recipe.application.ports import HookDebugResult
-from untaped_recipe.application.run_hook import RunHook, TransformHookRun
+from untaped_recipe.application.run_hook import RunHook, TransformHookRun, select_verb
 from untaped_recipe.domain.plan import Verdict
 
 
@@ -15,7 +15,7 @@ class _DebugExecutor:
     def __init__(self) -> None:
         self.transform_calls: list[dict[str, object]] = []
 
-    def transform_for_debug(
+    def transform(
         self,
         hook: str,
         content: str,
@@ -25,6 +25,7 @@ class _DebugExecutor:
         file: Path,
         inputs: dict[str, object],
         args: dict[str, object],
+        capture_diagnostics: bool = False,
     ) -> HookDebugResult[str]:
         self.transform_calls.append(
             {
@@ -35,11 +36,12 @@ class _DebugExecutor:
                 "file": file,
                 "inputs": inputs,
                 "args": args,
+                "capture_diagnostics": capture_diagnostics,
             }
         )
         return HookDebugResult(result=content + "!", diagnostics="diagnostic\n")
 
-    def validate_for_debug(
+    def validate(
         self,
         hook: str,
         *,
@@ -47,6 +49,7 @@ class _DebugExecutor:
         target: Path,
         inputs: dict[str, object],
         args: dict[str, object],
+        capture_diagnostics: bool = False,
     ) -> HookDebugResult[Verdict]:
         return HookDebugResult(result=Verdict(status="pass"), diagnostics="")
 
@@ -82,6 +85,7 @@ def test_run_hook_transform_reads_target_file_and_invokes_executor(tmp_path: Pat
             "file": target.resolve() / "config.txt",
             "inputs": {"enabled": True},
             "args": {"count": 3},
+            "capture_diagnostics": True,
         }
     ]
 
@@ -141,3 +145,25 @@ def test_run_hook_missing_content_file_is_clean_value_error(tmp_path: Path) -> N
             inputs={},
             args={},
         )
+
+
+def test_select_verb_uses_single_export_without_kind() -> None:
+    assert select_verb(frozenset({"transform"}), file_given=False, kind=None) == "transform"
+    assert select_verb(frozenset({"validate"}), file_given=False, kind=None) == "validate"
+
+
+def test_select_verb_uses_file_to_disambiguate_dual_export() -> None:
+    assert select_verb(frozenset({"transform", "validate"}), file_given=True, kind=None) == (
+        "transform"
+    )
+
+
+def test_select_verb_requires_kind_or_file_for_dual_export() -> None:
+    with pytest.raises(ValueError, match="ambiguous hook verb"):
+        select_verb(frozenset({"transform", "validate"}), file_given=False, kind=None)
+
+
+def test_select_verb_uses_kind_to_disambiguate_dual_export() -> None:
+    assert select_verb(frozenset({"transform", "validate"}), file_given=False, kind="validate") == (
+        "validate"
+    )

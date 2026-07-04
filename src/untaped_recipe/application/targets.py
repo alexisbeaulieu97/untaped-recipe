@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from operator import attrgetter
 from pathlib import Path
 
 from untaped.api import is_envelope_line, parse_envelope_line
@@ -16,8 +17,6 @@ class Target:
 
     path: Path
     record: Mapping[str, object] | None = None
-    kind: str | None = None
-    lineno: int | None = None
 
 
 def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Target]:
@@ -29,22 +28,21 @@ def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Target]:
         except json.JSONDecodeError as exc:
             if text.lstrip().startswith("{"):
                 raise ValueError(f"line {lineno}: invalid JSON: {exc.msg}") from exc
-            targets.append(Target(path=Path(text), lineno=lineno))
+            targets.append(Target(path=Path(text)))
             continue
         if not isinstance(obj, dict):
             raise ValueError(f"stdin line {lineno} is not a pipe record or a path: {text!r}")
         if not is_envelope_line(obj):
-            targets.append(Target(path=Path(text), lineno=lineno))
+            targets.append(Target(path=Path(text)))
             continue
         env = parse_envelope_line(lineno, text)
-        if _is_summary_kind(env.kind):
+        kind = attrgetter("kind")(env)
+        if _is_summary_kind(kind):
             continue
         targets.append(
             Target(
-                path=_target_from_record(env.kind, env.record, lineno),
+                path=_target_from_record(kind, env.record, lineno),
                 record=dict(env.record),
-                kind=env.kind,
-                lineno=lineno,
             )
         )
     return targets

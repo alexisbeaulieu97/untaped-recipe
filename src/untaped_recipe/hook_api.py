@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
-HOOK_API_VERSION = "0.8.0"
+HOOK_API_VERSION = "0.9.0"
 
 
 class YamlIndentOptions(TypedDict, total=False):
@@ -39,7 +39,13 @@ class HookHelpers(Protocol):
     def fail(self, message: str) -> dict[str, str]:
         """Return a failing validation verdict."""
 
-    def render_template(self, template: str, inputs: dict[str, object]) -> str:
+    def render_template(
+        self,
+        template: str,
+        inputs: dict[str, object],
+        *,
+        unknown_tokens: str = "error",
+    ) -> str:
         """Render simple recipe placeholders."""
 
     def load_yaml(self, content: str) -> object:

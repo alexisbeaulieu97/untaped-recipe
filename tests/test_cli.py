@@ -13,19 +13,20 @@ from untaped.api import build_tool_app, invalidate_settings_cache
 from untaped.testing import CliInvoker
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
-import untaped_recipe.infrastructure.hook_library as hook_library_module
 from untaped_recipe import app
 from untaped_recipe.__main__ import SPEC
 from untaped_recipe.builtins.registry import BUILTIN_HOOKS, BuiltinHook
 from untaped_recipe.cli.common import library_root
-from untaped_recipe.domain.hook_project import project_name_for_hook
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.infrastructure.backup import BackupStore
+from untaped_recipe.infrastructure.pack_store import PackLibrary
 
 pytestmark = pytest.mark.usefixtures("isolate_config")
 
 
 class _DeclineUi:
+    stdin = object()
+
     def confirm(self, message: str, *, default: bool = False) -> bool:
         return False
 
@@ -63,7 +64,6 @@ def _write_hook_project(
         if (root / "recipe.yml").is_file()
         else ""
     )
-    kind = "validate" if "def validate" in code else "transform"
     (root / "pyproject.toml").write_text(
         "[project]\n"
         f'name = "{root.name}-hooks"\n'
@@ -72,13 +72,53 @@ def _write_hook_project(
         "dependencies = []\n\n"
         f"{recipe_metadata}"
         "[tool.untaped_recipe.hooks]\n"
-        f'"{public_name}" = {{ kind = "{kind}", module = "{package}.hooks.{module_name}" }}\n'
+        f'"{public_name}" = {{ module = "{package}.hooks.{module_name}" }}\n'
     )
     subprocess.run(["uv", "lock"], cwd=root, check=True)
 
 
-def _write_minimal_lock(project_root: Path) -> None:
-    (project_root / "uv.lock").write_text("version = 1\n")
+def _write_pack_project(root: Path) -> None:
+    hook_module = root / "src" / "demo_hooks" / "hooks" / "check.py"
+    hook_module.parent.mkdir(parents=True, exist_ok=True)
+    (root / "src" / "demo_hooks" / "__init__.py").write_text("")
+    (root / "src" / "demo_hooks" / "hooks" / "__init__.py").write_text("")
+    hook_module.write_text(
+        "def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n"
+    )
+    recipe = root / "recipes" / "demo" / "recipe.yml"
+    recipe.parent.mkdir(parents=True, exist_ok=True)
+    recipe.write_text("version: 1\nsteps: []\n")
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-demo"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe]\n"
+        'requires_hook_api = ">=0.8,<1"\n\n'
+        "[tool.untaped_recipe.recipes]\n"
+        '"demo-recipe" = { path = "recipes/demo/recipe.yml" }\n\n'
+        "[tool.untaped_recipe.hooks]\n"
+        '"demo_hook" = { module = "demo_hooks.hooks.check" }\n'
+    )
+    (root / "uv.lock").write_text("version = 1\n")
+
+
+def test_add_pack_prints_recipes_and_hooks_before_confirm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
+    result = CliInvoker().invoke(app, ["add", str(pack)])
+
+    assert result.exit_code == 0, result.output
+    assert "demo-recipe" in result.stderr
+    assert "demo_hook" in result.stderr
+    assert not (library_root() / "packs" / "demo").exists()
 
 
 def test_apply_yes_writes_and_emits_json_summary(
@@ -457,7 +497,7 @@ def test_apply_table_preview_renders_relative_sensitive_target_as_absolute(
     assert "secret" not in result.stderr
 
 
-def test_apply_quiet_mutes_post_run_info_but_not_preview(tmp_path: Path) -> None:
+def test_apply_quiet_mutes_preview_summary_and_post_run_info(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
         "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
@@ -473,11 +513,11 @@ def test_apply_quiet_mutes_post_run_info_but_not_preview(tmp_path: Path) -> None
     )
 
     assert result.exit_code == 0, result.output
-    assert "Recipe preview:" in result.stderr
+    assert "Recipe preview:" not in result.stderr
     assert "Recipe dry run:" not in result.stderr
 
 
-def test_apply_table_preview_stays_table_when_collection_view_is_list(
+def test_apply_table_preview_uses_configured_collection_view(
     tmp_path: Path,
     isolate_config: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -499,8 +539,8 @@ def test_apply_table_preview_stays_table_when_collection_view_is_list(
     )
 
     assert result.exit_code == 0, result.output
-    assert "path:" not in result.stderr
-    assert "│" in result.stderr
+    assert "path:" in result.stderr
+    assert "action: create" in result.stderr
     assert str(target / "out.txt") in result.stderr
 
 
@@ -516,7 +556,7 @@ def test_apply_decline_renders_cancelled_summary_without_writing(
     target = tmp_path / "target"
     target.mkdir()
 
-    monkeypatch.setattr("untaped.batch._stdin_is_interactive", lambda: True)
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
     monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
     result = CliInvoker().invoke(
         app,
@@ -2005,6 +2045,80 @@ def test_hook_run_validate_records_and_fail_exit(tmp_path: Path) -> None:
     assert failed_row["record"]["message"] == "not ready"
 
 
+def test_hook_run_dual_export_infers_or_requires_kind(tmp_path: Path) -> None:
+    hook_project = tmp_path / "hooks"
+    _write_hook_project(
+        hook_project,
+        public_name="dual",
+        module_name="dual",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    return 'transformed'\n\n"
+            "def validate(*, inputs, target, args, helpers):\n"
+            "    return helpers.warn('validated')\n"
+        ),
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "local.txt").write_text("before")
+
+    inferred_transform = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "dual",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--file",
+            "local.txt",
+        ],
+    )
+    ambiguous = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "dual",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+        ],
+    )
+    explicit_validate = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "dual",
+            "--project",
+            str(hook_project),
+            "--target",
+            str(target),
+            "--kind",
+            "validate",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert inferred_transform.exit_code == 0, inferred_transform.output
+    assert inferred_transform.stdout == "transformed"
+    assert ambiguous.exit_code != 0
+    assert (
+        "hook 'dual' exports both transform() and validate(); pass --kind or --file"
+        in ambiguous.output
+    )
+    assert explicit_validate.exit_code == 0, explicit_validate.output
+    row = json.loads(explicit_validate.stdout)
+    assert row["kind"] == "validate"
+    assert row["status"] == "warn"
+    assert row["message"] == "validated"
+
+
 def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:
     hook_project = tmp_path / "hooks"
     marker = tmp_path / "marker"
@@ -2194,11 +2308,11 @@ def test_hook_run_explicit_project_must_be_valid_before_global_or_builtin_fallba
     assert "Hook run:" not in result.stderr
 
 
-def test_hook_run_resolution_order_prefers_cwd_then_global_then_builtin(
+def test_hook_run_resolution_order_prefers_cwd_then_installed_pack_then_builtin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    global_project = library_root() / "hooks" / project_name_for_hook("shadow")
+    global_project = tmp_path / "pack-source"
     _write_hook_project(
         global_project,
         public_name="shadow",
@@ -2206,6 +2320,13 @@ def test_hook_run_resolution_order_prefers_cwd_then_global_then_builtin(
         code=(
             "def transform(content, *, inputs, target, file, args, helpers):\n    return 'global'\n"
         ),
+    )
+    PackLibrary(library_root=library_root()).add(
+        global_project,
+        source=str(global_project),
+        rev=None,
+        name="shared",
+        force=False,
     )
     cwd_project = tmp_path / "cwd"
     _write_hook_project(
@@ -2287,7 +2408,7 @@ def test_hook_run_builtin_stdout_is_redirected_to_stderr(
     monkeypatch.setitem(
         BUILTIN_HOOKS,
         "debug_builtin",
-        BuiltinHook(kind="transform", module=module),
+        BuiltinHook(module=module, exports=frozenset({"transform"})),
     )
     target = tmp_path / "target"
     target.mkdir()
@@ -2345,8 +2466,7 @@ def test_hook_run_quiet_suppresses_context_but_not_hook_diagnostics(tmp_path: Pa
 @pytest.mark.parametrize(
     "args",
     [
-        ["hook", "show", "missing"],
-        ["recipe", "show", "missing"],
+        ["show", "missing"],
         ["backup", "show", "latest"],
     ],
 )
@@ -2356,85 +2476,6 @@ def test_library_command_value_errors_are_reported_cleanly(args: list[str]) -> N
     assert result.exit_code != 0
     assert "error: " in result.output
     assert "Traceback" not in result.output
-
-
-def test_recipe_and_hook_library_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    recipe = tmp_path / "demo"
-    editor = tmp_path / "editor.sh"
-    marker = tmp_path / "edited.txt"
-    editor.write_text(f"#!/bin/sh\nprintf '%s' \"$1\" > {marker}\n")
-    editor.chmod(0o755)
-    monkeypatch.setenv("EDITOR", str(editor))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(hook_library_module, "lock_project", _write_minimal_lock)
-    invoker = CliInvoker()
-
-    initialized_recipe = invoker.invoke(app, ["recipe", "init", "demo"])
-    assert initialized_recipe.exit_code == 0, initialized_recipe.output
-    assert Path(initialized_recipe.stdout.strip()) == recipe
-    added_recipe = invoker.invoke(app, ["recipe", "add", str(recipe)])
-    assert added_recipe.exit_code == 0, added_recipe.output
-    listed_recipes = invoker.invoke(app, ["recipe", "list", "--format", "json"])
-    assert listed_recipes.exit_code == 0, listed_recipes.output
-    assert json.loads(listed_recipes.stdout)[0]["name"] == "demo"
-    shown_recipe = invoker.invoke(app, ["recipe", "show", "demo"])
-    assert "steps: []" in shown_recipe.stdout
-    edited_recipe = invoker.invoke(app, ["recipe", "edit", "demo"])
-    assert edited_recipe.exit_code == 0, edited_recipe.output
-    assert marker.read_text().endswith("recipe.yml")
-    refused_recipe_remove = invoker.invoke(app, ["recipe", "remove", "demo"])
-    assert refused_recipe_remove.exit_code != 0
-    assert "requires --yes" in refused_recipe_remove.output
-    removed_recipe = invoker.invoke(app, ["recipe", "remove", "demo", "--yes"])
-    assert removed_recipe.exit_code == 0, removed_recipe.output
-
-    initialized_hook = invoker.invoke(app, ["hook", "init", "check"])
-    assert initialized_hook.exit_code == 0, initialized_hook.output
-    initialized_path = Path(initialized_hook.stdout.strip())
-    assert (initialized_path / "pyproject.toml").is_file()
-    assert (initialized_path / "uv.lock").is_file()
-    assert (
-        '"check" = { kind = "transform", module = "untaped_recipe_hooks_check.hooks.check" }'
-        in (initialized_path / "pyproject.toml").read_text()
-    )
-
-    listed_initialized_hooks = invoker.invoke(app, ["hook", "list", "--format", "json"])
-    assert listed_initialized_hooks.exit_code == 0, listed_initialized_hooks.output
-    initialized_row = json.loads(listed_initialized_hooks.stdout)[0]
-    assert initialized_row["name"] == "check"
-    assert initialized_row["hooks"] == "check"
-    shown_initialized_hook = invoker.invoke(app, ["hook", "show", "check"])
-    assert "def transform" in shown_initialized_hook.stdout
-    edited_initialized_hook = invoker.invoke(app, ["hook", "edit", "check"])
-    assert edited_initialized_hook.exit_code == 0, edited_initialized_hook.output
-    assert marker.read_text().endswith("check.py")
-    removed_initialized_hook = invoker.invoke(app, ["hook", "remove", "check", "--yes"])
-    assert removed_initialized_hook.exit_code == 0, removed_initialized_hook.output
-
-    hook_project = tmp_path / "shared-project"
-    _write_hook_project(
-        hook_project,
-        public_name="shared",
-        module_name="shared",
-        code=(
-            "def transform(content, *, inputs, target, file, args, helpers):\n    return content\n"
-        ),
-    )
-    added_hook = invoker.invoke(app, ["hook", "add", str(hook_project), "--name", "shared"])
-    assert added_hook.exit_code == 0, added_hook.output
-    listed_hooks = invoker.invoke(app, ["hook", "list", "--format", "json"])
-    assert listed_hooks.exit_code == 0, listed_hooks.output
-    assert json.loads(listed_hooks.stdout)[0]["name"] == "shared"
-    shown_hook = invoker.invoke(app, ["hook", "show", "shared"])
-    assert "def transform" in shown_hook.stdout
-    edited_hook = invoker.invoke(app, ["hook", "edit", "shared"])
-    assert edited_hook.exit_code == 0, edited_hook.output
-    assert marker.read_text().endswith("shared.py")
-    refused_hook_remove = invoker.invoke(app, ["hook", "remove", "shared"])
-    assert refused_hook_remove.exit_code != 0
-    assert "requires --yes" in refused_hook_remove.output
-    removed_hook = invoker.invoke(app, ["hook", "remove", "shared", "--yes"])
-    assert removed_hook.exit_code == 0, removed_hook.output
 
 
 def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None:
@@ -2461,15 +2502,17 @@ def test_recipe_check_validates_package_assets_and_hooks(tmp_path: Path) -> None
         code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
     )
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(app, ["check", str(recipe_dir), "--format", "json"])
 
     assert result.exit_code == 0, result.output
     rows = json.loads(result.stdout)
     assert rows == [
         {
-            "recipe": "demo",
-            "status": "ok",
-            "path": str(recipe_dir / "recipe.yml"),
+            "pack": "recipe-hooks",
+            "status": "pass",
+            "path": str(recipe_dir),
+            "recipes": 1,
+            "hooks": 1,
             "error": "",
         }
     ]
@@ -2498,16 +2541,16 @@ def test_recipe_check_rejects_step_hook_kind_mismatch(tmp_path: Path) -> None:
         "[tool.untaped_recipe.recipes]\n"
         '"demo" = { path = "recipe.yml" }\n\n'
         "[tool.untaped_recipe.hooks]\n"
-        '"check" = { kind = "transform", module = "recipe_hooks.hooks.check" }\n'
+        '"check" = { module = "recipe_hooks.hooks.check" }\n'
     )
     (recipe_dir / "uv.lock").write_text("version = 1\n")
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(app, ["check", str(recipe_dir), "--format", "json"])
 
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
     assert rows[0]["status"] == "error"
-    assert "validate step hook 'check' resolves to transform hook" in rows[0]["error"]
+    assert "validate step hook 'check' does not export a validate() function" in rows[0]["error"]
 
 
 @pytest.mark.parametrize(
@@ -2547,7 +2590,7 @@ def test_recipe_check_reports_invalid_packages(
 
     result = CliInvoker().invoke(
         app,
-        ["recipe", "check", str(recipe_dir / "recipe.yml"), "--format", "json"],
+        ["check", str(recipe_dir / "recipe.yml"), "--format", "json"],
     )
 
     assert result.exit_code == 1, result.output
@@ -2586,7 +2629,7 @@ def test_recipe_check_reports_broken_local_hook_projects(
     if remove_module:
         (recipe_dir / "src" / "recipe_hooks" / "hooks" / "check.py").unlink()
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(app, ["check", str(recipe_dir), "--format", "json"])
 
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
@@ -2606,7 +2649,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_lockfile(tmp_pat
     )
     (recipe_dir / "uv.lock").unlink()
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(app, ["check", str(recipe_dir), "--format", "json"])
 
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
@@ -2632,7 +2675,7 @@ def test_recipe_check_rejects_runtime_untaped_recipe_hook_dependency(tmp_path: P
         )
     )
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(app, ["check", str(recipe_dir), "--format", "json"])
 
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
@@ -2659,7 +2702,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path
     )
     (recipe_dir / "src" / "recipe_hooks" / "hooks" / "check.py").unlink()
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(app, ["check", str(recipe_dir), "--format", "json"])
 
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
@@ -2675,7 +2718,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path
             "[tool.untaped_recipe.recipes]\n"
             '"demo" = { path = "recipe.yml" }\n\n'
             "[tool.untaped_recipe.hooks]\n"
-            '"bad-name" = { kind = "validate", module = "recipe_hooks.hooks.check" }\n',
+            '"bad-name" = { module = "recipe_hooks.hooks.check" }\n',
             "invalid hook name",
         ),
         (
@@ -2684,7 +2727,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_modules(tmp_path
             '"demo" = { path = "recipe.yml" }\n\n'
             "[tool.untaped_recipe.hooks]\n"
             '"check" = { module =',
-            "invalid recipe project pyproject",
+            "invalid pack project pyproject",
         ),
     ],
 )
@@ -2699,7 +2742,7 @@ def test_recipe_check_validates_unreferenced_local_hook_project_metadata(
     (recipe_dir / "pyproject.toml").write_text(pyproject)
     (recipe_dir / "uv.lock").write_text("version = 1\n")
 
-    result = CliInvoker().invoke(app, ["recipe", "check", str(recipe_dir), "--format", "json"])
+    result = CliInvoker().invoke(app, ["check", str(recipe_dir), "--format", "json"])
 
     assert result.exit_code == 1, result.output
     rows = json.loads(result.stdout)
@@ -2738,6 +2781,86 @@ def test_backup_commands_show_list_and_restore(tmp_path: Path) -> None:
     assert shown_json.exit_code == 0, shown_json.output
     assert json.loads(shown_json.stdout)["id"] == bundle.id
 
-    restored = invoker.invoke(app, ["backup", "restore", bundle.id])
+    restored = invoker.invoke(app, ["backup", "restore", bundle.id, "--yes"])
     assert restored.exit_code == 0, restored.output
     assert config.read_text() == "before\n"
+
+
+def test_backup_restore_refuses_non_tty_without_yes_and_restores_with_yes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    config = target / "config.yml"
+    config.write_text("before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            )
+        ],
+    )
+    config.write_text("after\n")
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: False)
+    invoker = CliInvoker()
+
+    refused = invoker.invoke(app, ["backup", "restore", bundle.id])
+    restored = invoker.invoke(app, ["backup", "restore", bundle.id, "--yes"])
+
+    assert refused.exit_code != 0
+    assert "requires --yes" in refused.output
+    assert restored.exit_code == 0, restored.output
+    assert config.read_text() == "before\n"
+
+
+def test_backup_restore_failing_item_exits_nonzero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    first = target / "one.txt"
+    second = target / "two.txt"
+    first.write_text("one-before\n")
+    second.write_text("two-before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("one.txt"),
+                before="one-before\n",
+                after="one-after\n",
+            ),
+            FileChange(
+                target=target,
+                relative_path=Path("two.txt"),
+                before="two-before\n",
+                after="two-after\n",
+            ),
+        ],
+    )
+    first.write_text("one-after\n")
+    second.write_text("two-after\n")
+    original_replace = file_writer_module.os.replace
+
+    def fail_second_replace(source: Path, dest: Path) -> None:
+        if Path(dest).name == "two.txt":
+            raise OSError("disk full")
+        original_replace(source, dest)
+
+    monkeypatch.setattr(file_writer_module.os, "replace", fail_second_replace)
+
+    result = CliInvoker().invoke(app, ["backup", "restore", bundle.id, "--yes"])
+
+    assert result.exit_code == 1, result.output
+    assert "disk full" in result.output

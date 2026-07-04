@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sys
+import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,42 +19,76 @@ from untaped.api import (
     clamp_parallel,
     create_app,
     echo,
+    emit,
+    finish,
     parse_kv_pairs,
+    read_stdin,
     render_rows,
     ui_context,
 )
 
 from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
-from untaped_recipe.application.inputs import PromptFunc
+from untaped_recipe.application.inputs import PromptFunc, validate_recipe_input_sources
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import (
+    edit_path,
+    hook_timeout_seconds,
     library_root,
     load_yaml_mapping_file,
     report_config_errors,
-    settings,
 )
+from untaped_recipe.cli.detail import hook_detail, pack_detail, recipe_detail
 from untaped_recipe.cli.hook_commands import app as hook_app
-from untaped_recipe.cli.pack_commands import app as pack_app
 from untaped_recipe.cli.preview import PreviewMode, render_preview
-from untaped_recipe.cli.recipe_commands import app as recipe_app
+from untaped_recipe.domain.hook_exports import hook_exports
+from untaped_recipe.domain.hook_project import (
+    hook_module_file,
+    read_hook_metadata,
+    validate_hook_modules,
+    validate_hook_project_contract,
+)
+from untaped_recipe.domain.pack import HookEntry, PackManifest, RecipeEntry, parse_ref
+from untaped_recipe.domain.paths import confined_path, safe_library_name
 from untaped_recipe.domain.plan import TargetPlan
-from untaped_recipe.domain.recipe import Recipe
-from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolver, RecipeLibrary
+from untaped_recipe.domain.recipe import CopyStep, Recipe, TemplateStep, TransformStep, ValidateStep
+from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolver, pack_scaffold
 from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
+from untaped_recipe.infrastructure.hook_resolver import ensure_hook_supports
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
+from untaped_recipe.infrastructure.pack_store import InstalledPack, fetch_pack_source, is_git_url
+from untaped_recipe.infrastructure.pack_store import PackLibrary as UnifiedPackLibrary
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 app = create_app(name="recipe", help="Apply reusable local recipes to plain directories.")
-app.command(recipe_app, name="recipe")
-app.command(pack_app, name="pack")
+new_app = create_app(name="new", help="Scaffold recipe packs, recipes, and hooks.")
+app.command(new_app, name="new")
 app.command(hook_app, name="hook")
 app.command(backup_app, name="backup")
 
 MessageKind = Literal["success", "warning", "error", "info"]
+
+
+@dataclass(frozen=True)
+class ResolvedRecipe:
+    """A recipe file resolved from an explicit path or installed pack."""
+
+    path: Path
+    ref: str
+    local_hook_project: Path | None
+
+
+@dataclass(frozen=True)
+class _ResolvedTarget:
+    """A pack/recipe/hook ref resolved for `show` and `edit`."""
+
+    pack: InstalledPack
+    name: str | None = None
+    recipe: RecipeEntry | None = None
+    hook: HookEntry | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +118,41 @@ class TargetInput:
 
     targets: list[Target]
     stdin_records: bool = False
+
+
+@new_app.command(name="pack")
+def new_pack_command(name: Annotated[str, Parameter(help="Pack name.")], /) -> None:
+    """Scaffold a recipe pack."""
+    with report_config_errors():
+        pack_name = safe_library_name(name, field="pack")
+        path = pack_scaffold.scaffold_pack(Path.cwd() / pack_name, pack_name)
+        echo(str(path))
+
+
+@new_app.command(name="recipe")
+def new_recipe_command(ref: Annotated[str, Parameter(help="<pack>/<recipe>.")], /) -> None:
+    """Scaffold a recipe inside a pack."""
+    with report_config_errors():
+        pack_dir, name = _new_pack_child(ref)
+        path = pack_scaffold.scaffold_recipe(pack_dir, name)
+        echo(str(path))
+
+
+@new_app.command(name="hook")
+def new_hook_command(
+    ref: Annotated[str, Parameter(help="<pack>/<hook>.")],
+    /,
+    *,
+    kind: Annotated[
+        Literal["transform", "validate"],
+        Parameter(name="--kind", help="Hook callable stub kind."),
+    ] = "transform",
+) -> None:
+    """Scaffold a hook inside a pack."""
+    with report_config_errors():
+        pack_dir, name = _new_pack_child(ref)
+        path = pack_scaffold.scaffold_hook(pack_dir, name, kind=kind)
+        echo(str(path))
 
 
 @app.command(name="apply")
@@ -184,7 +253,7 @@ def apply_command(
                 interactive=interactive,
                 prompt=prompt,
                 parallel=parallel,
-                hook_timeout_seconds=_hook_timeout_seconds(hook_timeout),
+                hook_timeout_seconds=hook_timeout_seconds(hook_timeout),
                 recipe_id=recipe_id,
             )
             effective_preview = _effective_preview(preview, check=check)
@@ -207,8 +276,214 @@ def apply_command(
         _render_result_summary(context.plans, outcome, check=check, dry_run=dry_run)
         has_errors = any(plan.status == "error" for plan in context.plans)
         has_drift = check and any(plan.status != "error" and plan.changes for plan in context.plans)
-        if has_errors or outcome.outcome.any_failed or has_drift:
-            raise SystemExit(1)
+        finish(has_errors or outcome.outcome.any_failed or has_drift)
+
+
+@app.command(name="add")
+def add_command(
+    source: Annotated[str, Parameter(help="Pack project path or git URL.")],
+    /,
+    *,
+    rev: Annotated[str | None, Parameter(name="--rev", help="Git revision to install.")] = None,
+    name: Annotated[
+        str | None,
+        Parameter(name="--name", help="Installed pack identity override."),
+    ] = None,
+    force: Annotated[
+        bool,
+        Parameter(name="--force", negative="", help="Replace an existing installed pack."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
+    ] = False,
+) -> None:
+    """Install a recipe pack from a path or git URL."""
+    with report_config_errors(), tempfile.TemporaryDirectory() as temp_root:
+        source_dir = (
+            fetch_pack_source(source, rev=rev, dest=Path(temp_root) / "pack")
+            if is_git_url(source)
+            else Path(source).expanduser()
+        )
+        manifest = PackManifest.from_pyproject(source_dir)
+        installed_name = name or manifest.name
+        _render_pack_add_preview(installed_name, manifest)
+        library = UnifiedPackLibrary(library_root=library_root())
+
+        def _install(item: str) -> PackManifest:
+            del item
+            return library.add(
+                source_dir,
+                source=source,
+                rev=rev,
+                name=name,
+                force=force,
+            )
+
+        outcome = batch_apply(
+            [source],
+            _install,
+            verb="add",
+            noun="pack",
+            label=lambda item: installed_name,
+            describe=lambda item: {"name": installed_name, "source": item},
+            ui=ui_context(strict=False),
+            destructive=True,
+            assume_yes=yes,
+        )
+        if outcome.results:
+            echo(installed_name)
+
+
+@app.command(name="list")
+def list_command(
+    *,
+    hooks: Annotated[
+        bool,
+        Parameter(name="--hooks", negative="", help="List hooks instead of recipes."),
+    ] = False,
+    packs: Annotated[
+        bool,
+        Parameter(name="--packs", negative="", help="List installed packs."),
+    ] = False,
+    fmt: FormatOption = "table",
+    columns: ColumnsOption = None,
+) -> None:
+    """List installed recipes, hooks, or packs."""
+    with report_config_errors():
+        if hooks and packs:
+            raise ConfigError("choose one of --hooks or --packs")
+        installed = UnifiedPackLibrary(library_root=library_root()).packs()
+        if packs:
+            rows = [_pack_row(pack) for pack in installed]
+            kind = "recipe.pack"
+        elif hooks:
+            rows = [
+                _hook_row(pack, name, entry) for pack in installed for name, entry in _hooks(pack)
+            ]
+            kind = "recipe.hook"
+        else:
+            rows = [
+                _recipe_row(pack, name, entry)
+                for pack in installed
+                for name, entry in _recipes(pack)
+            ]
+            kind = "recipe.recipe"
+        rendered = render_rows(rows, fmt=fmt, columns=columns, kind=kind)
+        if rendered:
+            echo(rendered)
+
+
+@app.command(name="show")
+def show_command(
+    ref_text: Annotated[str, Parameter(help="Pack, recipe, or hook ref.")],
+    /,
+    *,
+    fmt: FormatOption = "table",
+    columns: ColumnsOption = None,
+) -> None:
+    """Show an installed pack, recipe, or hook."""
+    with report_config_errors():
+        library = UnifiedPackLibrary(library_root=library_root())
+        target = _resolve_target(library, ref_text)
+        if target.recipe is not None:
+            recipe_path = target.pack.root / target.recipe.path
+            emit(
+                recipe_detail(
+                    f"{target.pack.name}/{target.name}",
+                    _load_recipe(recipe_path),
+                    recipe_path,
+                ),
+                fmt=fmt,
+                columns=columns,
+                kind="recipe.recipe",
+            )
+        elif target.hook is not None:
+            module_file = hook_module_file(target.pack.root, target.hook.module)
+            emit(
+                hook_detail(
+                    f"{target.pack.name}/{target.name}",
+                    target.hook,
+                    hook_exports(module_file),
+                    module_file,
+                ),
+                fmt=fmt,
+                columns=columns,
+                kind="recipe.hook",
+            )
+        else:
+            emit(
+                pack_detail(target.pack.name, target.pack.manifest, target.pack.root),
+                fmt=fmt,
+                columns=columns,
+                kind="recipe.pack",
+            )
+
+
+@app.command(name="check")
+def check_command(
+    ref_text: Annotated[
+        str | None,
+        Parameter(help="Installed pack, recipe ref, or explicit path."),
+    ] = None,
+    /,
+    *,
+    fmt: FormatOption = "table",
+    columns: ColumnsOption = None,
+) -> None:
+    """Validate a pack, recipe, or the whole installed library."""
+    with report_config_errors():
+        root = library_root()
+        rows = _check_library(root) if ref_text is None else [_check_ref(root, ref_text)]
+        rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.check")
+        if rendered:
+            echo(rendered)
+        finish(any(row["status"] == "error" for row in rows))
+
+
+@app.command(name="remove")
+def remove_command(
+    name: Annotated[str, Parameter(help="Installed pack identity.")],
+    /,
+    *,
+    yes: Annotated[
+        bool,
+        Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
+    ] = False,
+) -> None:
+    """Remove an installed pack."""
+    with report_config_errors():
+        library = UnifiedPackLibrary(library_root=library_root())
+
+        def _remove(item: str) -> str:
+            library.remove(item)
+            return item
+
+        batch_apply(
+            [name],
+            _remove,
+            verb="remove",
+            noun="pack",
+            label=str,
+            describe=lambda item: {"name": item},
+            ui=ui_context(strict=False),
+            destructive=True,
+            assume_yes=yes,
+        )
+
+
+@app.command(name="edit")
+def edit_command(ref_text: Annotated[str, Parameter(help="Pack, recipe, or hook ref.")], /) -> None:
+    """Open a pack pyproject, recipe file, or hook module in $VISUAL or $EDITOR."""
+    with report_config_errors():
+        library = UnifiedPackLibrary(library_root=library_root())
+        target = _resolve_target(library, ref_text)
+        if target.recipe is not None:
+            edit_path(target.pack.root / target.recipe.path)
+        elif target.hook is not None:
+            edit_path(hook_module_file(target.pack.root, target.hook.module))
+        else:
+            edit_path(target.pack.root / "pyproject.toml")
 
 
 def _apply_context(
@@ -226,7 +501,7 @@ def _apply_context(
     recipe_id: str | None = None,
 ) -> ApplyContext:
     root = library_root()
-    recipe_resolution = RecipeLibrary(root).resolve_detail(recipe, recipe_id=recipe_id)
+    recipe_resolution = _resolve_apply_recipe(root, recipe, recipe_id=recipe_id)
     recipe_path = recipe_resolution.path
     loaded = _load_recipe(recipe_path)
     target_input = _targets(dirs, stdin=stdin)
@@ -250,32 +525,333 @@ def _apply_context(
         runner = RunBulkApply(
             ApplyRecipe(
                 HookExecutor(
-                    HookResolver(global_hooks=root / "hooks"),
+                    HookResolver(library_root=root),
                     workers=hook_workers,
                     helpers=HookHelpers(),
                 )
             )
         )
-        try:
-            plans = runner.plan(
-                recipe=loaded,
-                recipe_dir=recipe_path.parent,
-                local_hook_project=recipe_resolution.local_hook_project,
-                targets=targets,
-                inputs=inputs,
-                input_from=input_from,
-                interactive=interactive,
-                prompt=prompt,
-                parallel=workers,
-            )
-        except ValueError as exc:
-            raise ConfigError(str(exc)) from exc
+        ui = ui_context(strict=False)
+        with ui.progress("Planning targets") as progress:
+            try:
+                plans = runner.plan(
+                    recipe=loaded,
+                    recipe_dir=recipe_path.parent,
+                    local_hook_project=recipe_resolution.local_hook_project,
+                    targets=targets,
+                    inputs=inputs,
+                    input_from=input_from,
+                    interactive=interactive,
+                    prompt=prompt,
+                    parallel=workers,
+                    on_progress=lambda done, total: progress.update(
+                        f"{done}/{total}",
+                        fraction=done / total if total else None,
+                    ),
+                )
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from exc
     return ApplyContext(
         root=root,
         recipe=loaded,
         recipe_ref=recipe_resolution.ref,
         plans=plans,
     )
+
+
+def _resolve_apply_recipe(
+    root: Path,
+    ref_text: str,
+    *,
+    recipe_id: str | None,
+) -> ResolvedRecipe:
+    if recipe_id is not None:
+        if not _is_explicit_recipe_path(ref_text):
+            raise ValueError("--recipe requires an explicit pack path")
+        return _resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=recipe_id)
+    if _is_explicit_recipe_path(ref_text):
+        return _resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=None)
+    ref = parse_ref(ref_text)
+    pack, recipe = UnifiedPackLibrary(library_root=root).find_recipe(ref)
+    return ResolvedRecipe(
+        path=pack.root / recipe.path,
+        ref=f"{pack.name}/{ref.name}",
+        local_hook_project=pack.root,
+    )
+
+
+def _resolve_explicit_recipe(path: Path, *, recipe_id: str | None) -> ResolvedRecipe:
+    if path.is_dir():
+        if recipe_id is not None:
+            manifest = PackManifest.from_pyproject(path)
+            entry = manifest.recipes.get(recipe_id)
+            if entry is None:
+                raise ValueError(f"recipe not found: {recipe_id}")
+            return ResolvedRecipe(
+                path=path / entry.path,
+                ref=f"{path.name}/{recipe_id}",
+                local_hook_project=path,
+            )
+        recipe_path = path / "recipe.yml"
+        if not recipe_path.is_file():
+            raise ValueError(f"recipe file not found: {recipe_path}")
+        return ResolvedRecipe(
+            path=recipe_path,
+            ref=path.name,
+            local_hook_project=path if (path / "pyproject.toml").is_file() else None,
+        )
+    return ResolvedRecipe(
+        path=path,
+        ref=path.name,
+        local_hook_project=None,
+    )
+
+
+def _is_explicit_recipe_path(value: str) -> bool:
+    return value.startswith(("/", "./", "../", "~")) or value.endswith((".yml", ".yaml"))
+
+
+def _resolve_target(library: UnifiedPackLibrary, ref_text: str) -> _ResolvedTarget:
+    """Resolve a ref to a pack, recipe, or hook, preferring recipes' not-found error."""
+    pack = library.find_pack(ref_text)
+    if pack is not None:
+        return _ResolvedTarget(pack=pack)
+    ref = parse_ref(ref_text)
+    try:
+        recipe_pack, recipe = library.find_recipe(ref)
+    except ValueError as recipe_error:
+        try:
+            hook_pack, hook = library.find_hook(ref)
+        except ValueError:
+            raise recipe_error from None
+        return _ResolvedTarget(pack=hook_pack, name=ref.name, hook=hook)
+    return _ResolvedTarget(pack=recipe_pack, name=ref.name, recipe=recipe)
+
+
+def _recipes(pack: InstalledPack) -> list[tuple[str, RecipeEntry]]:
+    return sorted(pack.manifest.recipes.items())
+
+
+def _hooks(pack: InstalledPack) -> list[tuple[str, HookEntry]]:
+    return sorted(pack.manifest.hooks.items())
+
+
+def _pack_row(pack: InstalledPack) -> dict[str, object]:
+    return {
+        "name": pack.name,
+        "version": pack.installed_version,
+        "path": str(pack.root),
+        "source": pack.source,
+        "rev": pack.rev,
+        "recipes": len(pack.manifest.recipes),
+        "hooks": len(pack.manifest.hooks),
+    }
+
+
+def _recipe_row(pack: InstalledPack, name: str, entry: RecipeEntry) -> dict[str, object]:
+    return {
+        "pack": pack.name,
+        "name": name,
+        "ref": f"{pack.name}/{name}",
+        "path": str(pack.root / entry.path),
+    }
+
+
+def _hook_row(pack: InstalledPack, name: str, entry: HookEntry) -> dict[str, object]:
+    return {
+        "pack": pack.name,
+        "name": name,
+        "ref": f"{pack.name}/{name}",
+        "module": entry.module,
+        "path": str(hook_module_file(pack.root, entry.module)),
+    }
+
+
+def _check_ref(root: Path, ref_text: str) -> dict[str, object]:
+    library = UnifiedPackLibrary(library_root=root)
+    if _is_explicit_recipe_path(ref_text):
+        path = Path(ref_text).expanduser()
+        if path.is_dir() and (path / "pyproject.toml").is_file():
+            try:
+                manifest = PackManifest.from_pyproject(path)
+            except (ValueError, OSError) as exc:
+                return _pack_check_row(path.name, path, status="error", error=str(exc))
+            return _check_pack(root, InstalledPack.local(path, manifest))
+        resolved = _resolve_explicit_recipe(path, recipe_id=None)
+        return _check_recipe(root, resolved.path, resolved.ref, resolved.local_hook_project)
+    pack = library.find_pack(ref_text)
+    if pack is not None:
+        return _check_pack(root, pack)
+    ref = parse_ref(ref_text)
+    pack, recipe = library.find_recipe(ref)
+    return _check_recipe(root, pack.root / recipe.path, f"{pack.name}/{ref.name}", pack.root)
+
+
+def _check_library(root: Path) -> list[dict[str, object]]:
+    library = UnifiedPackLibrary(library_root=root)
+    rows = [_check_reconcile_problem(root, problem) for problem in library.reconcile()]
+    rows.extend(_check_pack(root, pack) for pack in library.packs())
+    return rows
+
+
+def _check_reconcile_problem(root: Path, problem: str) -> dict[str, object]:
+    name = _quoted_name(problem)
+    return _pack_check_row(
+        name,
+        root / "packs" / name if name else None,
+        status="error",
+        error=problem,
+    )
+
+
+def _quoted_name(message: str) -> str:
+    parts = message.split("'", maxsplit=2)
+    return parts[1] if len(parts) == 3 else ""
+
+
+def _pack_check_row(
+    name: str,
+    path: Path | None,
+    *,
+    status: str,
+    recipes: int = 0,
+    hooks: int = 0,
+    error: str = "",
+) -> dict[str, object]:
+    return {
+        "pack": name,
+        "status": status,
+        "path": str(path) if path is not None else "",
+        "recipes": recipes,
+        "hooks": hooks,
+        "error": error,
+    }
+
+
+def _check_pack(root: Path, pack: InstalledPack) -> dict[str, object]:
+    try:
+        if not (pack.root / "uv.lock").is_file():
+            raise ValueError(f"pack project is missing uv.lock: {pack.root}")
+        validate_hook_project_contract(pack.root, pack.manifest)
+        validate_hook_modules(pack.root, pack.manifest)
+        for recipe_name, recipe in _recipes(pack):
+            row = _check_recipe(
+                root, pack.root / recipe.path, f"{pack.name}/{recipe_name}", pack.root
+            )
+            if row["status"] == "error":
+                raise ValueError(f"{recipe_name}: {row['error']}")
+    except (ConfigError, ValueError, OSError) as exc:
+        return _pack_check_row(
+            pack.name,
+            pack.root,
+            status="error",
+            recipes=len(pack.manifest.recipes),
+            hooks=len(pack.manifest.hooks),
+            error=str(exc),
+        )
+    return _pack_check_row(
+        pack.name,
+        pack.root,
+        status="pass",
+        recipes=len(pack.manifest.recipes),
+        hooks=len(pack.manifest.hooks),
+    )
+
+
+def _check_recipe(
+    root: Path,
+    recipe_path: Path,
+    recipe_ref: str,
+    local_hook_project: Path | None,
+) -> dict[str, object]:
+    try:
+        recipe = _load_recipe(recipe_path)
+        validate_recipe_input_sources(recipe)
+        _check_project_lock(local_hook_project)
+        _check_assets(recipe, recipe_path.parent)
+        _check_local_hook_project(local_hook_project)
+        _check_hooks(recipe, root, local_hook_project)
+    except (ConfigError, ValueError, OSError) as exc:
+        return {
+            "recipe": recipe_ref,
+            "status": "error",
+            "path": str(recipe_path),
+            "error": str(exc),
+        }
+    return {
+        "recipe": recipe_ref,
+        "status": "pass",
+        "path": str(recipe_path),
+        "error": "",
+    }
+
+
+def _check_project_lock(local_hook_project: Path | None) -> None:
+    if local_hook_project is not None and not (local_hook_project / "uv.lock").is_file():
+        raise ValueError(f"recipe project is missing uv.lock: {local_hook_project}")
+
+
+def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:
+    for step in recipe.steps:
+        if isinstance(step, TemplateStep):
+            source = confined_path(recipe_dir, step.template, field="template")
+            if not source.is_file():
+                raise ValueError(f"template not found: {step.template}")
+        elif isinstance(step, CopyStep):
+            source = confined_path(recipe_dir, step.source, field="source")
+            if not source.is_file():
+                raise ValueError(f"copy source not found: {step.source}")
+
+
+def _check_local_hook_project(local_hook_project: Path | None) -> None:
+    if local_hook_project is None or not (local_hook_project / "pyproject.toml").is_file():
+        return
+    metadata = read_hook_metadata(local_hook_project)
+    if not metadata.hooks:
+        return
+    validate_hook_project_contract(local_hook_project, metadata)
+    if not (local_hook_project / "uv.lock").is_file():
+        raise ValueError(f"hook project is missing uv.lock: {local_hook_project}")
+    validate_hook_modules(local_hook_project, metadata)
+
+
+def _check_hooks(recipe: Recipe, root: Path, local_hook_project: Path | None) -> None:
+    resolver = HookResolver(library_root=root)
+    for step in recipe.steps:
+        if isinstance(step, TransformStep):
+            ref = resolver.resolve(step.hook, local_hook_project)
+            ensure_hook_supports(ref, step.hook, verb="transform")
+        elif isinstance(step, ValidateStep):
+            ref = resolver.resolve(step.hook, local_hook_project)
+            ensure_hook_supports(ref, step.hook, verb="validate")
+
+
+def _render_pack_add_preview(installed_name: str, manifest: PackManifest) -> None:
+    echo(f"Pack: {installed_name}", err=True)
+    recipes = ", ".join(sorted(manifest.recipes)) or "(none)"
+    hooks = ", ".join(sorted(manifest.hooks)) or "(none)"
+    echo(f"Recipes: {recipes}", err=True)
+    echo(f"Hooks: {hooks}", err=True)
+
+
+def _new_pack_child(ref_text: str) -> tuple[Path, str]:
+    if _is_explicit_new_path(ref_text):
+        path = Path(ref_text).expanduser()
+        if not path.name or path.parent == Path("."):
+            raise ValueError("qualified refs must use <pack>/<name>")
+        return path.parent, path.name
+    ref = parse_ref(ref_text)
+    if ref.pack is None:
+        raise ValueError("qualified refs must use <pack>/<name>")
+    installed_name = safe_library_name(ref.pack, field="pack")
+    for installed in UnifiedPackLibrary(library_root=library_root()).packs():
+        if installed.name == installed_name:
+            return installed.root, ref.name
+    raise ValueError(f"pack not found: {ref.pack}")
+
+
+def _is_explicit_new_path(value: str) -> bool:
+    return value.startswith(("/", "./", "../", "~"))
 
 
 def _load_recipe(recipe_path: Path) -> Recipe:
@@ -390,15 +966,14 @@ def _targets(positional: list[Path], *, stdin: bool) -> TargetInput:
         raise ConfigError("provide targets as positional args or via --stdin, not both")
     if not stdin:
         return TargetInput([Target(path=path) for path in positional])
-    pairs: list[tuple[int, str]] = []
-    for lineno, line in enumerate(sys.stdin, start=1):
-        stripped = line.strip()
-        if stripped:
-            pairs.append((lineno, stripped))
-    if not pairs:
+    lines = read_stdin()
+    if not lines:
         raise ConfigError("no targets received on stdin")
     try:
-        return TargetInput(resolve_target_lines(pairs), stdin_records=True)
+        return TargetInput(
+            resolve_target_lines(list(enumerate(lines, start=1))),
+            stdin_records=True,
+        )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 
@@ -448,13 +1023,6 @@ def _interactive_prompt(
         return ui.text(message, default=text_default, required=required)
 
     return ask
-
-
-def _hook_timeout_seconds(override: float | None) -> float:
-    timeout = settings().hook_timeout_seconds if override is None else override
-    if timeout < 0:
-        raise ConfigError("--hook-timeout must be greater than or equal to 0")
-    return timeout
 
 
 def _preview_status(dry_run: bool, check: bool) -> str | None:

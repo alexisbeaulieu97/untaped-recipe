@@ -15,7 +15,7 @@ from untaped_recipe.infrastructure.hook_resolver import (
     BuiltinHookRef,
     HookResolver,
     UvHookRef,
-    ensure_hook_kind,
+    ensure_hook_supports,
 )
 from untaped_recipe.infrastructure.hook_worker_client import (
     APPLY_DIAGNOSTIC_LIMIT,
@@ -53,31 +53,9 @@ class HookExecutor:
         file: Path,
         inputs: dict[str, object],
         args: dict[str, object],
-    ) -> str:
-        """Run a transform hook and return replacement content."""
-        return self._transform(
-            hook,
-            content,
-            local_hook_project=local_hook_project,
-            target=target,
-            file=file,
-            inputs=inputs,
-            args=args,
-            capture_diagnostics=False,
-        ).result
-
-    def transform_for_debug(
-        self,
-        hook: str,
-        content: str,
-        *,
-        local_hook_project: Path | None,
-        target: Path,
-        file: Path,
-        inputs: dict[str, object],
-        args: dict[str, object],
+        capture_diagnostics: bool = False,
     ) -> HookDebugResult[str]:
-        """Run a transform hook and return successful diagnostics for debugging."""
+        """Run a transform hook and return replacement content plus diagnostics."""
         return self._transform(
             hook,
             content,
@@ -86,7 +64,7 @@ class HookExecutor:
             file=file,
             inputs=inputs,
             args=args,
-            capture_diagnostics=True,
+            capture_diagnostics=capture_diagnostics,
         )
 
     def _transform(
@@ -102,9 +80,9 @@ class HookExecutor:
         capture_diagnostics: bool,
     ) -> HookDebugResult[str]:
         ref = self._resolver.resolve(hook, local_hook_project)
-        ensure_hook_kind(ref, hook, expected="transform")
+        ensure_hook_supports(ref, hook, verb="transform")
         if isinstance(ref, BuiltinHookRef):
-            execution = _call_builtin_for_debug(
+            execution = _call_builtin_with_capture(
                 lambda: _call_builtin_transform(
                     ref,
                     hook,
@@ -146,34 +124,16 @@ class HookExecutor:
         target: Path,
         inputs: dict[str, object],
         args: dict[str, object],
-    ) -> Verdict:
-        """Run a validate hook and coerce its verdict."""
-        return self._validate(
-            hook,
-            local_hook_project=local_hook_project,
-            target=target,
-            inputs=inputs,
-            args=args,
-            capture_diagnostics=False,
-        ).result
-
-    def validate_for_debug(
-        self,
-        hook: str,
-        *,
-        local_hook_project: Path | None,
-        target: Path,
-        inputs: dict[str, object],
-        args: dict[str, object],
+        capture_diagnostics: bool = False,
     ) -> HookDebugResult[Verdict]:
-        """Run a validate hook and return successful diagnostics for debugging."""
+        """Run a validate hook and return its coerced verdict plus diagnostics."""
         return self._validate(
             hook,
             local_hook_project=local_hook_project,
             target=target,
             inputs=inputs,
             args=args,
-            capture_diagnostics=True,
+            capture_diagnostics=capture_diagnostics,
         )
 
     def _validate(
@@ -187,9 +147,9 @@ class HookExecutor:
         capture_diagnostics: bool,
     ) -> HookDebugResult[Verdict]:
         ref = self._resolver.resolve(hook, local_hook_project)
-        ensure_hook_kind(ref, hook, expected="validate")
+        ensure_hook_supports(ref, hook, verb="validate")
         if isinstance(ref, BuiltinHookRef):
-            execution = _call_builtin_for_debug(
+            execution = _call_builtin_with_capture(
                 lambda: _call_builtin_validate(
                     ref,
                     hook,
@@ -276,7 +236,7 @@ def _call_builtin_validate(
     return validate(inputs=inputs, target=target, args=args, helpers=helpers)
 
 
-def _call_builtin_for_debug(
+def _call_builtin_with_capture(
     call: Callable[[], object],
     *,
     capture_diagnostics: bool,

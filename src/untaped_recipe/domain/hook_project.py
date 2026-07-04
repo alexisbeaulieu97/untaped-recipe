@@ -6,7 +6,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -20,23 +20,40 @@ _DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]
 HookKind = Literal["transform", "validate"]
 
 
+class HookApiContract(Protocol):
+    """Metadata fields needed to validate hook API compatibility."""
+
+    @property
+    def requires_hook_api(self) -> str | None:
+        """Hook API specifier declared by the metadata."""
+
+    @property
+    def runtime_dependencies(self) -> tuple[str, ...]:
+        """Runtime dependencies declared by the metadata."""
+
+
+class HookModuleDefinitionContract(Protocol):
+    """Metadata fields needed to locate one hook module."""
+
+    @property
+    def module(self) -> str:
+        """Dotted Python module path for the hook."""
+
+
+class HookModuleContract(Protocol):
+    """Metadata fields needed to validate hook modules."""
+
+    @property
+    def hooks(self) -> Mapping[str, HookModuleDefinitionContract]:
+        """Hook definitions keyed by public hook name."""
+
+
 class HookDefinition(BaseModel):
     """One public hook entry in a hook project's pyproject metadata."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
-    kind: HookKind
     module: str = ""
-
-    @field_validator("kind", mode="before")
-    @classmethod
-    def _kind(cls, value: object) -> HookKind:
-        if not isinstance(value, str):
-            raise ValueError("invalid hook kind")
-        value = value.strip()
-        if value not in {"transform", "validate"}:
-            raise ValueError("invalid hook kind")
-        return cast(HookKind, value)
 
     @field_validator("module")
     @classmethod
@@ -69,9 +86,9 @@ class HookProjectMetadata(BaseModel):
     @classmethod
     def from_pyproject(cls, data: Mapping[str, object]) -> HookProjectMetadata:
         """Build hook metadata from parsed pyproject data."""
-        project = _mapping(data.get("project"), "project")
+        project = as_mapping(data.get("project"), "project")
         runtime_dependencies = _runtime_dependencies(project)
-        tool_config = _nested_mapping(data, ("tool", "untaped_recipe"))
+        tool_config = nested_mapping(data, ("tool", "untaped_recipe"))
         if tool_config is not None and not isinstance(tool_config, Mapping):
             raise ValueError("[tool.untaped_recipe] must be a table")
         requires_hook_api = None
@@ -84,7 +101,7 @@ class HookProjectMetadata(BaseModel):
                 if not requires_hook_api:
                     raise ValueError("[tool.untaped_recipe].requires_hook_api must not be empty")
                 _specifier_set(requires_hook_api)
-        hooks = _nested_mapping(data, ("tool", "untaped_recipe", "hooks"))
+        hooks = nested_mapping(data, ("tool", "untaped_recipe", "hooks"))
         if hooks is None:
             return cls(
                 hooks={},
@@ -93,7 +110,7 @@ class HookProjectMetadata(BaseModel):
             )
         if not isinstance(hooks, Mapping):
             raise ValueError("[tool.untaped_recipe.hooks] must be a table")
-        _reject_legacy_hook_rows(hooks)
+        _reject_kind_hook_rows(hooks)
         return cls(
             hooks=dict(hooks),
             requires_hook_api=requires_hook_api,
@@ -146,7 +163,7 @@ def hook_module_file(project_root: Path, module: str) -> Path:
     return project_root / "src" / Path(*module.split(".")).with_suffix(".py")
 
 
-def validate_hook_modules(project_root: Path, metadata: HookProjectMetadata) -> None:
+def validate_hook_modules(project_root: Path, metadata: HookModuleContract) -> None:
     """Require every declared hook module to resolve to a file under ``src``."""
     for definition in metadata.hooks.values():
         module_file = hook_module_file(project_root, definition.module)
@@ -154,7 +171,7 @@ def validate_hook_modules(project_root: Path, metadata: HookProjectMetadata) -> 
             raise ValueError(f"hook module file not found: {module_file}")
 
 
-def validate_hook_project_contract(project_root: Path, metadata: HookProjectMetadata) -> None:
+def validate_hook_project_contract(project_root: Path, metadata: HookApiContract) -> None:
     """Require hook projects to be compatible with the running helper API."""
     for dependency in metadata.runtime_dependencies:
         if dependency_name(dependency) == "untaped-recipe":
@@ -173,19 +190,18 @@ def validate_hook_project_contract(project_root: Path, metadata: HookProjectMeta
         )
 
 
-def _reject_legacy_hook_rows(hooks: Mapping[object, object]) -> None:
+def _reject_kind_hook_rows(hooks: Mapping[object, object]) -> None:
     for name, definition in hooks.items():
         if not isinstance(definition, Mapping):
             continue
-        if "kind" not in definition:
+        if "kind" in definition:
             raise ValueError(
-                "hook kind is required; update old hook metadata "
-                f"{name!r} = {{ module = ... }} to include "
-                '{ kind = "transform"|"validate", module = ... }'
+                f"hook {name!r} declares kind; kind was removed in 0.9 — "
+                "export transform()/validate() instead"
             )
 
 
-def _nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object | None:
+def nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object | None:
     current: object = data
     for key in path:
         if not isinstance(current, Mapping) or key not in current:
@@ -194,7 +210,7 @@ def _nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object
     return current
 
 
-def _mapping(value: object, field: str) -> Mapping[str, object] | None:
+def as_mapping(value: object, field: str) -> Mapping[str, object] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):

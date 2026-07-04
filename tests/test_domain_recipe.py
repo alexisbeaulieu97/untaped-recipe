@@ -49,6 +49,40 @@ def test_recipe_schema_accepts_all_v1_step_types() -> None:
     assert isinstance(recipe.steps[3], CopyStep)
     assert isinstance(recipe.steps[4], RemoveStep)
     assert recipe.inputs["replicas"].default == 2
+    assert recipe.steps[2].unknown_tokens == "error"
+
+
+def test_template_step_unknown_tokens_accepts_keep_and_rejects_other_values() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "workflow.yml",
+                    "dest": ".github/workflows/ci.yml",
+                    "unknown_tokens": "keep",
+                }
+            ],
+        }
+    )
+
+    assert isinstance(recipe.steps[0], TemplateStep)
+    assert recipe.steps[0].unknown_tokens == "keep"
+    with pytest.raises(ValidationError):
+        Recipe.model_validate(
+            {
+                "version": 1,
+                "steps": [
+                    {
+                        "type": "template",
+                        "template": "workflow.yml",
+                        "dest": ".github/workflows/ci.yml",
+                        "unknown_tokens": "passthrough",
+                    }
+                ],
+            }
+        )
 
 
 def test_transform_files_normalize_to_single_file_steps() -> None:

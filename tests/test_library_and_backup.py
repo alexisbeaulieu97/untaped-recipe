@@ -10,87 +10,42 @@ import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.domain.recipe import Recipe
-from untaped_recipe.infrastructure.backup import BackupStore
+from untaped_recipe.infrastructure.backup import BackupStore, RestoreItem
 from untaped_recipe.infrastructure.file_writer import flush_changes
-from untaped_recipe.infrastructure.hook_library import HookLibrary
 from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
-from untaped_recipe.infrastructure.recipe_library import RecipeLibrary
+from untaped_recipe.infrastructure.pack_store import PackLibrary
 
 
-def test_recipe_library_resolves_name_before_path_and_copies_packages(tmp_path: Path) -> None:
-    root = tmp_path / "library"
-    source = tmp_path / "source-recipe"
-    _write_recipe_project(source, recipe_id="copied")
-    library = RecipeLibrary(root)
-
-    copied = library.add(source)
-
-    assert copied == root / "recipes" / "copied"
-    assert library.resolve("copied") == copied / "recipe.yml"
-    explicit = tmp_path / "copied"
-    explicit.write_text("version: 1\nsteps: []\n")
-    assert library.resolve(str(explicit)) == explicit
-    assert [entry.name for entry in library.list()] == ["copied"]
-
-    invalid_package = tmp_path / "invalid"
-    invalid_package.mkdir()
-    with pytest.raises(ValueError, match=r"pyproject\.toml"):
-        library.add(invalid_package)
-
-
-def test_recipe_and_hook_libraries_reject_unsafe_names(tmp_path: Path) -> None:
-    recipe_source = tmp_path / "recipe-project"
-    _write_recipe_project(recipe_source, recipe_id="../outside")
-    hook_source = tmp_path / "hook-project"
-    _write_hook_project(hook_source, hook_name="hook")
-    root = tmp_path / "library"
-
-    recipe_library = RecipeLibrary(root)
-    hook_library = HookLibrary(root)
-
-    with pytest.raises(ValueError, match="safe library name"):
-        recipe_library.add(recipe_source)
-    with pytest.raises(ValueError, match="safe library name"):
-        recipe_library.remove("/tmp/outside")
-    with pytest.raises(ValueError, match="safe library name"):
-        hook_library.add(hook_source, name="../outside")
-    with pytest.raises(ValueError, match="safe library name"):
-        hook_library.remove("/tmp/outside")
-
-
-def _write_recipe_project(root: Path, *, recipe_id: str) -> None:
-    root.mkdir(parents=True)
-    (root / "recipe.yml").write_text("version: 1\nsteps: []\n")
-    (root / "pyproject.toml").write_text(
-        "[project]\n"
-        f'name = "untaped-recipe-{root.name}"\n'
-        'version = "0.1.0"\n'
-        'requires-python = ">=3.14"\n'
-        "dependencies = []\n\n"
-        "[tool.untaped_recipe.recipes]\n"
-        f'"{recipe_id}" = {{ path = "recipe.yml" }}\n'
-    )
-    (root / "uv.lock").write_text("version = 1\n")
-
-
-def test_hook_resolver_uses_recipe_local_then_global_then_builtin(tmp_path: Path) -> None:
+def test_hook_resolver_uses_recipe_local_then_installed_pack(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
-    global_hooks = tmp_path / "global"
+    library_root = tmp_path / "library"
+    pack_source = tmp_path / "pack-source"
     _write_hook_project(recipe_dir, hook_name="pick", package="local_hooks")
-    _write_hook_project(global_hooks / "pick", hook_name="pick", package="global_hooks")
+    _write_hook_project(pack_source, hook_name="pick", package="pack_hooks")
+    PackLibrary(library_root=library_root).add(
+        pack_source,
+        source=str(pack_source),
+        rev=None,
+        name="shared",
+        force=False,
+    )
 
-    ref = HookResolver(global_hooks=global_hooks).resolve("pick", recipe_dir)
+    local_ref = HookResolver(library_root=library_root).resolve("pick", recipe_dir)
+    installed_ref = HookResolver(library_root=library_root).resolve("pick", None)
 
-    assert isinstance(ref, UvHookRef)
-    assert ref.project_root == recipe_dir
-    assert ref.module == "local_hooks.hooks.pick"
+    assert isinstance(local_ref, UvHookRef)
+    assert local_ref.project_root == recipe_dir
+    assert local_ref.module == "local_hooks.hooks.pick"
+    assert isinstance(installed_ref, UvHookRef)
+    assert installed_ref.project_root == library_root / "packs" / "shared"
+    assert installed_ref.module == "pack_hooks.hooks.pick"
 
 
 def test_hook_resolver_falls_back_to_builtins(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
 
-    ref = HookResolver(global_hooks=tmp_path / "global").resolve("yaml_edit", recipe_dir)
+    ref = HookResolver(library_root=tmp_path / "library").resolve("yaml_edit", recipe_dir)
 
     assert isinstance(ref, BuiltinHookRef)
 
@@ -99,7 +54,7 @@ def test_hook_resolver_rejects_hook_paths_that_escape_recipe(tmp_path: Path) -> 
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
     with pytest.raises(ValueError, match="safe hook name"):
-        HookResolver(global_hooks=tmp_path / "global").resolve("../outside.py", recipe_dir)
+        HookResolver(library_root=tmp_path / "library").resolve("../outside.py", recipe_dir)
 
 
 def _write_hook_project(
@@ -121,7 +76,7 @@ def _write_hook_project(
         'requires-python = ">=3.14"\n'
         "dependencies = []\n\n"
         "[tool.untaped_recipe.hooks]\n"
-        f'"{hook_name}" = {{ kind = "transform", module = "{package}.hooks.{hook_name}" }}\n'
+        f'"{hook_name}" = {{ module = "{package}.hooks.{hook_name}" }}\n'
     )
     (root / "uv.lock").write_text("version = 1\n")
 
@@ -174,6 +129,46 @@ def test_backup_store_records_and_restores_touched_files(tmp_path: Path) -> None
         store.restore(bundle.id)
     store.restore("latest", force=True)
     assert existing.read_text() == "before\n"
+
+
+def test_backup_store_plans_restore_actions_and_hash_guard(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    existing = target / "config.yml"
+    created = target / "new.txt"
+    removed = target / "old.txt"
+    existing.write_text("before\n")
+    removed.write_text("old\n")
+    store = BackupStore(tmp_path / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            ),
+            FileChange(target=target, relative_path=Path("new.txt"), before=None, after="new\n"),
+            FileChange(target=target, relative_path=Path("old.txt"), before="old\n", after=None),
+        ],
+    )
+    existing.write_text("after\n")
+    created.write_text("new\n")
+    removed.unlink()
+
+    assert store.plan_restore(bundle.id) == [
+        RestoreItem(path=existing, action="restore"),
+        RestoreItem(path=created, action="delete"),
+        RestoreItem(path=removed, action="create"),
+    ]
+
+    existing.write_text("user edit\n")
+    with pytest.raises(ValueError, match="changed since backup"):
+        store.plan_restore(bundle.id)
+    assert created.read_text() == "new\n"
+    assert not removed.exists()
 
 
 def test_backup_restore_of_crlf_file_does_not_false_trip_hash_guard(tmp_path: Path) -> None:

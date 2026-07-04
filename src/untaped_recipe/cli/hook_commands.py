@@ -28,10 +28,10 @@ from untaped_recipe.application.run_hook import (
     select_verb,
 )
 from untaped_recipe.cli.common import (
+    hook_timeout_seconds,
     library_root,
     load_yaml_mapping_file,
     report_config_errors,
-    settings,
 )
 from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata
 from untaped_recipe.domain.plan import FileChange, Verdict
@@ -134,7 +134,7 @@ def run_command(
         )
         args = _fixture_mapping(args_file, raw_args or [], file_flag="--args", kv_flag="--arg")
         prepared_content = _content_value(content)
-        with UvHookWorkerPool(hook_timeout_seconds=_hook_timeout_seconds(hook_timeout)) as workers:
+        with UvHookWorkerPool(hook_timeout_seconds=hook_timeout_seconds(hook_timeout)) as workers:
             executor = HookExecutor(
                 resolver,
                 workers=workers,
@@ -324,10 +324,3 @@ def _print_hook_diagnostics(diagnostics: str) -> None:
 
 def _print_hook_failure(message: str) -> None:
     echo(message.rstrip(), err=True)
-
-
-def _hook_timeout_seconds(override: float | None) -> float:
-    timeout = settings().hook_timeout_seconds if override is None else override
-    if timeout < 0:
-        raise ConfigError("--hook-timeout must be greater than or equal to 0")
-    return timeout

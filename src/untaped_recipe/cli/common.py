@@ -38,6 +38,14 @@ def load_yaml_mapping_file(path: Path, *, flag: str) -> dict[str, object]:
     return {str(key): value for key, value in loaded.items()}
 
 
+def hook_timeout_seconds(override: float | None) -> float:
+    """Resolve the effective hook timeout from the CLI override or settings."""
+    timeout = settings().hook_timeout_seconds if override is None else override
+    if timeout < 0:
+        raise ConfigError("--hook-timeout must be greater than or equal to 0")
+    return timeout
+
+
 def edit_path(path: Path) -> None:
     """Open a path in the user's configured terminal editor."""
     editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "")

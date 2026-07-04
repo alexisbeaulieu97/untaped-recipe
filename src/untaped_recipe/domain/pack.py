@@ -10,7 +10,11 @@ from pathlib import Path
 from packaging.utils import canonicalize_name
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from untaped_recipe.domain.hook_project import HookProjectMetadata
+from untaped_recipe.domain.hook_project import (
+    HookProjectMetadata,
+    as_mapping,
+    nested_mapping,
+)
 
 PACK_PROJECT_PREFIX = "untaped-recipe-"
 _PACK_PROJECT_BARE_NAME = PACK_PROJECT_PREFIX.removesuffix("-")
@@ -77,7 +81,7 @@ class PackManifest(BaseModel):
         except tomllib.TOMLDecodeError as exc:
             raise ValueError(f"invalid pack project pyproject: {pyproject}") from exc
 
-        project = _mapping(data.get("project"), "project")
+        project = as_mapping(data.get("project"), "project")
         if project is None:
             raise ValueError(f"pack project pyproject missing [project]: {pyproject}")
         raw_name = project.get("name")
@@ -87,7 +91,7 @@ class PackManifest(BaseModel):
         if not isinstance(raw_version, str):
             raise ValueError("[project].version must be a string")
 
-        tool_config = _nested_mapping(data, ("tool", "untaped_recipe"))
+        tool_config = nested_mapping(data, ("tool", "untaped_recipe"))
         if tool_config is None:
             raise ValueError(f"pack project pyproject missing [tool.untaped_recipe]: {pyproject}")
         if not isinstance(tool_config, Mapping):
@@ -139,20 +143,3 @@ def parse_ref(text: str) -> PackRef:
     if not pack or not name or pack == ".." or name == "..":
         raise ValueError("qualified refs must use <pack>/<name>")
     return PackRef(pack=pack, name=name)
-
-
-def _nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object | None:
-    current: object = data
-    for key in path:
-        if not isinstance(current, Mapping) or key not in current:
-            return None
-        current = current[key]
-    return current
-
-
-def _mapping(value: object, field: str) -> Mapping[str, object] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ValueError(f"[{field}] must be a table")
-    return value

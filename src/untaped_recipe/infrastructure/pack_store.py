@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tomllib
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import tomlkit
 from untaped_recipe.domain.hook_exports import hook_exports
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
+    validate_hook_modules,
     validate_hook_project_contract,
 )
 from untaped_recipe.domain.pack import HookEntry, PackManifest, PackRef, RecipeEntry
@@ -33,6 +35,18 @@ class InstalledPack:
     rev: str
     installed_version: str
 
+    @classmethod
+    def local(cls, path: Path, manifest: PackManifest) -> InstalledPack:
+        """Wrap an explicit-path pack that is not tracked by the library index."""
+        return cls(
+            name=manifest.name,
+            root=path,
+            manifest=manifest,
+            source=str(path),
+            rev="",
+            installed_version=manifest.version,
+        )
+
 
 @dataclass(frozen=True)
 class _IndexEntry:
@@ -46,6 +60,7 @@ class PackLibrary:
 
     def __init__(self, *, library_root: Path) -> None:
         self._library_root = library_root
+        self._packs_cache: list[InstalledPack] | None = None
 
     @property
     def packs_dir(self) -> Path:
@@ -89,6 +104,7 @@ class PackLibrary:
             version=manifest.version,
         )
         self._write_index(index)
+        self._packs_cache = None
         return manifest
 
     def remove(self, name: str) -> None:
@@ -101,9 +117,16 @@ class PackLibrary:
         index = self._read_index()
         index.pop(installed_name, None)
         self._write_index(index)
+        self._packs_cache = None
 
     def packs(self) -> list[InstalledPack]:
-        """Return installed packs keyed by their library identity."""
+        """Return installed packs keyed by their library identity.
+
+        The parsed list is cached for the library's lifetime (one CLI command);
+        ``add``/``remove`` invalidate it.
+        """
+        if self._packs_cache is not None:
+            return self._packs_cache
         if not self.packs_dir.is_dir():
             return []
         index = self._read_index()
@@ -123,6 +146,7 @@ class PackLibrary:
                     installed_version=index_entry.version or manifest.version,
                 )
             )
+        self._packs_cache = installed
         return installed
 
     def reconcile(self) -> list[str]:
@@ -139,33 +163,42 @@ class PackLibrary:
                 problems.append(f"pack directory '{root.name}' is not recorded in packs.toml")
         return problems
 
+    def find_pack(self, name: str) -> InstalledPack | None:
+        """Return the installed pack whose library identity is ``name``, if any."""
+        if "/" in name:
+            return None
+        installed_name = safe_library_name(name, field="pack")
+        for pack in self.packs():
+            if pack.name == installed_name:
+                return pack
+        return None
+
     def find_recipe(self, ref: PackRef) -> tuple[InstalledPack, RecipeEntry]:
         """Resolve a bare or qualified recipe reference."""
-        matches = [
-            (pack, recipe)
-            for pack in self._candidate_packs(ref.pack)
-            if (recipe := pack.manifest.recipes.get(ref.name)) is not None
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            candidates = ", ".join(f"{pack.name}/{ref.name}" for pack, _ in matches)
-            raise ValueError(f"ambiguous recipe ref {ref.name!r}; candidates: {candidates}")
-        raise ValueError(f"recipe not found: {_ref_text(ref)}")
+        return self._find_entry(ref, table=lambda manifest: manifest.recipes, noun="recipe")
 
     def find_hook(self, ref: PackRef) -> tuple[InstalledPack, HookEntry]:
         """Resolve a bare or qualified hook reference."""
+        return self._find_entry(ref, table=lambda manifest: manifest.hooks, noun="hook")
+
+    def _find_entry[EntryT](
+        self,
+        ref: PackRef,
+        *,
+        table: Callable[[PackManifest], Mapping[str, EntryT]],
+        noun: str,
+    ) -> tuple[InstalledPack, EntryT]:
         matches = [
-            (pack, hook)
+            (pack, entry)
             for pack in self._candidate_packs(ref.pack)
-            if (hook := pack.manifest.hooks.get(ref.name)) is not None
+            if (entry := table(pack.manifest).get(ref.name)) is not None
         ]
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
             candidates = ", ".join(f"{pack.name}/{ref.name}" for pack, _ in matches)
-            raise ValueError(f"ambiguous hook ref {ref.name!r}; candidates: {candidates}")
-        raise ValueError(f"hook not found: {_ref_text(ref)}")
+            raise ValueError(f"ambiguous {noun} ref {ref.name!r}; candidates: {candidates}")
+        raise ValueError(f"{noun} not found: {_ref_text(ref)}")
 
     def _candidate_packs(self, pack: str | None) -> list[InstalledPack]:
         installed = self.packs()
@@ -213,11 +246,9 @@ def _validate_pack(source_dir: Path, manifest: PackManifest) -> None:
             load_recipe_file(recipe_file)
         except ValueError as exc:
             raise ValueError(f"invalid pack recipe: {recipe_name}: {exc}") from exc
+    validate_hook_modules(source_dir, manifest)
     for hook_name, hook_entry in manifest.hooks.items():
-        module_file = hook_module_file(source_dir, hook_entry.module)
-        if not module_file.is_file():
-            raise ValueError(f"hook module file not found: {module_file}")
-        if not hook_exports(module_file):
+        if not hook_exports(hook_module_file(source_dir, hook_entry.module)):
             raise ValueError(
                 f"hook module for {hook_name!r} exports neither transform() nor validate()"
             )

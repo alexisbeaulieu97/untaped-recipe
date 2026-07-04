@@ -9,7 +9,6 @@ from types import ModuleType
 from untaped_recipe.builtins.registry import BUILTIN_HOOKS, BuiltinHook
 from untaped_recipe.domain.hook_exports import hook_exports
 from untaped_recipe.domain.hook_project import (
-    HookApiContract,
     HookProjectMetadata,
     hook_module_file,
     is_valid_dotted_name,
@@ -17,8 +16,10 @@ from untaped_recipe.domain.hook_project import (
     validate_hook_modules,
     validate_hook_project_contract,
 )
-from untaped_recipe.domain.pack import parse_ref
+from untaped_recipe.domain.pack import PackManifest, parse_ref
 from untaped_recipe.infrastructure.pack_store import PackLibrary
+
+_ProjectContract = HookProjectMetadata | PackManifest
 
 
 @dataclass(frozen=True)
@@ -58,10 +59,11 @@ class HookResolver:
         library_root: Path | None = None,
         builtins: dict[str, BuiltinHook] | None = None,
     ) -> None:
-        self._library_root = library_root
+        self._library = PackLibrary(library_root=library_root) if library_root is not None else None
         self._builtins = builtins if builtins is not None else BUILTIN_HOOKS
         self._metadata_cache: dict[Path, HookProjectMetadata] = {}
-        self._validated_contracts: set[Path] = set()
+        self._validated_projects: set[Path] = set()
+        self._exports_cache: dict[Path, frozenset[str]] = {}
 
     def resolve(self, name: str, local_hook_project: Path | None) -> HookRef:
         """Resolve a hook name to either a built-in or uv hook project reference."""
@@ -96,31 +98,22 @@ class HookResolver:
         return library_ref
 
     def _resolve_library(self, name: str) -> UvHookRef | None:
-        if self._library_root is None:
+        if self._library is None:
             return None
         ref = parse_ref(name)
         try:
-            pack, hook = PackLibrary(library_root=self._library_root).find_hook(ref)
+            pack, hook = self._library.find_hook(ref)
         except ValueError as exc:
             if ref.pack is not None:
                 raise
             if not str(exc).startswith("hook not found:"):
                 raise
             return None
-        self._validate_contract_once(pack.root, pack.manifest)
-        if not (pack.root / "uv.lock").is_file():
-            raise ValueError(f"hook project is missing uv.lock: {pack.root}")
-        validate_hook_modules(pack.root, pack.manifest)
-        module_file = hook_module_file(pack.root, hook.module)
-        exports = hook_exports(module_file)
-        if not exports:
-            raise ValueError(
-                f"hook module for {ref.name!r} exports neither transform() nor validate()"
-            )
-        return UvHookRef(
-            name=name,
-            exports=exports,
-            project_root=pack.root,
+        return self._uv_ref(
+            pack.root,
+            pack.manifest,
+            ref_name=name,
+            public_name=ref.name,
             module=hook.module,
         )
 
@@ -132,21 +125,35 @@ class HookResolver:
         definition = metadata.hooks.get(public_name)
         if definition is None:
             return None
-        self._validate_contract_once(project_root, metadata)
-        if not (project_root / "uv.lock").is_file():
-            raise ValueError(f"hook project is missing uv.lock: {project_root}")
-        validate_hook_modules(project_root, metadata)
-        module_file = hook_module_file(project_root, definition.module)
-        exports = hook_exports(module_file)
+        return self._uv_ref(
+            project_root,
+            metadata,
+            ref_name=public_name,
+            public_name=public_name,
+            module=definition.module,
+        )
+
+    def _uv_ref(
+        self,
+        project_root: Path,
+        contract: _ProjectContract,
+        *,
+        ref_name: str,
+        public_name: str,
+        module: str,
+    ) -> UvHookRef:
+        self._validate_project_once(project_root, contract)
+        module_file = hook_module_file(project_root, module)
+        exports = self._exports_for(module_file)
         if not exports:
             raise ValueError(
                 f"hook module for {public_name!r} exports neither transform() nor validate()"
             )
         return UvHookRef(
-            name=public_name,
+            name=ref_name,
             exports=exports,
             project_root=project_root,
-            module=definition.module,
+            module=module,
         )
 
     def _metadata_for(self, project_root: Path) -> HookProjectMetadata:
@@ -157,9 +164,19 @@ class HookResolver:
             self._metadata_cache[resolved] = metadata
         return metadata
 
-    def _validate_contract_once(self, project_root: Path, metadata: HookApiContract) -> None:
+    def _exports_for(self, module_file: Path) -> frozenset[str]:
+        exports = self._exports_cache.get(module_file)
+        if exports is None:
+            exports = hook_exports(module_file)
+            self._exports_cache[module_file] = exports
+        return exports
+
+    def _validate_project_once(self, project_root: Path, contract: _ProjectContract) -> None:
         resolved = project_root.resolve()
-        if resolved in self._validated_contracts:
+        if resolved in self._validated_projects:
             return
-        validate_hook_project_contract(project_root, metadata)
-        self._validated_contracts.add(resolved)
+        validate_hook_project_contract(project_root, contract)
+        if not (project_root / "uv.lock").is_file():
+            raise ValueError(f"hook project is missing uv.lock: {project_root}")
+        validate_hook_modules(project_root, contract)
+        self._validated_projects.add(resolved)

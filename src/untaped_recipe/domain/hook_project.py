@@ -86,9 +86,9 @@ class HookProjectMetadata(BaseModel):
     @classmethod
     def from_pyproject(cls, data: Mapping[str, object]) -> HookProjectMetadata:
         """Build hook metadata from parsed pyproject data."""
-        project = _mapping(data.get("project"), "project")
+        project = as_mapping(data.get("project"), "project")
         runtime_dependencies = _runtime_dependencies(project)
-        tool_config = _nested_mapping(data, ("tool", "untaped_recipe"))
+        tool_config = nested_mapping(data, ("tool", "untaped_recipe"))
         if tool_config is not None and not isinstance(tool_config, Mapping):
             raise ValueError("[tool.untaped_recipe] must be a table")
         requires_hook_api = None
@@ -101,7 +101,7 @@ class HookProjectMetadata(BaseModel):
                 if not requires_hook_api:
                     raise ValueError("[tool.untaped_recipe].requires_hook_api must not be empty")
                 _specifier_set(requires_hook_api)
-        hooks = _nested_mapping(data, ("tool", "untaped_recipe", "hooks"))
+        hooks = nested_mapping(data, ("tool", "untaped_recipe", "hooks"))
         if hooks is None:
             return cls(
                 hooks={},
@@ -201,7 +201,7 @@ def _reject_kind_hook_rows(hooks: Mapping[object, object]) -> None:
             )
 
 
-def _nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object | None:
+def nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object | None:
     current: object = data
     for key in path:
         if not isinstance(current, Mapping) or key not in current:
@@ -210,7 +210,7 @@ def _nested_mapping(data: Mapping[str, object], path: tuple[str, ...]) -> object
     return current
 
 
-def _mapping(value: object, field: str) -> Mapping[str, object] | None:
+def as_mapping(value: object, field: str) -> Mapping[str, object] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):

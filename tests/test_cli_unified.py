@@ -257,6 +257,7 @@ def test_cli_emit_kinds_are_the_surviving_pack_unification_set() -> None:
         "recipe.hook",
         "recipe.pack",
         "recipe.check",
+        "recipe.test",
     }
     cli_dir = Path(__file__).parents[1] / "src" / "untaped_recipe" / "cli"
     found: set[str] = set()

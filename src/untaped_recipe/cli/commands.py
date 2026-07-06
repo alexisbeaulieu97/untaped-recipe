@@ -45,6 +45,7 @@ from untaped_recipe.cli.common import (
 from untaped_recipe.cli.detail import hook_detail, pack_detail, recipe_detail
 from untaped_recipe.cli.hook_commands import app as hook_app
 from untaped_recipe.cli.preview import PreviewMode, render_preview
+from untaped_recipe.cli.test_commands import test_command
 from untaped_recipe.domain.hook_exports import hook_exports
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
@@ -66,6 +67,7 @@ new_app = create_app(name="new", help="Scaffold recipe packs, recipes, and hooks
 app.command(new_app, name="new")
 app.command(hook_app, name="hook")
 app.command(backup_app, name="backup")
+app.command(test_command, name="test")
 
 MessageKind = Literal["success", "warning", "error", "info"]
 

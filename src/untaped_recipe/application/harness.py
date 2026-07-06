@@ -198,6 +198,39 @@ def run_case(case: DiscoveredCase, *, executor: HookExecutorPort) -> CaseResult:
     return _success_case_result(case, expected_dir, trees, verdict_problem)
 
 
+def update_case(case: DiscoveredCase, *, executor: HookExecutorPort) -> CaseResult:
+    """Regenerate expected/ from the current plan; report what changed."""
+    given = case.case_dir / "given"
+    if not given.is_dir():
+        return _result(case, "error", "case is missing given/")
+    try:
+        spec = load_case_spec(case.case_dir)
+    except ValueError as exc:
+        return _result(case, "error", str(exc))
+    if spec.expect == "error":
+        return _result(case, "error", "cannot --update an expect: error case")
+
+    trees, error = _plan_case(case, spec, given, RecordingHookExecutor(executor))
+    if error is not None:
+        return _result(case, "error", error)
+    assert trees is not None
+    expected_dir = case.case_dir / "expected"
+    if trees.result == trees.base:
+        if expected_dir.is_dir():
+            shutil.rmtree(expected_dir)
+            return _result(case, "updated")
+        return _result(case, "pass")
+    if expected_dir.is_dir():
+        if _read_tree(expected_dir) == trees.result:
+            return _result(case, "pass")
+        shutil.rmtree(expected_dir)
+    for key, content in trees.result.items():
+        path = expected_dir / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline="")
+    return _result(case, "updated")
+
+
 def _error_case_result(
     case: DiscoveredCase,
     spec: CaseSpec,

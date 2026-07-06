@@ -14,6 +14,7 @@ from untaped_recipe.application.harness import (
     load_case_spec,
     orphaned_test_dirs,
     run_case,
+    update_case,
 )
 from untaped_recipe.application.ports import HookDebugResult
 from untaped_recipe.domain.pack import PackManifest
@@ -423,3 +424,55 @@ def test_recording_executor_records_validate_verdicts_only(tmp_path: Path) -> No
     recorder.validate("probe", local_hook_project=None, target=tmp_path, inputs={}, args={})
 
     assert [verdict.status for verdict in recorder.verdicts] == ["warn"]
+
+
+def test_update_case_writes_expected_tree_from_plan(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    case_dir = _write_case(pack.root, "emit", "basic")
+    (case_dir / "given" / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    result = update_case(_case(pack, "emit", "basic"), executor=_FakeExecutor())
+
+    assert result.status == "updated"
+    assert (case_dir / "expected" / "out.txt").read_text(encoding="utf-8") == "payload\n"
+    assert (case_dir / "expected" / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+    assert run_case(_case(pack, "emit", "basic"), executor=_FakeExecutor()).status == "pass"
+
+
+def test_update_case_reports_pass_when_golden_already_matches(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    case_dir = _write_case(pack.root, "emit", "basic")
+    update_case(_case(pack, "emit", "basic"), executor=_FakeExecutor())
+    mtime = (case_dir / "expected" / "out.txt").stat().st_mtime_ns
+
+    result = update_case(_case(pack, "emit", "basic"), executor=_FakeExecutor())
+
+    assert result.status == "pass"
+    assert (case_dir / "expected" / "out.txt").stat().st_mtime_ns == mtime
+
+
+def test_update_case_deletes_expected_when_plan_is_empty(tmp_path: Path) -> None:
+    pack = _write_pack(tmp_path / "demo", recipes={"noop": "recipes/noop.yml"})
+    case_dir = _write_case(pack.root, "noop", "basic")
+    (case_dir / "expected").mkdir()
+    (case_dir / "expected" / "stale.txt").write_text("stale\n", encoding="utf-8")
+
+    result = update_case(_case(pack, "noop", "basic"), executor=_FakeExecutor())
+
+    assert result.status == "updated"
+    assert not (case_dir / "expected").exists()
+
+
+def test_update_case_rejects_error_cases(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    _write_case(
+        pack.root,
+        "emit",
+        "basic",
+        case_yml='expect: error\nerror_contains: "boom"\n',
+    )
+
+    result = update_case(_case(pack, "emit", "basic"), executor=_FakeExecutor())
+
+    assert result.status == "error"
+    assert result.detail == "cannot --update an expect: error case"

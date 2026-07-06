@@ -44,6 +44,31 @@ directory; read the spec's §Amendments before starting).
   `env -u FORCE_COLOR uv run pytest ...`.
 - From the `untaped-dev` symlinked workspace use `uv --cache-dir .uv-cache run ...`.
 
+## Plan-review amendments (2026-07-06, folded into the tasks below)
+
+Codex's plan review found 2 blockers + 5 gaps; all are now folded in place.
+Summary for the implementer:
+
+1. **Task 12 covers a third version-literal test**: `tests/test_infrastructure.py`
+   built-wheel glob `untaped_recipe-0.9.0-*` → `0.10.0`, plus a docs sweep
+   (`README.md`, `docs/packs.md`, `docs/hooks.md`, `AGENTS.md`) for scaffold-output
+   `dev = ["untaped-recipe>=0.9"]` examples.
+2. **`test .` works**: `_select` uses a test-scoped `_is_pack_path` (exact `.`/`..`
+   or `/`, `./`, `../`, `~` prefixes) instead of `is_explicit_recipe_path`; the
+   shared recipe-ref grammar is NOT widened. The `.yml`/`.yaml` rejection now
+   happens before path detection.
+3. **`_plan_case` catches `(ConfigError, ValueError)`** at both sites — SDK-typed
+   input validation (unknown `case.yml` inputs) must yield a per-case error row /
+   match `expect: error`, never abort the run.
+4. **Recipe-scoped runs skip pack-level orphan rows** (spec §Amendments item 8) —
+   `check` and pack-scoped `test` are the orphan guards.
+5. **`target.name` determinism is locked by a test**
+   (`test_run_case_temp_target_is_named_after_the_case`) — you own the
+   `_write_target_name_pack` helper it references: a pack whose recipe declares an
+   input `from: "{{ target.name }}"` and templates it into a file.
+6. **`recipe.test.status` contract**: `pass | fail | error | updated` (`updated`
+   only from `--update`); the spec's output section was corrected to match.
+
 ## File Structure
 
 | File | Responsibility |
@@ -1107,6 +1132,35 @@ def test_run_case_expected_dir_forbidden_for_error_cases(tmp_path: Path) -> None
     assert result.detail == "expected/ is forbidden for expect: error cases"
 
 
+def test_run_case_config_error_is_a_per_case_error(tmp_path: Path) -> None:
+    # SDK ConfigError (unknown case.yml input) must become this case's error
+    # row, not abort the whole run (plan-review amendment 2026-07-06).
+    pack = _copy_pack(tmp_path)
+    _write_case(pack.root, "emit", "basic", case_yml='inputs:\n  bogus: "x"\n')
+
+    result = run_case(_case(pack, "emit", "basic"), executor=_FakeExecutor())
+
+    assert result.status == "error"
+    assert "unknown input" in result.detail
+
+
+def test_run_case_temp_target_is_named_after_the_case(tmp_path: Path) -> None:
+    # Locks the spec ruling: the harness plans against a temp copy of given/
+    # NAMED AFTER THE CASE, so recipe `from:` expressions over `target.name`
+    # are deterministic. Build a pack whose recipe declares an input with
+    # `from: "{{ target.name }}"` and templates it into a file; expected/
+    # embeds the case name. (Codex: exact recipe/case YAML is yours — the
+    # assertion below is the contract.)
+    pack = _write_target_name_pack(tmp_path / "demo")  # helper alongside _write_pack
+    case_dir = _write_case(pack.root, "stamp", "my-case")
+    (case_dir / "expected").mkdir()
+    (case_dir / "expected" / "name.txt").write_text("my-case\n", encoding="utf-8")
+
+    result = run_case(_case(pack, "stamp", "my-case"), executor=_FakeExecutor())
+
+    assert result.status == "pass"
+
+
 def test_run_case_verdict_worst_of_and_message(tmp_path: Path) -> None:
     pack = _write_pack(
         tmp_path / "demo",
@@ -1201,6 +1255,8 @@ import shutil
 import tempfile
 from collections.abc import Iterable
 from typing import Literal
+
+from untaped.api import ConfigError
 
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.ports import HookDebugResult, HookExecutorPort
@@ -1348,7 +1404,7 @@ def _plan_case(
     """Plan against a temp copy of given/ and return (trees, error)."""
     try:
         recipe = load_recipe_file(case.recipe_path)
-    except ValueError as exc:
+    except (ConfigError, ValueError) as exc:
         return None, str(exc)
     with tempfile.TemporaryDirectory() as temp_root:
         target_dir = Path(temp_root) / case.case_name
@@ -1363,7 +1419,9 @@ def _plan_case(
                 targets=[Target(path=target_dir)],
                 inputs=dict(spec.inputs),
             )
-        except ValueError as exc:
+        except (ConfigError, ValueError) as exc:
+            # ConfigError: SDK-typed input validation (e.g. unknown case.yml
+            # inputs) fires before target planning — must stay a per-case row.
             return None, str(exc)
         plan = plans[0]
         if plan.status == "error":
@@ -1777,6 +1835,21 @@ def test_test_explicit_path_runs_local_pack(tmp_path: Path) -> None:
     assert json.loads(result.stdout)[0]["status"] == "pass"
 
 
+def test_test_dot_runs_pack_at_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Spec CLI table promises `test .` as the dev loop; bare `.` is not
+    # `./`-prefixed so it needs the pack-path predicate, not the recipe-ref
+    # grammar (plan-review amendment 2026-07-06).
+    source = tmp_path / "local-pack"
+    _write_pack(source, manifest_name="demo")
+    _write_passing_case(source)
+    monkeypatch.chdir(source)
+
+    result = CliInvoker().invoke(app, ["test", ".", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)[0]["status"] == "pass"
+
+
 def test_test_rejects_recipe_file_paths(tmp_path: Path) -> None:
     result = CliInvoker().invoke(app, ["test", "./recipe.yml"])
 
@@ -1819,7 +1892,6 @@ from untaped_recipe.application.harness import (
     run_case,
     update_case,
 )
-from untaped_recipe.application.resolution import is_explicit_recipe_path
 from untaped_recipe.cli.common import hook_timeout_seconds, library_root, report_config_errors
 from untaped_recipe.domain.pack import PackManifest, parse_ref
 from untaped_recipe.infrastructure import HookExecutor, HookResolver
@@ -1886,9 +1958,9 @@ def _select(root: Path, ref_text: str | None) -> _Selection:
                 continue
             _extend_for_pack(selection, pack)
         return selection
-    if is_explicit_recipe_path(ref_text):
-        if ref_text.endswith((".yml", ".yaml")):
-            raise ConfigError("test requires a pack directory or ref, not a recipe file")
+    if ref_text.endswith((".yml", ".yaml")):
+        raise ConfigError("test requires a pack directory or ref, not a recipe file")
+    if _is_pack_path(ref_text):
         path = Path(ref_text).expanduser()
         pack = InstalledPack.local(path, PackManifest.from_pyproject(path))
         return _explicit_selection(pack, recipe=None)
@@ -1900,11 +1972,24 @@ def _select(root: Path, ref_text: str | None) -> _Selection:
     return _explicit_selection(recipe_pack, recipe=ref.name)
 
 
+def _is_pack_path(value: str) -> bool:
+    """`test` targets pack DIRECTORIES, so exact `.`/`..` are paths too.
+
+    Deliberately test-scoped: the shared recipe-ref grammar
+    (`is_explicit_recipe_path`) stays untouched — bare `a/b` remains a
+    library ref everywhere (0.9 locked decision).
+    """
+    return value in {".", ".."} or value.startswith(("/", "./", "../", "~"))
+
+
 def _explicit_selection(pack: InstalledPack, *, recipe: str | None) -> _Selection:
     selection = _Selection()
     if recipe is None:
         _extend_for_pack(selection, pack)
     else:
+        # Recipe-scoped runs are the focused dev loop: pack-level orphaned
+        # tests/ dirs are NOT reported here (spec §Amendments item 8);
+        # `check` and pack-scoped `test` are the guards.
         selection.cases.extend(discover_cases(pack, recipe=recipe))
     if not selection.cases and not selection.static_results:
         selection.static_results.append(
@@ -2319,7 +2404,9 @@ git commit -m "docs: test harness docs, skill, and AGENTS section"
 **Files:**
 - Modify: `pyproject.toml`, `src/untaped_recipe/_version.py`,
   `tests/test_hook_api_contract.py`, `tests/test_pack_scaffold.py`,
-  `src/untaped_recipe/skills/untaped-recipe/SKILL.md`, `uv.lock`
+  `tests/test_infrastructure.py`,
+  `src/untaped_recipe/skills/untaped-recipe/SKILL.md`,
+  `README.md`, `docs/packs.md`, `docs/hooks.md`, `AGENTS.md`, `uv.lock`
 
 - [ ] **Step 1: Bump versions**
   - `pyproject.toml`: `version = "0.10.0"`.
@@ -2332,8 +2419,15 @@ git commit -m "docs: test harness docs, skill, and AGENTS section"
       `">=0.9,<1"`).
     - `tests/test_pack_scaffold.py`: the verbatim pyproject assertion's dev line
       becomes `'dev = ["untaped-recipe>=0.10"]\n'`.
+    - `tests/test_infrastructure.py`: the built-wheel glob
+      `untaped_recipe-0.9.0-*.whl` becomes `untaped_recipe-0.10.0-*.whl`
+      (plan-review catch — this is the third version-literal test surface).
     - `SKILL.md`: the sentence naming the auto-added dev dependency updates from
       `untaped-recipe>=0.9` to `untaped-recipe>=0.10`.
+    - Docs sweep for the same scaffold-output examples (`dev =
+      ["untaped-recipe>=0.9"]` → `>=0.10`): `README.md`, `docs/packs.md`,
+      `docs/hooks.md`, `AGENTS.md` — grep for `untaped-recipe>=0.9` and update
+      every scaffold-output example (prose about the 0.9 hook-api floor stays).
 
 - [ ] **Step 2: Full gate**
 
@@ -2358,6 +2452,7 @@ export UNTAPED_RECIPE__LIBRARY_ROOT="$PWD/library"
 uv run --project /Users/alexisbeaulieu/Projects/untaped-recipe untaped-recipe new pack demo
 uv run --project /Users/alexisbeaulieu/Projects/untaped-recipe untaped-recipe new recipe ./demo/hello
 uv run --project /Users/alexisbeaulieu/Projects/untaped-recipe untaped-recipe test ./demo
+(cd demo && uv run --project /Users/alexisbeaulieu/Projects/untaped-recipe untaped-recipe test .)
 uv run --project /Users/alexisbeaulieu/Projects/untaped-recipe untaped-recipe add ./demo --yes
 uv run --project /Users/alexisbeaulieu/Projects/untaped-recipe untaped-recipe test demo
 uv run --project /Users/alexisbeaulieu/Projects/untaped-recipe untaped-recipe check demo
@@ -2369,7 +2464,7 @@ exit codes 0 throughout (the `demo-inner` line is noise-tolerant).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add pyproject.toml src/untaped_recipe/_version.py uv.lock tests/test_hook_api_contract.py tests/test_pack_scaffold.py src/untaped_recipe/skills/untaped-recipe/SKILL.md
+git add pyproject.toml src/untaped_recipe/_version.py uv.lock tests/test_hook_api_contract.py tests/test_pack_scaffold.py tests/test_infrastructure.py src/untaped_recipe/skills/untaped-recipe/SKILL.md README.md docs/packs.md docs/hooks.md AGENTS.md
 git commit -m "chore: version 0.10.0"
 ```
 

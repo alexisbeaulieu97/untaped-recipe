@@ -116,7 +116,8 @@ verdict:                     # validate expectations (optional)
   matches are reported `pass` and not rewritten; rewritten cases are reported
   `updated`; exit code fails only on `error` rows (amended 2026-07-03).
 - **Output:** one `recipe.test` record per case on stdout — pack, recipe, case,
-  status (`pass` | `fail` | `error`), and a short mismatch summary — plus a stderr
+  status (`pass` | `fail` | `error`, plus `updated` in `--update` mode; amended
+  2026-07-06 to match amendment 5), and a short mismatch summary — plus a stderr
   summary line through `UiContext`. Failed comparisons render a unified diff per
   mismatched file on stderr, reusing the existing diff helper (`infrastructure/
   diff.py`, or its SDK successor if the recipe re-pin lands first — whichever exists
@@ -175,3 +176,19 @@ Made against the landed 0.9.0 code (`c18c9a7`); each is marked inline above.
 5. **`--update` reports `updated` vs `pass`** (already-matching goldens are not
    rewritten) and fails only on `error` rows.
 6. **`recipe.test` row fields locked:** `pack`, `recipe`, `case`, `status`, `detail`.
+7. **`test .` / `test ..` resolve as filesystem paths (2026-07-06).** `test`'s
+   argument grammar uses a pack-path predicate (exact `.`/`..`, or `/`, `./`,
+   `../`, `~` prefixes); the shared recipe-ref grammar is NOT widened — bare
+   `a/b` stays a library ref everywhere (0.9 locked decision).
+8. **Orphan rows are pack-scope only (2026-07-06).** Library-wide and pack-scoped
+   `test` runs emit one error row per orphaned `tests/<name>/` dir; a
+   recipe-scoped `test <pack>/<recipe>` run does not — it is the focused dev
+   loop, and `check` plus pack-scoped `test` remain the guards. (Clarifies
+   amendment 3's "selected pack(s)".)
+9. **Planning failures are per-case regardless of exception type (2026-07-06).**
+   SDK-typed `ConfigError` (e.g. unknown `case.yml` inputs fails input
+   validation before target planning) is handled like `ValueError`: it produces
+   that case's error row or matches `expect: error`, and never aborts the run.
+10. **Status enum locked (2026-07-06):** `pass | fail | error | updated`;
+    `updated` is emitted only by `--update` runs (output section corrected in
+    place).

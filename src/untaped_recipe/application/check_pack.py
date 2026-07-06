@@ -6,6 +6,7 @@ from pathlib import Path
 
 from untaped.api import ConfigError
 
+from untaped_recipe.application.harness import orphaned_test_dirs
 from untaped_recipe.application.inputs import validate_recipe_input_sources
 from untaped_recipe.application.resolution import (
     is_explicit_recipe_path,
@@ -106,6 +107,9 @@ def _check_pack(root: Path, pack: InstalledPack) -> dict[str, object]:
             )
             if row["status"] == "error":
                 raise ValueError(f"{recipe_name}: {row['error']}")
+        orphans = orphaned_test_dirs(pack)
+        if orphans:
+            raise ValueError("tests directory names no known recipe: " + ", ".join(orphans))
     except (ConfigError, ValueError, OSError) as exc:
         return _pack_check_row(
             pack.name,

@@ -131,6 +131,21 @@ def test_unified_check_pack_validates_recipe_hook_exports(tmp_path: Path) -> Non
     assert json.loads(result.stdout)[0]["status"] == "pass"
 
 
+def test_check_flags_orphaned_tests_directories(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="ansible", recipes={"playbook": "recipes/playbook.yml"})
+    (source / "tests" / "playbook" / "basic" / "given").mkdir(parents=True)
+    (source / "tests" / "renamed" / "old" / "given").mkdir(parents=True)
+    _install_pack(source)
+
+    result = CliInvoker().invoke(app, ["check", "ansible", "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    row = json.loads(result.stdout)[0]
+    assert row["status"] == "error"
+    assert row["error"] == "tests directory names no known recipe: renamed"
+
+
 def test_check_without_ref_reports_library_reconcile_and_pack_rows(tmp_path: Path) -> None:
     good_source = tmp_path / "good-source"
     stale_source = tmp_path / "stale-source"

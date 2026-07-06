@@ -70,6 +70,7 @@ app.command(backup_app, name="backup")
 app.command(test_command, name="test")
 
 MessageKind = Literal["success", "warning", "error", "info"]
+_NO_LOCK_NOTE = "uv.lock was not created/refreshed for {path}; hooks need `uv lock` before running."
 
 
 @dataclass(frozen=True)
@@ -112,20 +113,40 @@ class TargetInput:
 
 
 @new_app.command(name="pack")
-def new_pack_command(name: Annotated[str, Parameter(help="Pack name.")], /) -> None:
+def new_pack_command(
+    name: Annotated[str, Parameter(help="Pack name.")],
+    /,
+    *,
+    no_lock: Annotated[
+        bool,
+        Parameter(name="--no-lock", negative="", help="Skip refreshing uv.lock."),
+    ] = False,
+) -> None:
     """Scaffold a recipe pack."""
     with report_config_errors():
         pack_name = safe_library_name(name, field="pack")
-        path = pack_scaffold.scaffold_pack(Path.cwd() / pack_name, pack_name)
+        path = pack_scaffold.scaffold_pack(Path.cwd() / pack_name, pack_name, lock=not no_lock)
+        if no_lock:
+            _warn_no_lock(path)
         echo(str(path))
 
 
 @new_app.command(name="recipe")
-def new_recipe_command(ref: Annotated[str, Parameter(help="<pack>/<recipe>.")], /) -> None:
+def new_recipe_command(
+    ref: Annotated[str, Parameter(help="<pack>/<recipe>.")],
+    /,
+    *,
+    no_lock: Annotated[
+        bool,
+        Parameter(name="--no-lock", negative="", help="Skip refreshing uv.lock."),
+    ] = False,
+) -> None:
     """Scaffold a recipe inside a pack."""
     with report_config_errors():
         pack_dir, name = _new_pack_child(ref)
-        path = pack_scaffold.scaffold_recipe(pack_dir, name)
+        path = pack_scaffold.scaffold_recipe(pack_dir, name, lock=not no_lock)
+        if no_lock:
+            _warn_no_lock(pack_dir)
         echo(str(path))
 
 
@@ -138,12 +159,22 @@ def new_hook_command(
         Literal["transform", "validate"],
         Parameter(name="--kind", help="Hook callable stub kind."),
     ] = "transform",
+    no_lock: Annotated[
+        bool,
+        Parameter(name="--no-lock", negative="", help="Skip refreshing uv.lock."),
+    ] = False,
 ) -> None:
     """Scaffold a hook inside a pack."""
     with report_config_errors():
         pack_dir, name = _new_pack_child(ref)
-        path = pack_scaffold.scaffold_hook(pack_dir, name, kind=kind)
+        path = pack_scaffold.scaffold_hook(pack_dir, name, kind=kind, lock=not no_lock)
+        if no_lock:
+            _warn_no_lock(pack_dir)
         echo(str(path))
+
+
+def _warn_no_lock(project_root: Path) -> None:
+    echo(_NO_LOCK_NOTE.format(path=project_root), err=True)
 
 
 @app.command(name="apply")

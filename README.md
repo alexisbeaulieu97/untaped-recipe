@@ -42,7 +42,7 @@ name = "untaped-recipe-ansible"
 version = "0.1.0"
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.10"]
+dev = ["untaped-recipe>=0.9"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.9,<1"
@@ -90,7 +90,31 @@ worker and helper implementation. Runtime hook dependencies belong in
 `[project].dependencies`, and type-only authoring dependencies belong in
 `[dependency-groups].dev` because workers execute with
 `uv run --locked --no-dev`. Hook scaffolding refreshes `uv.lock`, so it needs
-access to PyPI or a configured uv source for `untaped-recipe`.
+access to PyPI or a configured uv source for `untaped-recipe`. The scaffolded
+dev dependency tracks the hook API floor for editor type discovery, not every
+CLI release.
+
+If `uv lock` fails after scaffold files are written, `new pack`, `new recipe`,
+and `new hook` leave the pack, recipe, hook module, tests, and manifest rows in
+place and print a repairable error. Fix the package index or add a
+package-specific `[tool.uv.sources]` override, then run `uv lock` in the pack.
+For example, a lagging corporate mirror can route only `untaped-recipe` to an
+approved fallback index:
+
+```toml
+[tool.uv.sources]
+untaped-recipe = { index = "approved-pypi" }
+
+[[tool.uv.index]]
+name = "approved-pypi"
+url = "https://pypi.org/simple"
+explicit = true
+```
+
+Use `--no-lock` with `new pack`, `new recipe`, or `new hook` to skip the lock
+step entirely. The command exits successfully and prints a stderr note, but
+hooks cannot run until `uv lock` succeeds because workers use
+`uv run --locked --no-dev`.
 
 ```bash
 untaped-recipe new pack ansible
@@ -175,9 +199,9 @@ redacted per-target inputs and never store the full incoming pipe record.
 ## Library Commands
 
 ```text
-untaped-recipe new pack <name>
-untaped-recipe new recipe <pack>/<name>
-untaped-recipe new hook <pack>/<name>
+untaped-recipe new pack <name> [--no-lock]
+untaped-recipe new recipe <pack>/<name> [--no-lock]
+untaped-recipe new hook <pack>/<name> [--no-lock]
 untaped-recipe add <path|git-url> [--rev REV] [--name NAME] [--force]
 untaped-recipe list [--packs|--hooks]
 untaped-recipe show <pack|recipe-ref|hook-ref>

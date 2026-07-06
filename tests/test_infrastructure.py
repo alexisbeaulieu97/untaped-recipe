@@ -33,7 +33,7 @@ def test_build_package_wheel_writes_recipe_wheel(
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     release.build_package_wheel(dist_dir)
 
-    assert list(dist_dir.glob("untaped_recipe-0.10.0-*.whl"))
+    assert list(dist_dir.glob("untaped_recipe-0.11.0-*.whl"))
 
 
 def test_release_smoke_new_runs_outside_workspace_with_local_index(

@@ -154,7 +154,7 @@ name = "untaped-recipe-ansible"
 version = "0.1.0"
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.10"]
+dev = ["untaped-recipe>=0.9"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.9,<1"
@@ -168,6 +168,16 @@ requires_hook_api = ">=0.9,<1"
 
 Nested uv projects or uv workspaces inside a pack are opaque to this tool. Only
 the top-level project metadata and declared recipe paths are read.
+
+`new pack`, `new recipe`, and `new hook` refresh the pack `uv.lock` by default.
+File-creation failures roll back the newly written scaffold paths, but a
+post-creation lock failure leaves the completed pack, recipe, hook module,
+tests, and manifest rows in place and reports how to repair the lock. The
+repair path is to fix the package index or add a package-specific
+`[tool.uv.sources]` override, then run `uv lock` in the pack. `--no-lock` skips
+the lock step, exits successfully, and prints a stderr note; hooks still cannot
+run until `uv lock` succeeds because workers execute with
+`uv run --locked --no-dev`.
 
 Recipes resolve as follows:
 
@@ -365,7 +375,9 @@ on `untaped-recipe` at runtime. External uv workers run with `uv run --locked
 --no-dev`, so hook runtime dependencies belong in `[project].dependencies`;
 type-only authoring dependencies belong in `[dependency-groups].dev`. Hook
 projects declare `[tool.untaped_recipe].requires_hook_api = ">=0.9,<1"` to fail
-fast when the installed CLI's helper API is incompatible. The public
+fast when the installed CLI's helper API is incompatible. The scaffolded dev
+dependency floor tracks that hook API contract for type discovery rather than
+the CLI version. The public
 `untaped_recipe.hook_api.HookHelpers` protocol models external worker helpers,
 where verdict helpers return dict-shaped verdicts. Keep the application-layer
 `HookHelpersPort` separate for in-process built-ins, where verdict helpers

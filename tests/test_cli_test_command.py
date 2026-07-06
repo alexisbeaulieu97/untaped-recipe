@@ -166,3 +166,48 @@ def test_test_rejects_recipe_file_paths(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "test requires a pack directory or ref, not a recipe file" in result.output
+
+
+def test_update_requires_an_explicit_argument(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["test", "--update"])
+
+    assert result.exit_code != 0
+    assert "--update requires an explicit pack or recipe argument" in result.output
+
+
+def test_update_writes_goldens_into_installed_pack(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="demo")
+    (source / "tests" / "emit" / "basic" / "given").mkdir(parents=True)
+    _install(source)
+
+    result = CliInvoker().invoke(app, ["test", "demo", "--update", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(result.stdout)[0]
+    assert row["status"] == "updated"
+    golden = library_root() / "packs" / "demo" / "tests" / "emit" / "basic" / "expected"
+    assert (golden / "out.txt").read_text(encoding="utf-8") == "payload\n"
+    assert "Recipe test update: 1 updated, 0 unchanged, 0 errored" in result.stderr
+
+    rerun = CliInvoker().invoke(app, ["test", "demo", "--format", "json"])
+    assert rerun.exit_code == 0, rerun.output
+    assert json.loads(rerun.stdout)[0]["status"] == "pass"
+
+
+def test_update_rejects_expect_error_cases(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="demo")
+    case_dir = source / "tests" / "emit" / "basic"
+    (case_dir / "given").mkdir(parents=True)
+    (case_dir / "case.yml").write_text(
+        'expect: error\nerror_contains: "boom"\n', encoding="utf-8"
+    )
+    _install(source)
+
+    result = CliInvoker().invoke(app, ["test", "demo", "--update", "--format", "json"])
+
+    assert result.exit_code == 1
+    row = json.loads(result.stdout)[0]
+    assert row["status"] == "error"
+    assert row["detail"] == "cannot --update an expect: error case"

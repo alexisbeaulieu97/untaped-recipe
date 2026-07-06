@@ -30,6 +30,11 @@ from untaped.api import (
 from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.inputs import PromptFunc, validate_recipe_input_sources
+from untaped_recipe.application.resolution import (
+    is_explicit_recipe_path,
+    resolve_apply_recipe,
+    resolve_explicit_recipe,
+)
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
@@ -70,15 +75,6 @@ app.command(hook_app, name="hook")
 app.command(backup_app, name="backup")
 
 MessageKind = Literal["success", "warning", "error", "info"]
-
-
-@dataclass(frozen=True)
-class ResolvedRecipe:
-    """A recipe file resolved from an explicit path or installed pack."""
-
-    path: Path
-    ref: str
-    local_hook_project: Path | None
 
 
 @dataclass(frozen=True)
@@ -501,7 +497,7 @@ def _apply_context(
     recipe_id: str | None = None,
 ) -> ApplyContext:
     root = library_root()
-    recipe_resolution = _resolve_apply_recipe(root, recipe, recipe_id=recipe_id)
+    recipe_resolution = resolve_apply_recipe(root, recipe, recipe_id=recipe_id)
     recipe_path = recipe_resolution.path
     loaded = _load_recipe(recipe_path)
     target_input = _targets(dirs, stdin=stdin)
@@ -557,58 +553,6 @@ def _apply_context(
         recipe_ref=recipe_resolution.ref,
         plans=plans,
     )
-
-
-def _resolve_apply_recipe(
-    root: Path,
-    ref_text: str,
-    *,
-    recipe_id: str | None,
-) -> ResolvedRecipe:
-    if recipe_id is not None:
-        if not _is_explicit_recipe_path(ref_text):
-            raise ValueError("--recipe requires an explicit pack path")
-        return _resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=recipe_id)
-    if _is_explicit_recipe_path(ref_text):
-        return _resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=None)
-    ref = parse_ref(ref_text)
-    pack, recipe = UnifiedPackLibrary(library_root=root).find_recipe(ref)
-    return ResolvedRecipe(
-        path=pack.root / recipe.path,
-        ref=f"{pack.name}/{ref.name}",
-        local_hook_project=pack.root,
-    )
-
-
-def _resolve_explicit_recipe(path: Path, *, recipe_id: str | None) -> ResolvedRecipe:
-    if path.is_dir():
-        if recipe_id is not None:
-            manifest = PackManifest.from_pyproject(path)
-            entry = manifest.recipes.get(recipe_id)
-            if entry is None:
-                raise ValueError(f"recipe not found: {recipe_id}")
-            return ResolvedRecipe(
-                path=path / entry.path,
-                ref=f"{path.name}/{recipe_id}",
-                local_hook_project=path,
-            )
-        recipe_path = path / "recipe.yml"
-        if not recipe_path.is_file():
-            raise ValueError(f"recipe file not found: {recipe_path}")
-        return ResolvedRecipe(
-            path=recipe_path,
-            ref=path.name,
-            local_hook_project=path if (path / "pyproject.toml").is_file() else None,
-        )
-    return ResolvedRecipe(
-        path=path,
-        ref=path.name,
-        local_hook_project=None,
-    )
-
-
-def _is_explicit_recipe_path(value: str) -> bool:
-    return value.startswith(("/", "./", "../", "~")) or value.endswith((".yml", ".yaml"))
 
 
 def _resolve_target(library: UnifiedPackLibrary, ref_text: str) -> _ResolvedTarget:
@@ -669,7 +613,7 @@ def _hook_row(pack: InstalledPack, name: str, entry: HookEntry) -> dict[str, obj
 
 def _check_ref(root: Path, ref_text: str) -> dict[str, object]:
     library = UnifiedPackLibrary(library_root=root)
-    if _is_explicit_recipe_path(ref_text):
+    if is_explicit_recipe_path(ref_text):
         path = Path(ref_text).expanduser()
         if path.is_dir() and (path / "pyproject.toml").is_file():
             try:
@@ -677,7 +621,7 @@ def _check_ref(root: Path, ref_text: str) -> dict[str, object]:
             except (ValueError, OSError) as exc:
                 return _pack_check_row(path.name, path, status="error", error=str(exc))
             return _check_pack(root, InstalledPack.local(path, manifest))
-        resolved = _resolve_explicit_recipe(path, recipe_id=None)
+        resolved = resolve_explicit_recipe(path, recipe_id=None)
         return _check_recipe(root, resolved.path, resolved.ref, resolved.local_hook_project)
     pack = library.find_pack(ref_text)
     if pack is not None:

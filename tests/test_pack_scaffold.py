@@ -35,7 +35,7 @@ def test_scaffold_pack_writes_parseable_manifest_with_hook_api_floors(
         "dependencies = []\n"
         "\n"
         "[dependency-groups]\n"
-        'dev = ["untaped-recipe>=0.10"]\n'
+        'dev = ["untaped-recipe>=0.9"]\n'
         "\n"
         "[tool.untaped_recipe]\n"
         'requires_hook_api = ">=0.9,<1"\n'

@@ -25,11 +25,16 @@ def hook_api_requirements(
     package_version: str = PACKAGE_VERSION,
     hook_api_version: str = HOOK_API_VERSION,
 ) -> tuple[str, str]:
-    """Return the hook API project floor and authoring dependency."""
-    package = Version(package_version)
+    """Return the hook API project floor and type-discovery dependency.
+
+    The dev dependency exists only so hook authors get editor access to the
+    public hook API. Its floor tracks the helper API contract, which changes
+    rarely, rather than the CLI release cadence.
+    """
+    Version(package_version)
     hook_api = Version(hook_api_version)
     project_requirement = f">={hook_api.major}.{hook_api.minor},<{hook_api.major + 1}"
-    dev_requirement = f"untaped-recipe>={package.major}.{package.minor}"
+    dev_requirement = f"untaped-recipe>={hook_api.major}.{hook_api.minor}"
     return project_requirement, dev_requirement
 
 

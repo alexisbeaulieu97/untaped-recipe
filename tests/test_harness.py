@@ -395,6 +395,17 @@ def test_run_case_never_mutates_fixtures(tmp_path: Path) -> None:
     assert sorted(p.name for p in (case_dir / "given").iterdir()) == ["keep.txt"]
 
 
+def test_run_case_non_utf8_fixture_is_a_per_case_error(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    case_dir = _write_case(pack.root, "emit", "basic")
+    (case_dir / "given" / "blob.bin").write_bytes(b"\xff\xfe\x00")
+
+    result = run_case(_case(pack, "emit", "basic"), executor=_FakeExecutor())
+
+    assert result.status == "error"
+    assert "non-UTF-8 fixture file: blob.bin" in result.detail
+
+
 def test_recording_executor_records_validate_verdicts_only(tmp_path: Path) -> None:
     recorder = RecordingHookExecutor(_FakeExecutor(verdicts=(Verdict(status="warn"),)))
 

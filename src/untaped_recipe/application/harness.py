@@ -27,6 +27,10 @@ CaseStatus = Literal["pass", "fail", "error", "updated"]
 _VERDICT_RANK = {"pass": 0, "warn": 1, "fail": 2}
 
 
+class FixtureDecodeError(ValueError):
+    """A fixture file is not valid UTF-8 text (the harness compares text trees)."""
+
+
 @dataclass(frozen=True)
 class DiscoveredCase:
     """One golden case directory resolved against a pack manifest."""
@@ -195,7 +199,10 @@ def run_case(case: DiscoveredCase, *, executor: HookExecutorPort) -> CaseResult:
     if error is not None:
         return _result(case, "error", error)
     assert trees is not None
-    return _success_case_result(case, expected_dir, trees, verdict_problem)
+    try:
+        return _success_case_result(case, expected_dir, trees, verdict_problem)
+    except FixtureDecodeError as exc:
+        return _result(case, "error", str(exc))
 
 
 def update_case(case: DiscoveredCase, *, executor: HookExecutorPort) -> CaseResult:
@@ -221,7 +228,11 @@ def update_case(case: DiscoveredCase, *, executor: HookExecutorPort) -> CaseResu
             return _result(case, "updated")
         return _result(case, "pass")
     if expected_dir.is_dir():
-        if _read_tree(expected_dir) == trees.result:
+        try:
+            existing = _read_tree(expected_dir)
+        except FixtureDecodeError as exc:
+            return _result(case, "error", str(exc))
+        if existing == trees.result:
             return _result(case, "pass")
         shutil.rmtree(expected_dir)
     for key, content in trees.result.items():
@@ -287,9 +298,9 @@ def _plan_case(
     with tempfile.TemporaryDirectory() as temp_root:
         target_dir = Path(temp_root) / case.case_name
         shutil.copytree(given, target_dir)
-        base = _read_tree(target_dir)
         runner = RunBulkApply(ApplyRecipe(recorder))
         try:
+            base = _read_tree(target_dir)
             plans = runner.plan(
                 recipe=recipe,
                 recipe_dir=case.recipe_path.parent,
@@ -306,11 +317,16 @@ def _plan_case(
 
 
 def _read_tree(root: Path) -> dict[str, str]:
-    return {
-        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8", newline="")
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
+    tree: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        try:
+            tree[relative] = path.read_text(encoding="utf-8", newline="")
+        except UnicodeDecodeError as exc:
+            raise FixtureDecodeError(f"non-UTF-8 fixture file: {relative}") from exc
+    return tree
 
 
 def _materialize(base: dict[str, str], changes: Iterable[FileChange]) -> dict[str, str]:

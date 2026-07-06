@@ -69,7 +69,7 @@ def test_hook_api_requirements_are_derived_from_versions() -> None:
 def test_release_script_verifies_version_parity() -> None:
     module = _release_module()
 
-    module.verify_versions("0.10.0")
+    module.verify_versions("0.11.0")
 
 
 def test_release_script_rejects_version_mismatch() -> None:
@@ -90,6 +90,6 @@ def test_release_script_rejects_stale_scaffold_floor_when_hook_api_moves(
 
     monkeypatch.setattr(module, "HOOK_API_VERSION", "1.2.0")
     with pytest.raises(SystemExit) as exc_info:
-        module.verify_versions("0.10.0")
+        module.verify_versions("0.11.0")
 
     assert exc_info.value.code == 1

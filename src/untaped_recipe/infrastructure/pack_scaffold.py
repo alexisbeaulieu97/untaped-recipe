@@ -35,6 +35,22 @@ def hook_api_requirements(
 
 _HOOK_API_PROJECT_REQUIREMENT, _HOOK_API_DEV_REQUIREMENT = hook_api_requirements()
 
+_CASE_YML_TEMPLATE = """\
+# Golden test case for this recipe (run with: untaped-recipe test <pack>/<recipe>).
+# Sibling directories:
+#   given/    - fixture target directory the plan runs against
+#   expected/ - full expected tree after the plan; omit to assert no changes
+# Every field below is optional.
+#
+# inputs:                     # recipe inputs, same names and types apply accepts
+#   owner: platform-team
+# expect: success             # success (default) | error
+# error_contains: "..."       # required with expect: error; forbidden otherwise
+# verdict:                    # assertions on validate-hook verdicts
+#   status: warn              # expected worst status: pass | warn | fail
+#   message_contains: "..."   # substring of at least one verdict message
+"""
+
 
 def scaffold_pack(dest: Path, name: str) -> Path:
     """Create a new uv recipe pack project at ``dest``."""
@@ -66,7 +82,7 @@ def scaffold_pack(dest: Path, name: str) -> Path:
 
 
 def scaffold_recipe(pack_dir: Path, name: str) -> Path:
-    """Add a generated recipe to an existing pack manifest."""
+    """Add a generated recipe plus a starter golden case to a pack."""
     recipe_name = safe_library_name(name, field="recipe")
     manifest = PackManifest.from_pyproject(pack_dir)
     if recipe_name in manifest.recipes:
@@ -74,6 +90,17 @@ def scaffold_recipe(pack_dir: Path, name: str) -> Path:
     recipe_path = pack_dir / "recipes" / recipe_name / "recipe.yml"
     if recipe_path.exists():
         raise ValueError(f"recipe already exists: {recipe_name}")
+    tests_dir = pack_dir / "tests"
+    tests_root = tests_dir / recipe_name
+    case_dir = tests_root / "basic"
+    if case_dir.exists():
+        raise ValueError(f"recipe tests already exist: {recipe_name}")
+    if not tests_dir.exists():
+        created_tests_path = tests_dir
+    elif not tests_root.exists():
+        created_tests_path = tests_root
+    else:
+        created_tests_path = case_dir
     recipe_path.parent.mkdir(parents=True)
     recipe_path.write_text(
         "version: 1\n"
@@ -86,12 +113,15 @@ def scaffold_recipe(pack_dir: Path, name: str) -> Path:
         "#   hook: check\n",
         encoding="utf-8",
     )
+    (case_dir / "given").mkdir(parents=True)
+    (case_dir / "case.yml").write_text(_CASE_YML_TEMPLATE, encoding="utf-8")
     _append_recipe_row(pack_dir / "pyproject.toml", recipe_name, recipe_path.relative_to(pack_dir))
     try:
         lock_project(pack_dir)
     except Exception:
         _remove_manifest_row(pack_dir / "pyproject.toml", "recipes", recipe_name)
         shutil.rmtree(recipe_path.parent, ignore_errors=True)
+        shutil.rmtree(created_tests_path, ignore_errors=True)
         raise
     return recipe_path
 

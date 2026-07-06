@@ -35,7 +35,7 @@ def test_scaffold_pack_writes_parseable_manifest_with_hook_api_floors(
         "dependencies = []\n"
         "\n"
         "[dependency-groups]\n"
-        'dev = ["untaped-recipe>=0.9"]\n'
+        'dev = ["untaped-recipe>=0.10"]\n'
         "\n"
         "[tool.untaped_recipe]\n"
         'requires_hook_api = ">=0.9,<1"\n'
@@ -57,6 +57,54 @@ def test_scaffold_recipe_appends_manifest_row_and_rejects_duplicates(
     assert manifest.recipes["playbook"].path == "recipes/playbook/recipe.yml"
     assert "version: 1" in recipe_path.read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="recipe already exists"):
+        pack_scaffold.scaffold_recipe(tmp_path / "ansible", "playbook")
+
+
+def test_scaffold_recipe_creates_starter_test_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+
+    pack_scaffold.scaffold_recipe(tmp_path / "ansible", "playbook")
+
+    case_dir = tmp_path / "ansible" / "tests" / "playbook" / "basic"
+    assert (case_dir / "given").is_dir()
+    case_yml = (case_dir / "case.yml").read_text(encoding="utf-8")
+    assert case_yml.startswith("#")
+    from untaped_recipe.application.harness import load_case_spec
+
+    assert load_case_spec(case_dir).expect == "success"
+
+
+def test_scaffold_recipe_rolls_back_test_case_on_lock_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+
+    def _boom(project_root: Path) -> None:
+        raise ValueError("lock failed")
+
+    monkeypatch.setattr(pack_scaffold, "lock_project", _boom)
+    with pytest.raises(ValueError, match="lock failed"):
+        pack_scaffold.scaffold_recipe(tmp_path / "ansible", "playbook")
+
+    assert not (tmp_path / "ansible" / "tests").exists()
+    assert not (tmp_path / "ansible" / "recipes" / "playbook").exists()
+
+
+def test_scaffold_recipe_rejects_existing_starter_test_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+    (tmp_path / "ansible" / "tests" / "playbook" / "basic").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="recipe tests already exist: playbook"):
         pack_scaffold.scaffold_recipe(tmp_path / "ansible", "playbook")
 
 

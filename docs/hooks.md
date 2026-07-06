@@ -103,7 +103,7 @@ requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.9,<1"

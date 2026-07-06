@@ -42,7 +42,7 @@ name = "untaped-recipe-ansible"
 version = "0.1.0"
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.9,<1"
@@ -182,6 +182,7 @@ untaped-recipe add <path|git-url> [--rev REV] [--name NAME] [--force]
 untaped-recipe list [--packs|--hooks]
 untaped-recipe show <pack|recipe-ref|hook-ref>
 untaped-recipe check [pack|recipe-ref|path]
+untaped-recipe test [pack|path|pack/recipe] [--update]
 untaped-recipe remove <pack>
 untaped-recipe edit <pack|recipe-ref|hook-ref>
 untaped-recipe hook run <hook-ref>
@@ -197,6 +198,8 @@ ambiguity errors, `check`, and `remove`.
 `list --hooks` shows hook refs. `show` renders structured pack, recipe, or hook
 detail. `check` is static preflight; without a ref it validates the whole
 library and `packs.toml`, and with a ref it validates one pack or recipe.
+`test` runs golden-fixture cases packs ship under `tests/`; `--update`
+regenerates goldens for an explicit pack or recipe.
 `remove <pack>` is destructive because library packs are editable in place; it
 requires confirmation or `--yes`. `backup show` and `backup restore` accept
 full ids, unambiguous prefixes, or `latest`; restore previews and confirms like

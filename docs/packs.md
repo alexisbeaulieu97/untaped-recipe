@@ -28,7 +28,7 @@ requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.9,<1"
@@ -80,6 +80,8 @@ untaped-recipe show ansible/add_play_collections
 untaped-recipe check
 untaped-recipe check ansible
 untaped-recipe check ansible/playbook-migration
+untaped-recipe test ansible
+untaped-recipe test ansible/playbook-migration --update
 untaped-recipe edit ansible/add_play_collections
 untaped-recipe remove ansible --yes
 ```
@@ -120,6 +122,86 @@ untaped-recipe new hook ./some-local-pack/probe
 ```
 
 This targets `./some-local-pack` and creates hook `probe`.
+
+## Testing Packs
+
+Packs can ship golden-fixture cases under `tests/<recipe>/<case>/`. The `test`
+command mirrors `check`'s grammar:
+
+```bash
+untaped-recipe test
+untaped-recipe test ansible
+untaped-recipe test ansible/playbook-migration
+untaped-recipe test ./ansible
+```
+
+Each case has one fixture target directory:
+
+```text
+tests/
+└── playbook-migration/
+    └── basic/
+        ├── case.yml
+        ├── given/
+        │   └── site.yml
+        └── expected/
+            └── site.yml
+```
+
+`given/` is copied to a temporary target named after the case before planning.
+The original fixtures and pack are never written by a normal test run.
+`expected/` is the full expected target tree after planning. Extra, missing,
+and changed files all fail. If `expected/` is omitted, the case asserts that
+the recipe plans no changes.
+
+`case.yml` is optional and data-only. Every field is optional:
+
+```yaml
+inputs:
+  owner: platform-team
+expect: success
+error_contains: "..."
+verdict:
+  status: warn
+  message_contains: "tabs"
+```
+
+`expect: error` requires `error_contains` and forbids `expected/`.
+`error_contains` is forbidden for success cases. `verdict.status` asserts the
+worst produced validate-hook verdict (`pass`, `warn`, or `fail`), and
+`verdict.message_contains` asserts that at least one produced verdict message
+contains the substring. There is no control flow or assertion DSL in `case.yml`;
+hook-level logic belongs in pytest.
+
+`--update` regenerates `expected/` from the current plan and deletes it when
+the plan is empty. It requires an explicit pack or recipe argument and rejects
+`expect: error` cases:
+
+```bash
+untaped-recipe test ansible/playbook-migration --update
+```
+
+`test` emits one `recipe.test` row per case with `pack`, `recipe`, `case`,
+`status`, and `detail`. Mismatched files also render unified diffs on stderr,
+followed by a summary:
+
+```json
+[{"pack":"ansible","recipe":"playbook-migration","case":"basic","status":"pass","detail":""}]
+```
+
+```text
+Recipe tests: 1 passed, 0 failed, 0 errored
+```
+
+An explicitly named pack or recipe with no cases emits an error row
+`no test cases found` and exits 1. Bare `test` reports packs without `tests/`
+on stderr but does not fail only for that. `check` fails a pack whose `tests/`
+contains a directory that names no manifest recipe; pack-scoped `test` also
+reports those orphaned directories as error rows.
+
+`new recipe` scaffolds `tests/<recipe>/basic/` with an empty `given/` and a
+fully commented `case.yml`, so the initial case passes as "no changes" until
+you add fixtures and run `test <pack>/<recipe> --update`.
 
 ## Trust
 

@@ -159,7 +159,7 @@ plain directories.
   verdicts.
 - Pack hooks declare `[tool.untaped_recipe].requires_hook_api = ">=0.9,<1"` to
   fail fast when the installed CLI's helper API is incompatible. The scaffold
-  adds this marker and the `untaped-recipe>=0.9` dev dependency automatically.
+  adds this marker and the `untaped-recipe>=0.10` dev dependency automatically.
 - Hook scaffolding refreshes `uv.lock`, so it needs package-index access or a
   configured uv source for `untaped-recipe`.
 - Do not add `untaped-recipe` to a pack's runtime dependencies. The

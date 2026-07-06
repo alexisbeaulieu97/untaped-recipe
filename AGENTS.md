@@ -154,7 +154,7 @@ name = "untaped-recipe-ansible"
 version = "0.1.0"
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.9,<1"

@@ -26,7 +26,7 @@ requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
 requires_hook_api = ">=0.9,<1"
@@ -68,7 +68,7 @@ code or hook-specific dependencies should ship with the recipe.
 
 Recipe YAML is behavior-only. It contains `version`, optional `description`,
 optional `inputs`, and `steps`; `name:` is rejected. The recipe file schema
-remains `version: 1` in 0.9.0.
+remains `version: 1`.
 
 See [packs.md](./packs.md) for pack identity, installation, and sharing.
 

@@ -62,7 +62,7 @@ _CASE_YML_TEMPLATE = """\
 """
 
 
-def scaffold_pack(dest: Path, name: str) -> Path:
+def scaffold_pack(dest: Path, name: str, *, lock: bool = True) -> Path:
     """Create a new uv recipe pack project at ``dest``."""
     pack_name = safe_library_name(name, field="pack")
     if dest.exists():
@@ -87,19 +87,20 @@ def scaffold_pack(dest: Path, name: str) -> Path:
     except Exception:
         shutil.rmtree(dest, ignore_errors=True)
         raise
-    try:
-        lock_project(dest)
-    except Exception as exc:
-        raise _lock_error(
-            created_label="recipe pack",
-            created_path=dest,
-            project_root=dest,
-            cause=exc,
-        ) from exc
+    if lock:
+        try:
+            lock_project(dest)
+        except Exception as exc:
+            raise _lock_error(
+                created_label="recipe pack",
+                created_path=dest,
+                project_root=dest,
+                cause=exc,
+            ) from exc
     return dest
 
 
-def scaffold_recipe(pack_dir: Path, name: str) -> Path:
+def scaffold_recipe(pack_dir: Path, name: str, *, lock: bool = True) -> Path:
     """Add a generated recipe plus a starter golden case to a pack."""
     recipe_name = safe_library_name(name, field="recipe")
     manifest = PackManifest.from_pyproject(pack_dir)
@@ -144,15 +145,16 @@ def scaffold_recipe(pack_dir: Path, name: str) -> Path:
         shutil.rmtree(recipe_path.parent, ignore_errors=True)
         shutil.rmtree(created_tests_path, ignore_errors=True)
         raise
-    try:
-        lock_project(pack_dir)
-    except Exception as exc:
-        raise _lock_error(
-            created_label="recipe",
-            created_path=recipe_path,
-            project_root=pack_dir,
-            cause=exc,
-        ) from exc
+    if lock:
+        try:
+            lock_project(pack_dir)
+        except Exception as exc:
+            raise _lock_error(
+                created_label="recipe",
+                created_path=recipe_path,
+                project_root=pack_dir,
+                cause=exc,
+            ) from exc
     return recipe_path
 
 
@@ -161,6 +163,7 @@ def scaffold_hook(
     name: str,
     *,
     kind: HookKind = "transform",
+    lock: bool = True,
 ) -> Path:
     """Add a hook module stub to an existing pack manifest."""
     hook_name = normalize_hook_name(name)
@@ -183,15 +186,16 @@ def scaffold_hook(
         _remove_manifest_row(pack_dir / "pyproject.toml", "hooks", hook_name)
         module_path.unlink(missing_ok=True)
         raise
-    try:
-        lock_project(pack_dir)
-    except Exception as exc:
-        raise _lock_error(
-            created_label="hook module",
-            created_path=module_path,
-            project_root=pack_dir,
-            cause=exc,
-        ) from exc
+    if lock:
+        try:
+            lock_project(pack_dir)
+        except Exception as exc:
+            raise _lock_error(
+                created_label="hook module",
+                created_path=module_path,
+                project_root=pack_dir,
+                cause=exc,
+            ) from exc
     return module_path
 
 

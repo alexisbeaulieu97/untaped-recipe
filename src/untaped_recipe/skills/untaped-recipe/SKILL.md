@@ -33,10 +33,10 @@ plain directories.
 - Backups are created by default; use `--no-backup` only when the target tree is already protected.
 - `untaped-recipe backup list|show|restore` manages backup bundles; `show` and
   `restore` accept full ids, unambiguous prefixes, or `latest`.
-- `untaped-recipe new pack <name>` scaffolds a pack.
-- `untaped-recipe new recipe <pack>/<recipe>` scaffolds a recipe and starter
+- `untaped-recipe new pack <name> [--no-lock]` scaffolds a pack.
+- `untaped-recipe new recipe <pack>/<recipe> [--no-lock]` scaffolds a recipe and starter
   golden case inside a pack.
-- `untaped-recipe new hook <pack>/<hook>` scaffolds a hook inside a pack.
+- `untaped-recipe new hook <pack>/<hook> [--no-lock]` scaffolds a hook inside a pack.
 - `untaped-recipe test [pack|path|pack/recipe]` runs golden-fixture cases
   under `tests/`; use `--update` with an explicit pack or recipe to regenerate
   `expected/`.
@@ -120,6 +120,8 @@ plain directories.
   `new hook <pack>/<hook>` to scaffold authoring projects. For local explicit
   paths, `new hook ./some-local-pack/probe` targets `./some-local-pack` and
   creates `probe`; bare multi-segment refs must be exactly `<pack>/<name>`.
+  Pass `--no-lock` only when the package index is unavailable; it skips
+  `uv.lock` creation/refresh, exits successfully, and prints a stderr note.
 - Pack test cases live at `tests/<recipe>/<case>/`. `given/` is the single
   fixture target directory; `expected/` is the full expected tree after the
   plan, and omitting `expected/` asserts no planned changes. Optional
@@ -159,9 +161,16 @@ plain directories.
   verdicts.
 - Pack hooks declare `[tool.untaped_recipe].requires_hook_api = ">=0.9,<1"` to
   fail fast when the installed CLI's helper API is incompatible. The scaffold
-  adds this marker and the `untaped-recipe>=0.10` dev dependency automatically.
+  adds this marker and the `untaped-recipe>=0.9` dev dependency automatically.
+  The dev floor tracks the hook API contract for editor type discovery, not
+  each CLI release.
 - Hook scaffolding refreshes `uv.lock`, so it needs package-index access or a
-  configured uv source for `untaped-recipe`.
+  configured uv source for `untaped-recipe`. If `uv lock` fails after files are
+  written, the scaffolded pack, recipe, hook module, tests, and manifest rows
+  stay in place; fix the index or add a package-specific `[tool.uv.sources]`
+  override, then run `uv lock` in the pack. A lagging corporate mirror can use
+  `[tool.uv.sources]` to route only `untaped-recipe` to an approved fallback
+  index.
 - Do not add `untaped-recipe` to a pack's runtime dependencies. The
   installed CLI owns the worker and helper implementation, and hook workers run
   with `uv run --locked --no-dev`; packages imported by hook code at runtime

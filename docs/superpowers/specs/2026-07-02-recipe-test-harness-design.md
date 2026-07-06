@@ -1,6 +1,7 @@
 # Recipe Test Harness — Design
 
-Date: 2026-07-02
+Date: 2026-07-02 (amended 2026-07-03 while writing the implementation plan against
+the landed 0.9.0 code; amendments are marked inline and listed under §Amendments)
 Status: approved (brainstormed and locked with Alexis)
 Target release: 0.10.0 (the pack-unification spec's Wave 2, expanded here into a full
 design).
@@ -45,14 +46,12 @@ check machinery so `check` catches orphaned tests after a recipe rename).
 
 ### `case.yml` schema
 
-Every field optional; an absent `case.yml` means: no inputs, every file in `given/`
-is a target, expect success, comparison driven by `expected/` presence as usual.
+Every field optional; an absent `case.yml` means: no inputs, expect success,
+comparison driven by `expected/` presence as usual.
 
 ```yaml
 inputs:                      # recipe inputs, same names/types apply accepts
   owner: "platform-team"
-targets:                     # paths relative to given/; default = every file in given/
-  - src/playbook.yml
 expect: success              # success (default) | error
 error_contains: "..."        # required iff expect: error; forbidden otherwise
 verdict:                     # validate expectations (optional)
@@ -60,9 +59,13 @@ verdict:                     # validate expectations (optional)
   message_contains: "..."    # substring that must appear in at least one verdict message
 ```
 
-- `targets` defaulting to every file under `given/` keeps single-file cases
-  zero-config while letting fixture trees carry support files (data a hook reads,
-  sibling configs) that are not themselves targets.
+- **`given/` is the single target directory** (amended 2026-07-03; the original
+  draft had a `targets:` list of file paths, which contradicts the engine: an apply
+  target is a *directory*, and which files change is the recipe's decision — its
+  steps — not the case's). The harness plans against a temporary copy of `given/`
+  named after the case (so `from:` expressions over `target.name` see the case
+  name). Support files hooks read are simply files in `given/` the recipe does not
+  touch; full-tree comparison still proves they were left alone.
 - `expect: error` cases pass iff planning raises and the error message contains
   `error_contains`. Requiring the substring is deliberate: a bare "it failed"
   assertion silently keeps passing when the failure changes cause (a typo'd fixture
@@ -71,6 +74,8 @@ verdict:                     # validate expectations (optional)
   `Verdict.message`): `status` is the expected worst-of across all verdicts in the
   case, `message_contains` a single substring match. When `verdict` is omitted,
   verdicts influence the case only through their normal effect on planning.
+  A `verdict` block on a case whose plan produced *no* verdicts fails the case
+  ("no verdicts produced") rather than passing vacuously (amended 2026-07-03).
 
 ## Execution semantics
 
@@ -107,19 +112,27 @@ verdict:                     # validate expectations (optional)
 - `--update` regenerates `expected/` from the current plan (creating it when absent,
   deleting it when the plan is empty) and REQUIRES an explicit pack or recipe
   argument — there is no library-wide golden regeneration in one keystroke.
-  `--update` on an `expect: error` case is an error.
+  `--update` on an `expect: error` case is an error. Cases whose golden already
+  matches are reported `pass` and not rewritten; rewritten cases are reported
+  `updated`; exit code fails only on `error` rows (amended 2026-07-03).
 - **Output:** one `recipe.test` record per case on stdout — pack, recipe, case,
-  status (`pass` | `fail` | `error`), and a short mismatch summary — plus a stderr
+  status (`pass` | `fail` | `error`, plus `updated` in `--update` mode; amended
+  2026-07-06 to match amendment 5), and a short mismatch summary — plus a stderr
   summary line through `UiContext`. Failed comparisons render a unified diff per
   mismatched file on stderr, reusing the existing diff helper (`infrastructure/
   diff.py`, or its SDK successor if the recipe re-pin lands first — whichever exists
   when the plan is written).
 - **Exit codes:** 0 when every discovered case passes, 1 otherwise (including "no
-  cases found" for an explicitly named recipe — naming a recipe with no tests is a
-  failure, not a silent pass; the bare library-wide `test` reports packs without
-  tests but does not fail on them).
+  cases found" for an explicitly named recipe *or pack* — naming a target with no
+  tests is a failure, not a silent pass; the bare library-wide `test` reports packs
+  without tests on stderr but does not fail on them). (Pack case amended
+  2026-07-03: the original text covered only recipes.)
+- `test` also emits one error row per orphaned `tests/<name>/` directory in the
+  selected pack(s) — `check` remains the canonical guard, but `test` silently
+  skipping cases that exist on disk would misreport coverage (amended 2026-07-03).
 - `recipe.test` joins the kept emit kinds from the pack-unification spec's
-  consolidation table.
+  consolidation table. Row fields: `pack`, `recipe`, `case`, `status`, `detail`
+  (short mismatch summary; empty on pass).
 
 ## Scaffolding
 
@@ -146,3 +159,36 @@ verdict:                     # validate expectations (optional)
 0.10.0 (MINOR on top of 0.9.0): `test` verb, `recipe.test` emit kind, `check`
 gaining the orphaned-tests rule, and the `new recipe` scaffold addition are all
 additive. No manifest, recipe-schema, or library format changes.
+
+## Amendments (2026-07-03, while writing the implementation plan)
+
+Made against the landed 0.9.0 code (`c18c9a7`); each is marked inline above.
+
+1. **`targets:` dropped from `case.yml`.** The draft field listed *file* paths with
+   "default = every file in `given/`", but an apply target is a directory and the
+   recipe's steps — not the case — decide which files change. `given/` is the single
+   target directory; the harness plans against a temp copy named after the case.
+2. **Empty `verdict` evidence fails.** `verdict:` with zero produced verdicts fails
+   the case instead of passing vacuously.
+3. **Orphaned `tests/` dirs also surface in `test` output** as error rows (`check`
+   stays the canonical guard).
+4. **Explicitly named pack with no cases fails**, same as an explicitly named recipe.
+5. **`--update` reports `updated` vs `pass`** (already-matching goldens are not
+   rewritten) and fails only on `error` rows.
+6. **`recipe.test` row fields locked:** `pack`, `recipe`, `case`, `status`, `detail`.
+7. **`test .` / `test ..` resolve as filesystem paths (2026-07-06).** `test`'s
+   argument grammar uses a pack-path predicate (exact `.`/`..`, or `/`, `./`,
+   `../`, `~` prefixes); the shared recipe-ref grammar is NOT widened — bare
+   `a/b` stays a library ref everywhere (0.9 locked decision).
+8. **Orphan rows are pack-scope only (2026-07-06).** Library-wide and pack-scoped
+   `test` runs emit one error row per orphaned `tests/<name>/` dir; a
+   recipe-scoped `test <pack>/<recipe>` run does not — it is the focused dev
+   loop, and `check` plus pack-scoped `test` remain the guards. (Clarifies
+   amendment 3's "selected pack(s)".)
+9. **Planning failures are per-case regardless of exception type (2026-07-06).**
+   SDK-typed `ConfigError` (e.g. unknown `case.yml` inputs fails input
+   validation before target planning) is handled like `ValueError`: it produces
+   that case's error row or matches `expect: error`, and never aborts the run.
+10. **Status enum locked (2026-07-06):** `pass | fail | error | updated`;
+    `updated` is emitted only by `--update` runs (output section corrected in
+    place).

@@ -34,8 +34,12 @@ plain directories.
 - `untaped-recipe backup list|show|restore` manages backup bundles; `show` and
   `restore` accept full ids, unambiguous prefixes, or `latest`.
 - `untaped-recipe new pack <name>` scaffolds a pack.
-- `untaped-recipe new recipe <pack>/<recipe>` scaffolds a recipe inside a pack.
+- `untaped-recipe new recipe <pack>/<recipe>` scaffolds a recipe and starter
+  golden case inside a pack.
 - `untaped-recipe new hook <pack>/<hook>` scaffolds a hook inside a pack.
+- `untaped-recipe test [pack|path|pack/recipe]` runs golden-fixture cases
+  under `tests/`; use `--update` with an explicit pack or recipe to regenerate
+  `expected/`.
 - `untaped-recipe add <path|git-url>` installs a pack after previewing its
   recipes and hooks; use `--yes` for non-interactive installs, `--name` for an
   installed-key override, `--rev` for git sources, and `--force` to replace.
@@ -116,6 +120,18 @@ plain directories.
   `new hook <pack>/<hook>` to scaffold authoring projects. For local explicit
   paths, `new hook ./some-local-pack/probe` targets `./some-local-pack` and
   creates `probe`; bare multi-segment refs must be exactly `<pack>/<name>`.
+- Pack test cases live at `tests/<recipe>/<case>/`. `given/` is the single
+  fixture target directory; `expected/` is the full expected tree after the
+  plan, and omitting `expected/` asserts no planned changes. Optional
+  `case.yml` supports only data fields: `inputs`, `expect: success|error`,
+  `error_contains`, and `verdict` (`status` worst-of plus
+  `message_contains`).
+- `test --update` regenerates `expected/`, deletes it when the plan is empty,
+  requires an explicit pack or recipe argument, and rejects `expect: error`
+  cases. A normal test run never writes pack fixtures.
+- To author a pack test: scaffold the recipe, fill `tests/<recipe>/basic/given/`,
+  run `untaped-recipe test <pack>/<recipe> --update`, review the generated
+  `expected/`, then commit the fixtures with the recipe.
 - V1 step types are `validate`, `transform`, `template`, `copy`, and
   `remove`.
 - Template steps are strict by default. Unknown bare names and non-bare
@@ -173,9 +189,9 @@ plain directories.
 - Prefer `--format json` for machine-readable summaries and `--format pipe`
   when chaining into other untaped tools.
 - Use `--columns` to narrow list/output rows. `apply` emits `recipe.outcome`
-  rows; `hook run` emits `recipe.hook_run`; library commands emit
-  `recipe.recipe`, `recipe.hook`, `recipe.pack`, `recipe.check`, and
-  `recipe.backup`.
+  rows; `test` emits `recipe.test`; `hook run` emits `recipe.hook_run`;
+  library commands emit `recipe.recipe`, `recipe.hook`, `recipe.pack`,
+  `recipe.check`, and `recipe.backup`.
 - Optional transform skips appear in the `warnings` field of `recipe.outcome`
   rows as a semicolon-delimited string.
 - Apply rows and backup metadata use canonical recipe refs such as

@@ -57,20 +57,10 @@ class _FakeExecutor:
 
 
 _COPY_RECIPE = (
-    "version: 1\n"
-    "steps:\n"
-    "  - type: copy\n"
-    "    source: assets/payload.txt\n"
-    "    dest: out.txt\n"
+    "version: 1\nsteps:\n  - type: copy\n    source: assets/payload.txt\n    dest: out.txt\n"
 )
 
-_TRANSFORM_RECIPE = (
-    "version: 1\n"
-    "steps:\n"
-    "  - type: transform\n"
-    "    file: note.txt\n"
-    "    hook: shout\n"
-)
+_TRANSFORM_RECIPE = "version: 1\nsteps:\n  - type: transform\n    file: note.txt\n    hook: shout\n"
 
 _VALIDATE_RECIPE = "version: 1\nsteps:\n  - type: validate\n    hook: probe\n"
 
@@ -98,9 +88,7 @@ def _write_pack(
         "dependencies = []\n\n"
         "[tool.untaped_recipe]\n"
         'requires_hook_api = ">=0.9,<1"\n\n'
-        "[tool.untaped_recipe.recipes]\n"
-        + "\n".join(rows)
-        + "\n",
+        "[tool.untaped_recipe.recipes]\n" + "\n".join(rows) + "\n",
         encoding="utf-8",
     )
     (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
@@ -151,9 +139,7 @@ def _write_target_name_pack(root: Path) -> InstalledPack:
 
 
 def _case(pack: InstalledPack, recipe: str, case: str) -> DiscoveredCase:
-    return next(
-        found for found in discover_cases(pack, recipe=recipe) if found.case_name == case
-    )
+    return next(found for found in discover_cases(pack, recipe=recipe) if found.case_name == case)
 
 
 def test_discover_cases_lists_cases_per_manifest_recipe_sorted(tmp_path: Path) -> None:

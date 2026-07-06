@@ -99,8 +99,8 @@ Two consequences are load-bearing:
 src/untaped_recipe/
 ├── __main__.py          # SDK ToolSpec and console-script entry point
 ├── settings.py          # recipe settings section
-├── cli/                 # Cyclopts commands, output rows, and preview rendering
-├── application/         # apply orchestration, hook-run use cases, target parsing, ports
+├── cli/                 # Cyclopts commands, output rows, preview rendering, test_commands.py
+├── application/         # apply/check/golden-test harness use cases, hook run, ports
 ├── domain/              # schema, verdicts, file changes, plans
 ├── infrastructure/      # libraries, hook resolution/execution, backups, diffs, YAML
 ├── builtins/hooks/      # packaged trusted transform hooks
@@ -252,6 +252,34 @@ inputs only. Sensitive input values are redacted in rows, warnings/errors, and
 backup metadata; file-level previews and diffs are suppressed for targets with
 sensitive inputs. Real values still reach templates and hooks. Never copy the
 full incoming pipe record into rows or backups.
+
+## Testing Packs
+
+`test [pack|path|pack/recipe]` mirrors `check`'s grammar and runs golden-fixture
+cases stored inside packs at `tests/<recipe>/<case>/`:
+
+- `given/` is the single fixture target directory; the plan runs against a temp
+  copy named after the case. Fixtures and packs are never written by a test run.
+- `expected/` is the full expected tree after the plan; extra, missing, and
+  changed files all fail. Omitting it asserts the plan makes no changes.
+- `case.yml` is optional data-only config: `inputs`, `expect: success|error`,
+  `error_contains` (required with `expect: error`), and `verdict` (`status` is
+  the expected worst produced verdict; `message_contains` matches any verdict
+  message). No assertion language beyond this exists or will exist; logic in
+  tests is pytest's job at the hook level.
+- Planning is the only execution: the harness runs the same planner as `apply`
+  with the normal hook resolution order. `--update` regenerates `expected/`,
+  deleting it when the plan is empty, requires an explicit pack or recipe
+  argument, and rejects `expect: error` cases.
+- One `recipe.test` record per case (`pack`, `recipe`, `case`, `status`,
+  `detail`) is emitted on stdout. Unified diffs per mismatched file and a
+  summary line go to stderr. Exit 1 on any fail/error, including "no test cases
+  found" for an explicitly named pack or recipe; bare `test` reports packs
+  without tests but does not fail on them.
+- `check` fails a pack whose `tests/` contains a directory naming no manifest
+  recipe; `test` also reports such directories as error rows.
+- `new recipe` scaffolds `tests/<recipe>/basic/` with an empty `given/` and a
+  fully commented `case.yml`.
 
 ## Hook Contracts
 

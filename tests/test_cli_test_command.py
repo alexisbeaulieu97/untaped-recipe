@@ -15,11 +15,7 @@ from untaped_recipe.infrastructure.pack_store import PackLibrary
 pytestmark = pytest.mark.usefixtures("isolate_config")
 
 _COPY_RECIPE = (
-    "version: 1\n"
-    "steps:\n"
-    "  - type: copy\n"
-    "    source: assets/payload.txt\n"
-    "    dest: out.txt\n"
+    "version: 1\nsteps:\n  - type: copy\n    source: assets/payload.txt\n    dest: out.txt\n"
 )
 
 
@@ -200,9 +196,7 @@ def test_update_rejects_expect_error_cases(tmp_path: Path) -> None:
     _write_pack(source, manifest_name="demo")
     case_dir = source / "tests" / "emit" / "basic"
     (case_dir / "given").mkdir(parents=True)
-    (case_dir / "case.yml").write_text(
-        'expect: error\nerror_contains: "boom"\n', encoding="utf-8"
-    )
+    (case_dir / "case.yml").write_text('expect: error\nerror_contains: "boom"\n', encoding="utf-8")
     _install(source)
 
     result = CliInvoker().invoke(app, ["test", "demo", "--update", "--format", "json"])

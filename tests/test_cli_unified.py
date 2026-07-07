@@ -159,6 +159,77 @@ def test_show_builtin_hook_renders_detail(tmp_path: Path) -> None:
     assert "transform" in detail["exports"]
 
 
+def test_check_builtin_hook_renders_pass_row(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["check", "yaml_edit", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows == [
+        {
+            "recipe": "yaml_edit",
+            "status": "pass",
+            "path": rows[0]["path"],
+            "error": "",
+        }
+    ]
+    assert rows[0]["path"].endswith("yaml_edit.py")
+
+
+def test_check_without_ref_does_not_enumerate_builtins(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["check", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []
+    assert "no packs installed" in result.stderr
+
+
+def test_check_prefers_library_pack_over_builtin(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="yaml_edit", recipes={"playbook": "recipes/playbook.yml"})
+    _install_pack(source, name="yaml_edit")
+
+    result = CliInvoker().invoke(app, ["check", "yaml_edit", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows == [
+        {
+            "pack": "yaml_edit",
+            "status": "pass",
+            "path": str(library_root() / "packs" / "yaml_edit"),
+            "recipes": 1,
+            "hooks": 0,
+            "error": "",
+        }
+    ]
+
+
+def test_check_prefers_library_recipe_over_builtin(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="shadow", recipes={"yaml_edit": "recipes/yaml.yml"})
+    _install_pack(source)
+
+    result = CliInvoker().invoke(app, ["check", "yaml_edit", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows == [
+        {
+            "recipe": "shadow/yaml_edit",
+            "status": "pass",
+            "path": str(library_root() / "packs" / "shadow" / "recipes/yaml.yml"),
+            "error": "",
+        }
+    ]
+
+
+def test_check_unknown_bare_ref_keeps_recipe_miss(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["check", "not_a_builtin", "--format", "json"])
+
+    assert result.exit_code == 1
+    assert "recipe not found: not_a_builtin" in result.stderr
+
+
 def test_show_prefers_library_hook_over_builtin(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_pack(

@@ -12,6 +12,7 @@ from untaped_recipe.application.resolution import (
     is_explicit_recipe_path,
     resolve_explicit_recipe,
 )
+from untaped_recipe.builtins.registry import BUILTIN_HOOKS
 from untaped_recipe.domain.hook_project import (
     read_hook_metadata,
     validate_hook_modules,
@@ -71,7 +72,14 @@ def check_ref(root: Path, ref_text: str) -> dict[str, object]:
     if pack is not None:
         return _check_pack(root, pack, locks)
     ref = parse_ref(ref_text)
-    pack, recipe = library.find_recipe(ref)
+    try:
+        pack, recipe = library.find_recipe(ref)
+    except ValueError as exc:
+        if str(exc).startswith("recipe not found") and "/" not in ref_text:
+            builtin = BUILTIN_HOOKS.get(ref_text)
+            if builtin is not None:
+                return _builtin_check_row(ref_text, Path(builtin.module.__file__ or ""))
+        raise
     return _check_recipe(root, pack.root / recipe.path, f"{pack.name}/{ref.name}", pack.root, locks)
 
 
@@ -97,6 +105,15 @@ def _check_reconcile_problem(root: Path, problem: str) -> dict[str, object]:
 def _quoted_name(message: str) -> str:
     parts = message.split("'", maxsplit=2)
     return parts[1] if len(parts) == 3 else ""
+
+
+def _builtin_check_row(name: str, path: Path) -> dict[str, object]:
+    return {
+        "recipe": name,
+        "status": "pass",
+        "path": str(path),
+        "error": "",
+    }
 
 
 def _pack_check_row(

@@ -164,6 +164,75 @@ def test_add_force_discard_edits_warns_in_preview_and_overwrites(
     assert result.exit_code == 0, result.output
 
 
+def test_remove_warns_on_local_edits_before_confirm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert result.exit_code == 0, result.output
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
+
+    result = CliInvoker().invoke(app, ["remove", "demo"])
+
+    assert result.exit_code == 0, result.output
+    assert "About to remove 1 pack(s):\n  - demo\n" in result.stderr
+    assert (
+        "Warning: pack 'demo' has local edits in the library (via edit or new "
+        "recipe/hook); removing discards them."
+    ) in result.stderr
+    assert (library_root() / "packs" / "demo").exists()
+
+
+def test_remove_clean_and_legacy_rows_keep_generic_preview_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert result.exit_code == 0, result.output
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
+
+    clean = CliInvoker().invoke(app, ["remove", "demo"])
+
+    index_path = library_root() / "packs.toml"
+    index_path.write_text(
+        index_path.read_text(encoding="utf-8").replace("content_hash", "ignored_field"),
+        encoding="utf-8",
+    )
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+    legacy = CliInvoker().invoke(app, ["remove", "demo"])
+
+    assert clean.exit_code == 0, clean.output
+    assert legacy.exit_code == 0, legacy.output
+    assert clean.stderr == "About to remove 1 pack(s):\n  - demo\n"
+    assert legacy.stderr == "About to remove 1 pack(s):\n  - demo\n"
+
+
+def test_remove_yes_skips_local_edits_warning(
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert result.exit_code == 0, result.output
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+
+    result = CliInvoker().invoke(app, ["remove", "demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "local edits" not in result.stderr
+    assert not (library_root() / "packs" / "demo").exists()
+
+
 def test_apply_yes_writes_and_emits_json_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -86,6 +86,36 @@ def _write_hook_project(
     (root / "uv.lock").write_text("version = 1\n")
 
 
+def test_pack_add_ignores_dev_and_build_junk(tmp_path: Path) -> None:
+    library_root = tmp_path / "library"
+    pack_source = tmp_path / "pack-source"
+    _write_hook_project(pack_source, hook_name="pick")
+    (pack_source / ".venv" / "bin").mkdir(parents=True)
+    (pack_source / ".venv" / "bin" / "python").write_text("")
+    (pack_source / "__pycache__").mkdir()
+    (pack_source / "__pycache__" / "junk.pyc").write_text("")
+    (pack_source / "dist").mkdir()
+    (pack_source / "dist" / "pack-0.1.0.tar.gz").write_text("")
+    (pack_source / "pack.egg-info").mkdir()
+    (pack_source / "pack.egg-info" / "PKG-INFO").write_text("")
+
+    PackLibrary(library_root=library_root).add(
+        pack_source,
+        source=str(pack_source),
+        rev=None,
+        name="clean",
+        force=False,
+    )
+
+    installed = library_root / "packs" / "clean"
+    assert (installed / "pyproject.toml").is_file()
+    assert (installed / "uv.lock").is_file()
+    assert not (installed / ".venv").exists()
+    assert not (installed / "__pycache__").exists()
+    assert not (installed / "dist").exists()
+    assert not (installed / "pack.egg-info").exists()
+
+
 class _UnusedHooks:
     def validate(self, *args: object, **kwargs: object) -> object:
         raise AssertionError("hook executor should not be used")

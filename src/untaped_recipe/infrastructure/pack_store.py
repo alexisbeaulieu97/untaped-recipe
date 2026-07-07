@@ -23,6 +23,21 @@ from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 _GIT_URL_PREFIXES = ("https://", "git@", "ssh://")
 
+# Dev/build junk excluded from library installs; pack_content_hash prunes the
+# same names so the recorded install hash and the copied tree always agree.
+PACK_COPY_IGNORE = (
+    ".git",
+    ".venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".uv-cache",
+    "*.egg-info",
+)
+
 
 @dataclass(frozen=True)
 class InstalledPack:
@@ -96,7 +111,7 @@ class PackLibrary:
         self.packs_dir.mkdir(parents=True, exist_ok=True)
         if force and dest.exists():
             shutil.rmtree(dest)
-        shutil.copytree(source_dir, dest, ignore=shutil.ignore_patterns(".git"))
+        shutil.copytree(source_dir, dest, ignore=shutil.ignore_patterns(*PACK_COPY_IGNORE))
         index = self._read_index()
         index[installed_name] = _IndexEntry(
             source=source,

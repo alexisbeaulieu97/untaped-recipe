@@ -31,7 +31,10 @@ def resolve_target_lines(lines: list[tuple[int, str]]) -> list[Target]:
             targets.append(Target(path=Path(text)))
             continue
         if not isinstance(obj, dict):
-            raise ValueError(f"stdin line {lineno} is not a pipe record or a path: {text!r}")
+            # Bare path lines that happen to parse as JSON scalars ("2024",
+            # "true") are still paths; only JSON objects enter record parsing.
+            targets.append(Target(path=Path(text)))
+            continue
         if not is_envelope_line(obj):
             targets.append(Target(path=Path(text)))
             continue

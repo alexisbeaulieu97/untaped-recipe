@@ -37,10 +37,12 @@ from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import (
     edit_path,
+    hook_startup_notice,
     hook_timeout_seconds,
     library_root,
     load_yaml_mapping_file,
     report_config_errors,
+    settings,
 )
 from untaped_recipe.cli.detail import hook_detail, pack_detail, recipe_detail
 from untaped_recipe.cli.hook_commands import app as hook_app
@@ -133,7 +135,7 @@ def new_pack_command(
 
 @new_app.command(name="recipe")
 def new_recipe_command(
-    ref: Annotated[str, Parameter(help="<pack>/<recipe>.")],
+    ref: Annotated[str, Parameter(help="PACK/RECIPE reference.")],
     /,
     *,
     no_lock: Annotated[
@@ -152,7 +154,7 @@ def new_recipe_command(
 
 @new_app.command(name="hook")
 def new_hook_command(
-    ref: Annotated[str, Parameter(help="<pack>/<hook>.")],
+    ref: Annotated[str, Parameter(help="PACK/HOOK reference.")],
     /,
     *,
     kind: Annotated[
@@ -179,7 +181,7 @@ def _warn_no_lock(project_root: Path) -> None:
 
 @app.command(name="apply")
 def apply_command(
-    recipe_ref: Annotated[str, Parameter(help="Recipe id, pack:recipe ref, or path.")],
+    recipe_ref: Annotated[str, Parameter(help="Recipe id, pack/recipe ref, or path.")],
     dirs: Annotated[list[Path] | None, Parameter(help="Target directories.")] = None,
     *,
     recipe_id: Annotated[
@@ -292,6 +294,10 @@ def apply_command(
             recipe_ref=context.recipe_ref,
             preview_status=_preview_status(dry_run, check),
         )
+        if fmt == "table":
+            # Human view: key=value pairs instead of a dict repr. Structured
+            # formats keep the real mapping for pipe/json consumers.
+            rows = [{**row, "inputs": _inputs_cell(row["inputs"])} for row in rows]
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.outcome")
         if rendered:
             echo(rendered)
@@ -394,6 +400,11 @@ def list_command(
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind=kind)
         if rendered:
             echo(rendered)
+        if not installed:
+            ui_context(strict=False).message(
+                "info",
+                "no packs installed; scaffold one with `new pack` or install with `add`",
+            )
 
 
 @app.command(name="show")
@@ -460,6 +471,11 @@ def check_command(
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.check")
         if rendered:
             echo(rendered)
+        if ref_text is None and not rows:
+            ui_context(strict=False).message(
+                "info",
+                "no packs installed; scaffold one with `new pack` or install with `add`",
+            )
         finish(any(row["status"] == "error" for row in rows))
 
 
@@ -540,9 +556,12 @@ def _apply_context(
     inputs = _input_values(raw_vars, vars_file)
     input_from = _input_sources(raw_input_from)
     workers = clamp_parallel(max(parallel, 1), cap=32, policy="recipe planning cap")
+    ui = ui_context(strict=False)
     with UvHookWorkerPool(
         max_workers_per_project=workers,
         hook_timeout_seconds=hook_timeout_seconds,
+        startup_timeout_seconds=settings().hook_startup_timeout_seconds,
+        startup_notice=hook_startup_notice(ui),
     ) as hook_workers:
         runner = RunBulkApply(
             ApplyRecipe(
@@ -553,7 +572,6 @@ def _apply_context(
                 )
             )
         )
-        ui = ui_context(strict=False)
         with ui.progress("Planning targets") as progress:
             try:
                 plans = runner.plan(
@@ -758,7 +776,10 @@ def _outcome_rows(
         return [
             {**row, "status": preview_status} if row["status"] == "planned" else row for row in rows
         ]
-    if not execution.outcome.results and not execution.failed:
+    if execution.cancelled:
+        # Declined confirmation: nothing ran, so rows honestly stay "planned".
+        # (An executed run where every target was already conformant is NOT
+        # cancelled and falls through to report "unchanged" per target.)
         return rows
     rendered: list[dict[str, object]] = []
     for plan, row in zip(plans, rows, strict=True):
@@ -768,7 +789,9 @@ def _outcome_rows(
         elif plan_id in execution.applied:
             rendered.append({**row, "status": "applied"})
         else:
-            rendered.append(row)
+            # Nothing to write for this target — say "unchanged", matching the
+            # summary line's vocabulary, instead of leaking planner state.
+            rendered.append({**row, "status": "unchanged"})
     return rendered
 
 
@@ -889,6 +912,12 @@ def _render_result_summary(
 def _plural(count: int, noun: str) -> str:
     suffix = "" if count == 1 else "s"
     return f"{count} {noun}{suffix}"
+
+
+def _inputs_cell(inputs: object) -> str:
+    if not isinstance(inputs, dict) or not inputs:
+        return ""
+    return ", ".join(f"{key}={value}" for key, value in inputs.items())
 
 
 def _row(plan: TargetPlan) -> dict[str, object]:

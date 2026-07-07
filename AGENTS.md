@@ -129,7 +129,11 @@ inputs.
 `RecipeSettings.library_root` defaults to `~/.untaped/untaped-recipes` and
 can be configured in the shared untaped profile under `recipe.library_root`.
 `RecipeSettings.hook_timeout_seconds` defaults to `60`; `0` disables per-hook
-request timeouts.
+request timeouts. `hook_startup_timeout_seconds` (default `300`, `0` =
+unbounded) separately bounds worker environment startup — the worker emits a
+ready handshake line after imports, and the per-hook timeout only starts
+after it. `backup_keep` and `backup_max_age_days` (both optional) are the
+retention defaults `backup prune` falls back to.
 The directory layout is:
 
 ```text

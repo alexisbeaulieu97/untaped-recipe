@@ -10,7 +10,7 @@ from types import ModuleType
 
 import pytest
 from untaped.api import build_tool_app, invalidate_settings_cache
-from untaped.testing import CliInvoker
+from untaped.testing import CliInvoker, assert_destructive_contract
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe import app
@@ -567,6 +567,34 @@ def test_apply_decline_renders_cancelled_summary_without_writing(
     assert not (target / "out.txt").exists()
     assert "Recipe apply cancelled:" in result.stderr
     assert "1 changing target not applied" in result.stderr
+
+
+def test_confirm_accept_applies_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    class _AcceptUi(_DeclineUi):
+        def confirm(self, message: str, *, default: bool = False) -> bool:
+            return True
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _AcceptUi())
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--preview", "none"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (target / "out.txt").read_text(encoding="utf-8") == "hello\n"
+    assert "Recipe apply cancelled:" not in result.stderr
 
 
 def test_apply_preview_only_modes_do_not_render_cancelled_summary(tmp_path: Path) -> None:
@@ -2864,3 +2892,374 @@ def test_backup_restore_failing_item_exits_nonzero(
 
     assert result.exit_code == 1, result.output
     assert "disk full" in result.output
+    # The restore is one staged transaction: a mid-write failure rolls back
+    # already-restored files, so both keep their pre-restore content.
+    assert first.read_text() == "one-after\n"
+    assert second.read_text() == "two-after\n"
+
+
+def test_backup_restore_flushes_bundle_in_one_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    changes = []
+    for name in ("one.txt", "two.txt", "three.txt"):
+        (target / name).write_text(f"{name}-before\n")
+        changes.append(
+            FileChange(
+                target=target,
+                relative_path=Path(name),
+                before=f"{name}-before\n",
+                after=f"{name}-after\n",
+            )
+        )
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(recipe_name="demo", inputs={}, changes=changes)
+    for name in ("one.txt", "two.txt", "three.txt"):
+        (target / name).write_text(f"{name}-after\n")
+
+    import untaped_recipe.infrastructure.backup as backup_module
+
+    calls: list[int] = []
+    original_flush = backup_module.flush_changes
+
+    def counting_flush(changes: tuple[FileChange, ...]) -> None:
+        calls.append(len(changes))
+        original_flush(changes)
+
+    monkeypatch.setattr(backup_module, "flush_changes", counting_flush)
+
+    result = CliInvoker().invoke(app, ["backup", "restore", bundle.id, "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [3]
+    for name in ("one.txt", "two.txt", "three.txt"):
+        assert (target / name).read_text() == f"{name}-before\n"
+
+
+def _seed_bundle(backups_root: Path, bundle_id: str, *, payload_bytes: int = 10) -> Path:
+    bundle_dir = backups_root / bundle_id
+    (bundle_dir / "files").mkdir(parents=True)
+    (bundle_dir / "files" / "0").write_text("x" * payload_bytes)
+    (bundle_dir / "metadata.json").write_text(
+        json.dumps({"id": bundle_id, "recipe": "demo", "inputs": {}, "files": []})
+    )
+    return bundle_dir
+
+
+def test_backup_prune_keep_prunes_oldest(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    mid = _seed_bundle(backups, "20250201T000000000000Z-bbbbbbbb")
+    new = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--keep", "2", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not old.exists()
+    assert mid.exists()
+    assert new.exists()
+    assert "20250101T000000000000Z-aaaaaaaa" in result.stdout
+    assert "pruned 1 of 3 backup(s)" in result.stderr
+    assert "reclaimed" in result.stderr
+
+
+def test_backup_prune_older_than_days(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20200101T000000000000Z-aaaaaaaa")
+    fresh = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--older-than", "30", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not old.exists()
+    assert fresh.exists()
+
+
+def test_backup_prune_union_of_keep_and_age(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    aged = _seed_bundle(backups, "20200101T000000000000Z-aaaaaaaa")
+    mid = _seed_bundle(backups, "20990201T000000000000Z-bbbbbbbb")
+    newest = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    result = CliInvoker().invoke(
+        app, ["backup", "prune", "--keep", "1", "--older-than", "30", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not aged.exists()
+    assert not mid.exists()
+    assert newest.exists()
+
+
+def test_backup_prune_uses_settings_when_flags_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    new = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+    monkeypatch.setenv("UNTAPED_RECIPE__BACKUP_KEEP", "1")
+    invalidate_settings_cache()
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not old.exists()
+    assert new.exists()
+
+
+def test_backup_prune_requires_a_policy(tmp_path: Path) -> None:
+    _seed_bundle(library_root() / "backups", "20250101T000000000000Z-aaaaaaaa")
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--yes"])
+
+    assert result.exit_code != 0
+    assert "backup prune needs --keep/--older-than" in result.output
+
+
+def test_backup_prune_conforms_to_destructive_contract(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    new = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    def assert_unchanged() -> None:
+        assert old.exists()
+        assert new.exists()
+
+    assert_destructive_contract(
+        app,
+        ["backup", "prune", "--keep", "1"],
+        assert_unchanged=assert_unchanged,
+    )
+
+
+def test_new_help_placeholders_render_meaningfully(tmp_path: Path) -> None:
+    invoker = CliInvoker()
+
+    recipe_help = invoker.invoke(app, ["new", "recipe", "--help"])
+    hook_help = invoker.invoke(app, ["new", "hook", "--help"])
+    hook_run_help = invoker.invoke(app, ["hook", "run", "--help"])
+
+    assert "PACK/RECIPE reference." in recipe_help.stdout
+    assert "PACK/HOOK reference." in hook_help.stdout
+    assert "PACK/HOOK reference." in hook_run_help.stdout
+    for result in (recipe_help, hook_help, hook_run_help):
+        assert "REF  /." not in result.stdout
+
+
+def test_apply_help_uses_slash_ref_grammar(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["apply", "--help"])
+
+    assert "pack/recipe" in result.stdout
+    assert "pack:recipe" not in result.stdout
+
+
+def test_empty_library_list_and_check_print_guidance(tmp_path: Path) -> None:
+    invoker = CliInvoker()
+
+    listed = invoker.invoke(app, ["list"])
+    packs = invoker.invoke(app, ["list", "--packs"])
+    checked = invoker.invoke(app, ["check"])
+
+    for result in (listed, packs, checked):
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        assert "no packs installed" in result.stderr
+        assert "new pack" in result.stderr
+        assert "add" in result.stderr
+
+
+def test_recipe_schema_errors_are_domain_errors_with_path(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: 1\nname: nope\nsteps: []\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+
+    assert result.exit_code != 0
+    assert str(recipe) in result.output
+    assert "name is not allowed here" in result.output
+    assert "pydantic" not in result.output
+    assert "extra_forbidden" not in result.output
+
+
+def test_recipe_yaml_parse_errors_name_the_file(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: [unclosed\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+
+    assert result.exit_code != 0
+    assert str(recipe) in result.output
+    assert "invalid recipe YAML" in result.output
+
+
+def test_apply_unchanged_targets_report_unchanged_status(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    changing = tmp_path / "changing"
+    changing.mkdir()
+    unchanged = tmp_path / "unchanged"
+    unchanged.mkdir()
+    (unchanged / "out.txt").write_text("hello\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(changing), str(unchanged), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = {row["target"]: row["status"] for row in json.loads(result.stdout)}
+    assert rows[str(changing)] == "applied"
+    assert rows[str(unchanged)] == "unchanged"
+    assert "planned" not in result.stdout
+
+
+def test_apply_table_inputs_cell_is_not_a_dict_repr(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("svc={{ service }}\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--yes",
+            "--var",
+            "service=api",
+            "--columns",
+            "inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "service=api" in result.stdout
+    assert "{'service'" not in result.stdout
+
+
+def test_backup_show_renders_files_as_lines(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yml").write_text("before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            )
+        ],
+    )
+
+    result = CliInvoker().invoke(app, ["backup", "show", bundle.id])
+
+    assert result.exit_code == 0, result.output
+    assert "files:" in result.stdout
+    assert f"  - {target}/config.yml" in result.stdout
+    assert "[{" not in result.stdout
+
+
+def test_apply_all_unchanged_run_reports_unchanged_not_planned(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "out.txt").write_text("hello\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [row["status"] for row in rows] == ["unchanged"]
+    assert "0 applied, 1 unchanged" in result.stderr
+
+
+def test_backup_restore_decline_prints_no_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yml").write_text("before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            )
+        ],
+    )
+    (target / "config.yml").write_text("after\n")
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr(
+        "untaped_recipe.cli.backup_commands.ui_context", lambda **kwargs: _DeclineUi()
+    )
+    result = CliInvoker().invoke(app, ["backup", "restore", bundle.id])
+
+    assert result.exit_code == 0, result.output
+    assert "restored" not in result.stderr
+    assert (target / "config.yml").read_text() == "after\n"
+
+
+def test_backup_prune_counts_failed_deletions_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = library_root() / "backups"
+    first = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    second = _seed_bundle(backups, "20250201T000000000000Z-bbbbbbbb")
+    _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    original_delete = BackupStore.delete
+
+    def flaky_delete(self: BackupStore, backup_id: str) -> None:
+        if backup_id.endswith("aaaaaaaa"):
+            raise ValueError(f"backup not found: {backup_id}")
+        original_delete(self, backup_id)
+
+    monkeypatch.setattr(BackupStore, "delete", flaky_delete)
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--keep", "1", "--yes"])
+
+    assert result.exit_code == 1, result.output
+    assert "error: 20250101T000000000000Z-aaaaaaaa" in result.stderr
+    assert first.exists()
+    assert not second.exists()

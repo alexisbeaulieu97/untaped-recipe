@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
-from untaped.api import ConfigError, get_config_section, report_errors
+from untaped.api import ConfigError, UiContext, get_config_section, report_errors
 
 from untaped_recipe.settings import RecipeSettings
 
@@ -44,6 +44,15 @@ def hook_timeout_seconds(override: float | None) -> float:
     if timeout < 0:
         raise ConfigError("--hook-timeout must be greater than or equal to 0")
     return timeout
+
+
+def hook_startup_notice(ui: UiContext) -> Callable[[Path], None]:
+    """Quiet-gated notice shown while a hook worker's uv environment starts."""
+
+    def notice(project_root: Path) -> None:
+        ui.message("info", f"preparing hook environment for {project_root}...")
+
+    return notice
 
 
 def edit_path(path: Path) -> None:

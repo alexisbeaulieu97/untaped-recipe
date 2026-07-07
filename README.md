@@ -23,6 +23,12 @@ untaped-recipe config set library_root ~/.untaped/untaped-recipes
 The setting is stored in the shared untaped config under the `recipe` section.
 External hook requests time out after `hook_timeout_seconds` seconds, default
 `60`; set it to `0` to disable the timeout for long-running trusted hooks.
+Hook environment startup (uv creating/syncing the pack env on first use) runs
+under its own `hook_startup_timeout_seconds` bound, default `300` (`0` =
+unbounded), with a `preparing hook environment for ...` notice on stderr — a
+cold cache or lagging package index no longer counts against the hook timeout.
+Backup retention can be configured with `backup_keep` (newest N bundles) and
+`backup_max_age_days`; `backup prune` uses them when its flags are omitted.
 
 ## Library Model
 
@@ -110,6 +116,11 @@ name = "approved-pypi"
 url = "https://pypi.org/simple"
 explicit = true
 ```
+
+uv also provisions Python interpreters from GitHub on demand. On networks that
+block it, point `UV_PYTHON_INSTALL_MIRROR` at an approved mirror of
+python-build-standalone (or preinstall a matching interpreter) so pack
+environments can build at all.
 
 Use `--no-lock` with `new pack`, `new recipe`, or `new hook` to skip the lock
 step entirely. The command exits successfully and prints a stderr note, but
@@ -211,6 +222,7 @@ untaped-recipe remove <pack>
 untaped-recipe edit <pack|recipe-ref|hook-ref>
 untaped-recipe hook run <hook-ref>
 untaped-recipe backup list|show|restore
+untaped-recipe backup prune [--keep N] [--older-than DAYS]
 ```
 
 `add` installs a pack from a local path or git URL and asks for confirmation

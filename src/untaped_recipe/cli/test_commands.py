@@ -25,7 +25,13 @@ from untaped_recipe.application.harness import (
     run_case,
     update_case,
 )
-from untaped_recipe.cli.common import hook_timeout_seconds, library_root, report_config_errors
+from untaped_recipe.cli.common import (
+    hook_startup_notice,
+    hook_timeout_seconds,
+    library_root,
+    report_config_errors,
+    settings,
+)
 from untaped_recipe.domain.pack import PackManifest, parse_ref
 from untaped_recipe.infrastructure import HookExecutor, HookResolver
 from untaped_recipe.infrastructure.diff import unified_diff
@@ -154,6 +160,8 @@ def _execute(root: Path, selection: _Selection, *, update: bool) -> list[CaseRes
     with UvHookWorkerPool(
         max_workers_per_project=1,
         hook_timeout_seconds=hook_timeout_seconds(None),
+        startup_timeout_seconds=settings().hook_startup_timeout_seconds,
+        startup_notice=hook_startup_notice(ui),
     ) as workers:
         executor = HookExecutor(
             HookResolver(library_root=root),

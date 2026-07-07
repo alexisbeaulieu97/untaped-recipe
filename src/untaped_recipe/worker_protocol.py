@@ -2,6 +2,7 @@
 
 ID = "id"
 KIND = "kind"
+READY = "ready"
 MODULE = "module"
 CONTENT = "content"
 INPUTS = "inputs"

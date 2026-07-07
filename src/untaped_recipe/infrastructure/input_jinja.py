@@ -100,6 +100,9 @@ def _jinja_env() -> _JinjaEnvironment:
             left: object,
             right: object,
         ) -> object:
+            # Belt-and-braces only: the AST allowlist rejects every operator
+            # before evaluation, so these bounds are unreachable today. They
+            # stay as defense in depth should the allowlist ever loosen.
             if operator == "*":
                 _ensure_repetition_within_bound(left, right, TemplateRuntimeError)
             if operator == "**":

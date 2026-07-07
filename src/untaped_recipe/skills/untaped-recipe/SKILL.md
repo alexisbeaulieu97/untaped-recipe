@@ -44,16 +44,28 @@ plain directories.
 - `untaped-recipe new pack <name> [--no-lock]` scaffolds a pack.
 - `untaped-recipe new recipe <pack>/<recipe> [--no-lock]` scaffolds a recipe and starter
   golden case inside a pack.
-- `untaped-recipe new hook <pack>/<hook> [--no-lock]` scaffolds a hook inside a pack.
+- `untaped-recipe new hook <pack>/<hook> [--no-lock]` scaffolds a hook inside a
+  pack plus a direct-call pytest at `tests/test_hook_<hook>.py`; new packs ship
+  `pytest` in their dev group and pytest `pythonpath = ["src"]`, so
+  `uv run --project <pack> pytest` works immediately (packs scaffolded before
+  0.13.0 don't gain these automatically).
 - `untaped-recipe test [pack|path|pack/recipe]` runs golden-fixture cases
   under `tests/`; use `--update` with an explicit pack or recipe to regenerate
   `expected/`.
 - `untaped-recipe add <path|git-url>` installs a pack after previewing its
   recipes and hooks; use `--yes` for non-interactive installs, `--name` for an
   installed-key override, `--rev` for git sources, and `--force` to replace.
+  Installs skip dev/build junk (`.git`, `.venv`, `__pycache__`, `dist`,
+  caches, egg-info) and record a content hash in `packs.toml`; `--force`
+  refuses to overwrite a library copy with local edits (made via `edit` or
+  `new recipe`/`new hook`) unless `--discard-edits` is also passed.
 - `untaped-recipe list [--packs|--hooks]`, `show <ref>`, `check [ref|path]`,
   `edit <ref>`, and `remove <pack>` operate on the unified pack library.
-  `check` with no ref validates the whole library and `packs.toml`.
+  `list --hooks` and `show` also cover built-in hooks (`yaml_edit`, marked
+  `(builtin)`); built-ins are engine-owned and cannot be edited.
+  `check` with no ref validates the whole library and `packs.toml`; for
+  hook-declaring projects it also verifies lockfile freshness via
+  `uv lock --check`, so stale locks fail at check time, not hook run time.
   `remove <pack>` is destructive and requires confirmation or `--yes`.
 - `untaped-recipe hook run <hook-ref> --target DIR` invokes one hook against
   explicit fixture context without running a full recipe or writing target

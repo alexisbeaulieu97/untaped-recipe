@@ -370,6 +370,32 @@ def test_interactive_prompts_optional_inputs_and_empty_optional_stays_unset() ->
     ]
 
 
+def test_interactive_prompting_rejects_structured_inputs() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "cols": {"type": "list", "required": True},
+            },
+        }
+    )
+    prompt = PromptRecorder({"cols": "[]"})
+
+    with pytest.raises(
+        ConfigError,
+        match=r"interactive prompting is not supported for structured input 'cols'; "
+        r"pass --var or --vars",
+    ):
+        _resolve(
+            recipe,
+            Target(path=Path("/work/acme/api")),
+            interactive=True,
+            prompt=prompt,
+        )
+
+    assert prompt.messages == []
+
+
 def test_sensitive_default_is_not_shown_or_passed_to_prompt_backend() -> None:
     recipe = Recipe.model_validate(
         {

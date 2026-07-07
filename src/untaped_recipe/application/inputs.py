@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+import yaml
 from untaped.api import ConfigError
 
 from untaped_recipe.application.targets import Target
@@ -172,6 +173,11 @@ def _resolve_one(
         if rendered is not UNRESOLVED:
             return _coerce_derived_value(spec, rendered)
     if config.interactive:
+        if spec.type in {"list", "dict"}:
+            raise ConfigError(
+                f"interactive prompting is not supported for structured input {name!r}; "
+                "pass --var or --vars"
+            )
         prompt_target = None if target is None else target.path
         prompted = _prompt_value(name, spec, prompt_target, config)
         return _UNSET if prompted is _UNSET else spec.coerce(prompted)
@@ -208,11 +214,29 @@ def _coerce_fixed_values(
 ) -> dict[str, object]:
     typed: dict[str, object] = {}
     for name, value in fixed_values.items():
+        spec = recipe.inputs[name]
         try:
-            typed[name] = recipe.inputs[name].coerce(value)
+            typed[name] = spec.coerce(_prepare_fixed_value(name, spec, value))
+        except ConfigError:
+            raise
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
     return typed
+
+
+def _prepare_fixed_value(name: str, spec: InputSpec, value: object) -> object:
+    if spec.type not in {"list", "dict"} or not isinstance(value, str):
+        return value
+    expected = "list" if spec.type == "list" else "mapping"
+    try:
+        parsed = yaml.safe_load(value)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"input {name!r} expects YAML {expected}: {exc}") from exc
+    if spec.type == "list" and not isinstance(parsed, list):
+        raise ConfigError(f"input {name!r} expects YAML list: parsed value is not a list")
+    if spec.type == "dict" and not isinstance(parsed, dict):
+        raise ConfigError(f"input {name!r} expects YAML mapping: parsed value is not a mapping")
+    return parsed
 
 
 def _compile_named_source(name: str, candidates: tuple[str, ...]) -> CompiledInputSource:

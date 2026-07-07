@@ -174,13 +174,18 @@ steps:
       - ansible.cfg
 ```
 
-Supported input types are `str`, `int`, `bool`, and `float`.
+Supported input types are `str`, `int`, `bool`, `float`, `list`, and `dict`.
+Structured inputs are shallow: `items` on a list and `values` on a dict name
+the scalar element type (`str`, `int`, `bool`, or `float`) and default to
+`str`.
 
 ## Inputs
 
 Input specs support:
 
-- `type`: one of `str`, `int`, `bool`, or `float`.
+- `type`: one of `str`, `int`, `bool`, `float`, `list`, or `dict`.
+- `items`: scalar element type for `type: list`.
+- `values`: scalar value type for `type: dict`.
 - `default`: fallback value when no fixed value, source, or prompt resolves.
 - `required`: require a value after sources and defaults.
 - `description`: prompt/help text for humans.
@@ -197,13 +202,14 @@ Omitted `scope` infers `target` when `from` is present and `global` otherwise.
 `--var`/`--vars` for fixed global values.
 
 Per-target `from` values are sandboxed strict native Jinja strings. They are
-used only to derive scalar input values, not to change recipe structure, paths,
-hook names, or template rendering. They may combine literal text,
-string/number/boolean/null constants that Jinja parses without operators, and
-field access on `target` or optional `record`. Control blocks, filters, tests,
-calls, operators, and collection literals are rejected, and no ambient Jinja
-globals are available. Negative numeric expressions like `{{ -1 }}` are not
-valid V1 sources. The context contains:
+used only to derive declared input values, not to change hook names or step
+types. Structured derivation is allowed only for inputs declared as `list` or
+`dict`; scalar-declared inputs still reject derived containers. Expressions may
+combine literal text, string/number/boolean/null constants that Jinja parses
+without operators, and field access on `target` or optional `record`. Control
+blocks, filters, tests, calls, operators, and collection literals are rejected,
+and no ambient Jinja globals are available. Negative numeric expressions like
+`{{ -1 }}` are not valid V1 sources. The context contains:
 
 - `target.path`: target path as a string.
 - `target.name`: target basename.
@@ -213,9 +219,9 @@ valid V1 sources. The context contains:
   records.
 
 Missing, undefined, or null candidate values fall through to the next
-candidate. `false`, `0`, and `""` are real values. Derived values must be
-scalar and bounded to small results; oversized or non-scalar rendered values
-are rejected.
+candidate. `false`, `0`, `""`, `[]`, and `{}` are real values. Derived values
+are bounded to small results, and nested containers are rejected by the shallow
+input shape.
 
 Input precedence for each declared input is:
 
@@ -226,10 +232,20 @@ Input precedence for each declared input is:
 5. required-input error
 
 A fixed value and source override for the same input is a usage error. Unknown
-input names in `--var`, `--vars`, or `--input-from` are rejected. When a
-default exists, interactive prompts show it and an empty answer accepts it.
-Sensitive defaults are not displayed to the prompt backend, but an empty answer
-still accepts the default.
+input names in `--var`, `--vars`, or `--input-from` are rejected. For
+structured inputs, `--var` parses the value as YAML before coercion, while
+scalar inputs keep the exact literal-string behavior:
+
+```bash
+untaped-recipe apply add-config ./repo --var 'cols=[name, owner]' --yes
+untaped-recipe apply add-config ./repo --var 'labels={team: platform}' --yes
+```
+
+`--vars` files may contain native YAML lists and mappings. Interactive
+prompting is not supported for structured inputs; pass `--var` or `--vars`.
+When a scalar default exists, interactive prompts show it and an empty answer
+accepts it. Sensitive defaults are not displayed to the prompt backend, but an
+empty answer still accepts the default.
 
 Examples:
 
@@ -245,6 +261,10 @@ inputs:
     type: str
     scope: target
     default: platform
+  collections:
+    type: list
+    items: str
+    from: "{{ record.collections }}"
   api_token:
     type: str
     scope: global
@@ -297,6 +317,34 @@ jobs:
 Under `keep`, known inputs such as `{{ owner }}` still render and unknown
 tokens such as `${{ github.ref }}` or `{{ .Values.image.tag }}` pass through
 verbatim.
+
+Path-bearing step fields also accept bare `{{ input }}` tokens, but they are
+not Jinja expressions. The engine renders these fields per target after input
+resolution, always with strict unknown-token behavior, then rechecks the
+rendered value as a confined relative path:
+
+- `template.template` and `template.dest`
+- `copy.source` and `copy.dest`
+- `transform.file`, `transform.files`, `transform.globs`, and
+  `transform.exclude`
+- `remove.file`, `remove.files`, `remove.globs`, and `remove.exclude`
+
+`unknown_tokens: keep` only affects template file bodies, never path fields.
+Sensitive inputs cannot appear in path fields because paths are displayed and
+stored in plans. Structured inputs cannot appear in path fields because hooks
+receive lists and mappings natively. To use target or pipe-record context in a
+path, first derive a scalar input with `from`, then render that input:
+
+```yaml
+inputs:
+  service:
+    type: str
+    from: "{{ record.repo }}"
+steps:
+  - type: template
+    template: templates/service.yml
+    dest: "services/{{ service }}.yml"
+```
 
 `copy` copies a recipe-local text file into a target-relative destination.
 
@@ -358,7 +406,73 @@ naming the file; use `exclude` to skip it. `optional` is not valid with
 
 All recipe-local and target-relative paths must be safe relative paths. Absolute
 paths, `..` segments, and nested symlink traversal are rejected before
-engine-mediated reads or writes.
+engine-mediated reads or writes. Path fields are checked again after input
+templating, so an input that renders to an absolute path or `..` escape is
+rejected before any engine-mediated read or write.
+
+Hook `args` are passed verbatim from recipe YAML to the hook. The engine never
+templates `args`; hooks receive the resolved `inputs` mapping separately, with
+native list and dict values for structured inputs. Hooks that accept templated
+string args should call `helpers.render_template()` themselves. Structured
+inputs should be read directly from `inputs` by custom hooks, not threaded
+through string templates. The built-in `yaml_edit` hook follows the scalar
+string-template pattern for string `value` entries:
+
+```yaml
+inputs:
+  owner:
+    type: str
+steps:
+  - type: transform
+    file: service.yml
+    hook: yaml_edit
+    args:
+      edits:
+        - op: set
+          path: [metadata, owner]
+          value: "{{ owner }}"
+```
+
+YAML anchors are the recommended way to reuse structure in recipes without
+teaching the engine a structural templating language:
+
+```yaml
+inputs:
+  team:
+    type: str
+  service:
+    type: str
+
+x-common-labels: &common_labels
+  managed-by: untaped-recipe
+  team: "{{ team }}"
+
+steps:
+  - type: transform
+    file: services/{{ service }}.yml
+    hook: yaml_edit
+    args:
+      edits:
+        - op: merge
+          path: [metadata, labels]
+          value:
+            <<: *common_labels
+            service: "{{ service }}"
+```
+
+## Design Rationale
+
+Recipes stay declarative and intentionally dumb. A recipe owns the input
+contract, file paths, step ordering, and hook arguments. A hook owns decisions:
+parsing, branching, validation, and nontrivial edits. The plan is only the
+execution record produced after inputs resolve; it is not a second programming
+surface.
+
+That boundary keeps scalar inputs byte-identical with earlier recipe behavior,
+lets structured inputs flow to hooks as data, and limits engine templating to
+file content and safe path fields. It also keeps `args` stable: recipe authors
+can reuse YAML structure with anchors, while hooks choose when a string value is
+a template and which unknown-token policy applies.
 
 ## Apply Behavior
 

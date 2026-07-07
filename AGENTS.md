@@ -248,34 +248,51 @@ unsupported unless excluded. `template` and `copy` may set `if_absent: true` to
 skip writes whose destination already exists in target state or planned state.
 Do not add selector discovery to the engine.
 
+Path-bearing fields may render bare input tokens per target after input
+resolution: `template.template`, `template.dest`, `copy.source`, `copy.dest`,
+`transform.file`, `transform.files`, `transform.globs`, `transform.exclude`,
+`remove.file`, `remove.files`, `remove.globs`, and `remove.exclude`. Field
+rendering always uses strict unknown-token behavior; `unknown_tokens: keep`
+only affects template file bodies. After rendering, re-run `safe_relative_path`
+with the original field name in the error and confine recipe-local
+`source`/`template` paths to `recipe_dir`, and target paths plus glob expansion
+results to the target root. Sensitive and structured inputs are forbidden in
+path fields.
+
 Do not add a general YAML selector DSL to the core engine. Common YAML edits
 belong in the shipped `yaml_edit` transform hook backed by `ruamel.yaml`.
 
 Input specs accept `type`, `default`, `required`, `description`, `sensitive`,
-`scope`, and `from`; unknown input-spec keys are validation errors. `scope` is
+`scope`, `items`, `values`, and `from`; unknown input-spec keys are validation
+errors. Types are `str`, `int`, `bool`, `float`, `list`, and `dict`; list
+`items` and dict `values` are shallow scalar element types. `scope` is
 `global` or `target`. Omitted scope infers `target` when `from` is present and
 `global` otherwise. `scope: global` may use `--var`/`--vars`, but must reject
 recipe `from` and CLI `--input-from`.
 
-Per-target input `from` values are Jinja strings used only to derive scalar
-input values. They may combine literal text, string/number/boolean/null
-constants that Jinja parses without operators, and field access on `target` or
-optional incoming pipe `record`. They must not affect recipe structure, paths,
-hook names, or the existing template renderer. The sandboxed strict native
-Jinja context contains `target.path`, `target.name`, `target.parent_path`,
-`target.parent_name`, and optional `record`, with no ambient globals. Control
-blocks, filters, tests, calls, operators, and collection literals are rejected;
-negative numeric expressions like `{{ -1 }}` are not valid V1 sources. Missing,
-undefined, or null candidate values fall through to the next candidate;
-`false`, `0`, and `""` are real values. Oversized or non-scalar derived values
-are rejected.
+Per-target input `from` values are Jinja strings used only to derive declared
+input values. Structured derivation is allowed only for inputs declared as
+`list` or `dict`; scalar-declared inputs still reject containers. They may
+combine literal text, string/number/boolean/null constants that Jinja parses
+without operators, and field access on `target` or optional incoming pipe
+`record`. They must not affect recipe structure, hook names, or step types.
+The sandboxed strict native Jinja context contains `target.path`,
+`target.name`, `target.parent_path`, `target.parent_name`, and optional
+`record`, with no ambient globals. Control blocks, filters, tests, calls,
+operators, and collection literals are rejected; negative numeric expressions
+like `{{ -1 }}` are not valid V1 sources. Missing, undefined, or null candidate
+values fall through to the next candidate; `false`, `0`, `""`, `[]`, and `{}`
+are real values. Oversized derived values and nested containers are rejected.
 
 Input precedence is fixed value/source override first, then recipe `from`,
 interactive prompt, recipe `default`, and required-input error. A fixed value
 from `--var`/`--vars` and a source override from `--input-from` for the same
 input is a usage error. `--interactive --check` is rejected.
 `--stdin --interactive` must read target data from stdin and prompt only
-through a controlling terminal.
+through a controlling terminal. `--var` YAML-parses the value only for
+structured-declared inputs; scalar-declared inputs keep existing literal
+string semantics before scalar coercion. Structured inputs cannot be prompted
+interactively.
 
 `recipe.outcome` rows and backup file metadata include resolved declared
 inputs only. Sensitive input values are redacted in rows, warnings/errors, and
@@ -353,6 +370,7 @@ for engine-owned code such as `yaml_edit`.
 External transform hooks expose:
 
 ```python
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -362,10 +380,10 @@ if TYPE_CHECKING:
 def transform(
     content: str,
     *,
-    inputs: dict,
+    inputs: dict[str, object],
     target: Path,
     file: Path,
-    args: dict,
+    args: dict[str, object],
     helpers: "HookHelpers",
 ) -> str: ...
 ```
@@ -373,6 +391,7 @@ def transform(
 External validate hooks expose:
 
 ```python
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -381,11 +400,11 @@ if TYPE_CHECKING:
 
 def validate(
     *,
-    inputs: dict,
+    inputs: dict[str, object],
     target: Path,
-    args: dict,
+    args: dict[str, object],
     helpers: "HookHelpers",
-) -> dict | None | str: ...
+) -> object: ...
 ```
 
 Validate hooks may return a compatible verdict dict, `None` for pass, or a
@@ -407,6 +426,11 @@ where verdict helpers return dict-shaped verdicts. Keep the application-layer
 return `Verdict`. External `helpers.render_template(template, inputs,
 unknown_tokens="error")` is strict by default; `unknown_tokens="keep"` is the
 escape hatch for GitHub Actions, Helm, and other nested template syntaxes.
+Structured inputs are native Python lists or dicts in `inputs` and are not
+valid `render_template` targets. Recipe hook `args` are passed verbatim; the
+engine never templates hook args on behalf of hooks. External hooks that expose
+templated string args must call `helpers.render_template()` explicitly and
+should read structured inputs directly from `inputs`.
 External `helpers.dump_yaml(data, options=...)` accepts plain dict options for
 width, quote preservation, indent, block sequence indent, and explicit document
 start/end; worker and in-process defaults are `preserve_quotes=True` and

@@ -46,11 +46,11 @@ if TYPE_CHECKING:
 
 def validate(
     *,
-    inputs: dict,
+    inputs: dict[str, object],
     target: Path,
-    args: dict,
+    args: dict[str, object],
     helpers: "HookHelpers",
-) -> dict[str, str]:
+) -> object:
     if not (target / "pyproject.toml").is_file():
         return helpers.fail("missing pyproject.toml")
     return helpers.pass_()
@@ -59,14 +59,20 @@ def validate(
 def transform(
     content: str,
     *,
-    inputs: dict,
+    inputs: dict[str, object],
     target: Path,
     file: Path,
-    args: dict,
+    args: dict[str, object],
     helpers: "HookHelpers",
 ) -> str:
     return content.replace("OWNER", str(args["owner"]))
 ```
+
+Hooks receive resolved recipe inputs as `dict[str, object]`; structured
+`list` and `dict` inputs arrive as native Python values. Recipe `args` are
+passed verbatim and are not templated by the engine. If a hook accepts
+templated string args, call `helpers.render_template()` inside the hook and use
+the helper's unknown-token policy explicitly.
 
 For `hook run`, if the module exports one function, that function runs. If it
 exports both, `--file` implies transform; otherwise pass `--kind transform` or
@@ -184,10 +190,10 @@ if TYPE_CHECKING:
 def transform(
     content: str,
     *,
-    inputs: dict,
+    inputs: dict[str, object],
     target: Path,
     file: Path,
-    args: dict,
+    args: dict[str, object],
     helpers: "HookHelpers",
 ) -> str:
     owner = args["owner"]
@@ -213,11 +219,11 @@ if TYPE_CHECKING:
 
 def validate(
     *,
-    inputs: dict,
+    inputs: dict[str, object],
     target: Path,
-    args: dict,
+    args: dict[str, object],
     helpers: "HookHelpers",
-) -> dict[str, str]:
+) -> object:
     if not (target / "pyproject.toml").is_file():
         return helpers.fail("missing pyproject.toml")
     return helpers.pass_()
@@ -252,6 +258,8 @@ only `[project].dependencies` are available to hook code at runtime.
 names and non-bare `{{ ... }}` tokens raise. Pass `unknown_tokens="keep"` to
 preserve unknown tokens such as GitHub Actions `${{ github.ref }}` or Helm
 `{{ .Values.x }}` while still rendering known inputs.
+Structured input values are not valid render targets; custom hooks should read
+lists and mappings directly from the `inputs` mapping.
 
 `dump_yaml` accepts ordinary dict options so hook projects do not need runtime
 imports from the engine:

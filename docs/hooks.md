@@ -171,19 +171,26 @@ requires_hook_api = ">=0.9,<1"
 "add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
 ```
 
-`untaped_recipe.hook_api` gives editors and type checkers the `HookHelpers`
-protocol and the YAML option types. Keep `untaped-recipe` in
-`[dependency-groups].dev`; do **not** add it to `[project].dependencies`. The
-installed CLI owns the worker and helper implementation, and workers run with
-`uv run --locked --no-dev`, so the dev group is never installed into a worker.
+Rules for the dev dependency and the import surface:
 
-`requires_hook_api` is a compatibility floor: the engine fails fast when the
-installed helper API is older than the pack requires, before running any hook.
-It tracks the **hook API contract**, not the CLI release cadence — the helper
-API changes rarely, so this floor moves independently of `untaped-recipe`
-version bumps. The scaffolded floor derives from the engine's
-`HOOK_API_VERSION` (currently `0.9.0`), which is why both the manifest floor and
-the dev dependency read `0.9` rather than the current CLI version.
+- `untaped_recipe.hook_api` gives editors and type checkers the `HookHelpers`
+  protocol and the YAML option types.
+- Keep `untaped-recipe` in `[dependency-groups].dev`; do **not** add it to
+  `[project].dependencies`.
+- The installed CLI owns the worker and helper implementation, and workers run
+  with `uv run --locked --no-dev`, so the dev group is never installed into a
+  worker.
+
+`requires_hook_api` is a compatibility floor:
+
+- The engine fails fast when the installed helper API is older than the pack
+  requires, before running any hook.
+- It tracks the **hook API contract**, not the CLI release cadence — the helper
+  API changes rarely, so this floor moves independently of `untaped-recipe`
+  version bumps.
+- The scaffolded floor derives from the engine's `HOOK_API_VERSION` (currently
+  `0.9.0`), which is why both the manifest floor and the dev dependency read
+  `0.9` rather than the current CLI version.
 
 Add packages that hook code imports at runtime to `[project].dependencies`, then
 run `uv lock`. Dev-only dependencies are intentionally not available to hook
@@ -215,22 +222,34 @@ External pack hooks are launched with locked uv execution:
 uv run --project <pack-project> --locked --no-dev python <worker>
 ```
 
+### Worker pool
+
 During one `apply`, the engine keeps a small worker pool **per hook project**.
 The pool may start up to the clamped `--parallel` value for that project, and
 each worker serializes its own requests. Because workers run `--no-dev`, only
 `[project].dependencies` are importable at hook run time.
 
-Each hook request has a timeout controlled by the `hook_timeout_seconds` setting
-or `apply --hook-timeout`; the default is 60 seconds and `0` disables it. A
-timed-out worker is killed, retired from the pool, and reported as a planning
-failure for the affected targets rather than hanging the whole batch. Worker
-environment startup — uv creating or syncing the pack env on first use, plus
-module imports — runs under its own `hook_startup_timeout_seconds` bound
-(default 300, `0` = unbounded) and emits a `preparing hook environment for ...`
-notice on stderr, so a cold cache or a lagging package index does not count
-against the per-hook timeout. See [reference](./reference.md) for these settings
-and [apply](./apply.md) for `--hook-timeout` and `--parallel` on the command
-line.
+### Timeouts
+
+Two independent bounds cover a hook request and the worker's environment
+startup:
+
+| Setting | Default | What it bounds |
+| --- | --- | --- |
+| `hook_timeout_seconds` (`apply --hook-timeout`) | `60` seconds, `0` disables | Each individual hook request |
+| `hook_startup_timeout_seconds` | `300`, `0` = unbounded | Worker environment startup — uv creating or syncing the pack env on first use, plus module imports |
+
+A timed-out worker is killed, retired from the pool, and reported as a planning
+failure for the affected targets rather than hanging the whole batch. Startup
+emits a `preparing hook environment for ...` notice on stderr, so a cold cache
+or a lagging package index does not count against the per-hook timeout. If the
+startup bound itself expires, the worker is shut down and the failure names the
+project with `hook environment for <project> not ready after <N>s`, suggesting a
+higher `hook_startup_timeout_seconds` or pre-running `uv sync` in the pack. See
+[reference](./reference.md) for these settings and [apply](./apply.md) for
+`--hook-timeout` and `--parallel` on the command line.
+
+### Worker protocol
 
 The worker protocol is newline-delimited JSON over stdin/stdout, after a
 one-line ready handshake that marks the end of environment startup. Worker
@@ -240,6 +259,8 @@ request diagnostics are discarded during `apply` so chatty hooks do not grow
 memory during bulk runs; `hook run` instead surfaces successful diagnostics for
 debugging (capped at 10 MiB per invocation). Engine-side Pydantic models
 validate every worker response before any file change is accepted into a plan.
+
+### Planning-time purity
 
 Hooks are trusted code, but hook behavior must stay **pure at planning time**.
 A hook may read the target tree and its own pack directory, but must not write
@@ -297,27 +318,40 @@ defaults for that setting. Unsupported option keys and unsupported nested
 `hook run` invokes exactly one resolved hook without writing target files. It
 uses the same resolver, executor, helpers, in-process built-in calls, and
 external uv worker protocol as `apply`, so what you see here is what `apply`
-does. If the module exports one function, that function runs; if it exports
-both, `--file` implies transform, otherwise pass `--kind transform` or
-`--kind validate`. An explicit `--project PATH` must point at a pack project
-with hook metadata and never falls through to installed packs or built-ins.
+does. Which verb runs follows the module's exports:
 
-Transform hooks require `--target DIR --file TARGET_RELATIVE_PATH`. Without a
-content override, `hook run` reads the target file and writes the exact
-transformed content to stdout with no added newline:
+- one function exported → that function runs;
+- both exported → `--file` implies transform, otherwise pass `--kind transform`
+  or `--kind validate`.
+
+An explicit `--project PATH` must point at a pack project with hook metadata and
+never falls through to installed packs or built-ins.
+
+### Transform mode
 
 ```bash
 untaped-recipe hook run ansible/set_owner --target ./repo --file pyproject.toml
 ```
 
-Use `--content TEXT`, `--content -` (stdin), or `--content-file PATH` to pass
-fixture content while still giving the hook the requested target-relative `file`
-path; with a content override the target file need not exist. Add `--diff` to
-write a unified input-to-output diff to stdout instead of raw content.
+Transform hooks require `--target DIR --file TARGET_RELATIVE_PATH`. Without a
+content override, `hook run` reads the target file and writes the exact
+transformed content to stdout with no added newline. Use `--content TEXT`,
+`--content -` (stdin), or `--content-file PATH` to pass fixture content while
+still giving the hook the requested target-relative `file` path; with a content
+override the target file need not exist. Add `--diff` to write a unified
+input-to-output diff to stdout instead of raw content.
+
+### Validate mode
+
+```bash
+untaped-recipe hook run ansible/set_owner --target ./repo --kind validate
+```
 
 Validate hooks require `--target DIR` and reject `--file`, the content options,
 and `--diff`. They emit one `recipe.hook_run` verdict record and exit non-zero
 when the verdict status is `fail`.
+
+### Inputs, args, and output
 
 Both kinds accept `--inputs file.yml` and `--args file.yml` YAML mapping files.
 Repeated `--input KEY=VALUE` and `--arg KEY=VALUE` overrides are YAML-parsed and
@@ -365,10 +399,11 @@ steps:
 
 Each edit names one `op`:
 
-- `set` — assign `value` at `path`, creating intermediate containers.
-- `merge` — shallow-update the mapping at `path` with `value` (both must be
-  mappings).
-- `delete` — remove the item at `path`; the path must already exist.
+| `op` | Effect |
+| --- | --- |
+| `set` | Assign `value` at `path`, creating intermediate containers. |
+| `merge` | Shallow-update the mapping at `path` with `value` (both must be mappings). |
+| `delete` | Remove the item at `path`; the path must already exist. |
 
 Path segments are one of:
 

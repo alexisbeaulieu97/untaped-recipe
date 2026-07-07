@@ -56,18 +56,6 @@ rather than as text.
 
 ## Path-bearing fields
 
-Path fields also accept bare `{{ input }}` tokens, but they are not Jinja
-expressions. The engine renders each of these fields per target after input
-resolution, always with strict unknown-token behavior — `unknown_tokens: keep`
-has no effect here — and then rechecks the rendered value as a confined relative
-path:
-
-- `template.template` and `template.dest`
-- `copy.source` and `copy.dest`
-- `transform.file`, `transform.files`, `transform.globs`, and
-  `transform.exclude`
-- `remove.file`, `remove.files`, `remove.globs`, and `remove.exclude`
-
 ```yaml
 inputs:
   service:
@@ -78,6 +66,21 @@ steps:
     template: templates/service.yml
     dest: "services/{{ service }}.yml"
 ```
+
+Path fields also accept bare `{{ input }}` tokens, but they are not Jinja
+expressions. When one appears:
+
+- The engine renders each path field per target after input resolution.
+- Rendering is always strict — `unknown_tokens: keep` has no effect here.
+- The rendered value is rechecked as a confined relative path.
+
+The path-bearing fields are:
+
+- `template.template` and `template.dest`
+- `copy.source` and `copy.dest`
+- `transform.file`, `transform.files`, `transform.globs`, and
+  `transform.exclude`
+- `remove.file`, `remove.files`, `remove.globs`, and `remove.exclude`
 
 ## Confinement recheck
 

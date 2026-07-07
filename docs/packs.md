@@ -108,10 +108,18 @@ untaped-recipe apply ansible/playbook-migration ./repo --yes
 untaped-recipe hook run ansible/add_play_collections --target ./repo --file site.yml --diff
 ```
 
-Bare recipe and hook names are accepted only when they resolve uniquely across
-installed packs. An ambiguous bare name is an error that lists the qualified
-candidates. Qualified refs must use exactly `<pack>/<name>`; a bare `a/b/c` is
-rejected.
+A ref is either qualified (`pack/name`) or a bare name:
+
+```bash
+untaped-recipe apply ansible/playbook-migration ./repo --yes   # qualified
+untaped-recipe apply playbook-migration ./repo --yes           # bare, if unique
+untaped-recipe apply a/b/c ./repo --yes                        # rejected
+```
+
+- Bare recipe and hook names are accepted only when they resolve uniquely across
+  installed packs. An ambiguous bare name is an error that lists the qualified
+  candidates.
+- Qualified refs must use exactly `<pack>/<name>`; a bare `a/b/c` is rejected.
 
 For `apply`, a local path must be explicit. A value is a path only when it
 starts with `./`, `../`, `/`, or `~`, or ends in `.yml` or `.yaml`. Anything
@@ -153,11 +161,17 @@ All three refresh the pack `uv.lock` by default so hooks can run under
 source for `untaped-recipe`, and uv also provisions Python interpreters from
 GitHub on demand.
 
+### Recovering from a failed lock
+
 If file creation itself fails, the scaffold rolls back the newly written paths
 and manifest rows. If the files are written but `uv lock` fails afterward, the
 command leaves the completed pack, recipe, hook module, tests, and manifest rows
-in place and prints a repairable error. Fix the package index or add a
-package-specific `[tool.uv.sources]` override, then run `uv lock` in the pack.
+in place and prints a repairable error. To repair:
+
+1. Fix the package index, or add a package-specific `[tool.uv.sources]`
+   override.
+2. Run `uv lock` in the pack.
+
 For example, a lagging corporate mirror can route only `untaped-recipe` to an
 approved fallback index:
 
@@ -174,6 +188,8 @@ explicit = true
 On networks that block GitHub, point `UV_PYTHON_INSTALL_MIRROR` at an approved
 mirror of python-build-standalone (or preinstall a matching interpreter) so pack
 environments can build at all.
+
+### Skipping the lock step
 
 Pass `--no-lock` to `new pack`, `new recipe`, or `new hook` to skip the lock
 step entirely. The command then exits successfully and prints a stderr note, but
@@ -209,12 +225,18 @@ That key becomes the pack identity used by refs, output rows, ambiguity errors,
 Because library packs are editable in place (`edit`, and `new recipe`/`new hook`
 into an installed pack), reinstalling is guarded:
 
+```bash
+untaped-recipe add ./ansible --force                  # refused when the copy has local edits
+untaped-recipe add ./ansible --force --discard-edits  # overwrite deliberately
+```
+
 - Installing over an existing pack requires `--force`; otherwise `add` refuses
   and suggests `--force` or `--name`.
 - `--force` still refuses when the installed copy has diverged from its recorded
   `content_hash`, so local edits are not silently discarded. Re-run with
-  `--discard-edits` to overwrite deliberately. The preview warns before the
-  confirmation prompt when the library copy has local edits.
+  `--discard-edits` to overwrite deliberately.
+- The preview warns before the confirmation prompt when the library copy has
+  local edits.
 
 ## list, show, edit
 

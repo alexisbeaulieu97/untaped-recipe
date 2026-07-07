@@ -51,30 +51,54 @@ other targets from planning or applying.
 ## Preview
 
 The plan is previewed on **stderr** (stdout stays reserved for structured
-outcome rows). Every preview opens with an exact aggregate summary line —
-targets, changing, unchanged, failed, and files changed — and that summary is
-re-echoed at the confirmation prompt. `--preview` selects how much detail
-accompanies it:
+outcome rows). A normal apply opens with the aggregate summary line, then a
+file-level table:
 
-- `--preview table` (the default for a normal apply and for `--dry-run`) shows a
-  file-level table of changed files with absolute paths, change kind, and
-  per-file line counts.
-- `--preview diff` shows patch-compatible unified diffs with `a/` and `b/`
-  relative paths — the full-detail escape hatch.
-- `--preview none` prints only the summary line.
+```
+Recipe preview: 1 target, 1 changing, 0 unchanged, 0 failed, 2 files changed
+╭───────────────────────────────────┬────────┬─────────╮
+│ path                              │ action │ changes │
+├───────────────────────────────────┼────────┼─────────┤
+│ /home/me/service-a/config/app.yml │ modify │ +3 -1   │
+│ /home/me/service-a/config/db.yml  │ create │ +12 -0  │
+╰───────────────────────────────────┴────────┴─────────╯
+```
+
+Every preview opens with that exact aggregate summary line — targets, changing,
+unchanged, failed, and files changed — and that summary is re-echoed at the
+confirmation prompt.
+
+### Preview modes
+
+`--preview` selects how much detail accompanies the summary line:
+
+| Mode | Default for | Shows |
+| --- | --- | --- |
+| `--preview table` | a normal apply and `--dry-run` | file-level table of changed files: absolute path, change kind, and per-file line counts |
+| `--preview diff` | — | patch-compatible unified diffs with `a/` and `b/` relative paths — the full-detail escape hatch |
+| `--preview none` | `--check` | only the summary line |
 
 `--check` defaults to `--preview none` for quiet CI output; pass `--preview table`
 or `--preview diff` in check mode when you want the detail.
 
+### Large-plan collapse
+
 Table previews stay file-level only while the total changed-file count is at or
-below the `preview_max_rows` setting (default `50`; `0` means unlimited). Above
-that threshold the table collapses to one row per target with the target's file
-count and aggregate `+adds -dels`; once the number of target rows itself exceeds
-the same threshold, the table is truncated to the first `preview_max_rows`
-targets and a `showing first N of M targets` notice points at `--preview diff`
-for full detail. Collapsed previews are summaries backed by the exact totals in
-the summary line, never partial-success claims. See
-[reference](./reference.md) for the `preview_max_rows` setting.
+below the `preview_max_rows` setting (default `50`; `0` means unlimited):
+
+- **At or below the threshold** — one row per changed file.
+- **Above the threshold** — the table collapses to one row per target, with the
+  target's file count and aggregate `+adds -dels`.
+- **When the target rows themselves exceed the threshold** — the table is
+  truncated to the first `preview_max_rows` targets, and a
+  `showing first N of M targets` notice points at `--preview diff` for full
+  detail.
+
+Collapsed previews are summaries backed by the exact totals in the summary line,
+never partial-success claims. See [reference](./reference.md) for the
+`preview_max_rows` setting.
+
+### Sensitive targets
 
 File-level preview detail and diffs are suppressed for any target that has
 sensitive inputs, because generated content may embed secret values; such
@@ -82,6 +106,10 @@ targets appear as a target/files-changed row instead. The `sensitive` semantics
 that trigger this are owned by [inputs](./inputs.md#sensitive-inputs).
 
 ## Confirmation and `--yes`
+
+```bash
+untaped-recipe apply add-config ./service-a --yes
+```
 
 After previewing, `apply` asks for confirmation before writing. `--yes` (`-y`)
 skips the prompt for non-interactive runs. When targets come from `--stdin`,
@@ -91,8 +119,16 @@ records cannot write silently.
 
 ## Dry run and check
 
+```bash
+untaped-recipe apply add-config ./service-a --dry-run
+```
+
 `--dry-run` plans and previews, then reports outcome rows, without writing or
 creating any backup.
+
+```bash
+untaped-recipe apply add-config ./service-a --check
+```
 
 `--check` is the CI/compliance mode: it previews without writing, creates no
 backups, prompts for nothing, and exits non-zero when any target would change or
@@ -104,15 +140,19 @@ with `--interactive`.
 Failures are contained to a single target. A target whose plan fails writes
 nothing and is reported as an error; the remaining targets still apply.
 
-Within a target, the write is transactional. Planned changes are staged to
-temporary files and swapped into place atomically; if any file in the target
-cannot be written, the already-applied files for that target are rolled back to
-their pre-apply content and the target is reported as failed. The engine also
-re-verifies each file's on-disk content against what planning saw and aborts that
-target's write if the file changed since planning. If a rollback cannot fully
-complete, the per-target error says so. Backups are created before writing and
-are the recovery path for anything beyond a single target — see
-[safety](./safety.md).
+Within a target, the write is transactional:
+
+- **Stage** — planned changes are staged to temporary files.
+- **Verify** — the engine re-verifies each file's on-disk content against what
+  planning saw and aborts that target's write if the file changed since planning.
+- **Swap** — staged files are swapped into place atomically.
+- **Rollback** — if any file in the target cannot be written, the already-applied
+  files for that target are rolled back to their pre-apply content and the target
+  is reported as failed. If a rollback cannot fully complete, the per-target error
+  says so.
+
+Backups are created before writing and are the recovery path for anything beyond
+a single target — see [safety](./safety.md).
 
 ## Parallelism and timeouts
 

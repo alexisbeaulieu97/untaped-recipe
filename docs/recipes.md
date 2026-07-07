@@ -56,14 +56,14 @@ target's plan buffer or validates the target before later steps run.
 
 ### validate
 
-`validate` calls a read-only hook before later steps. A failed verdict aborts
-that target before any writes; a warn verdict records a warning and continues.
-See [hooks](./hooks.md) for the hook contract and verdict returns.
-
 ```yaml
 - type: validate
   hook: has_pyproject
 ```
+
+`validate` calls a read-only hook before later steps. A failed verdict aborts
+that target before any writes; a warn verdict records a warning and continues.
+See [hooks](./hooks.md) for the hook contract and verdict returns.
 
 ### template
 
@@ -150,10 +150,12 @@ untouched, and a file removed earlier in the same recipe counts as absent:
     - ansible.cfg
 ```
 
-Multi-file syntax is only DRY sugar. The recipe model expands it into ordinary
-single-file steps before planning, so the hook is still called once per file
-with that file's path. `file`, `files`, and `globs` are mutually exclusive on a
-step, and `files` and `globs` must not be empty.
+Multi-file syntax is only DRY sugar:
+
+- The recipe model expands it into ordinary single-file steps before planning,
+  so the hook is still called once per file with that file's path.
+- `file`, `files`, and `globs` are mutually exclusive on a step.
+- `files` and `globs` must not be empty.
 
 ## Globs
 
@@ -167,24 +169,45 @@ step, and `files` and `globs` must not be empty.
     - ".git/**"
 ```
 
-Glob patterns expand per target at planning time, match regular files only
-(directories and symlinks are skipped), and are deduplicated and sorted for
-deterministic plans. `exclude` is only valid with `globs` and uses the same
-pattern language: `*` never crosses `/`, `**` does, and a literal relative path
-excludes itself.
+Glob expansion rules:
 
-Globs have no implicit safety excludes — dotfiles and `.git` internals match
-when the pattern says so, so repo-wide sweeps should usually carry
-`exclude: [".git/**"]`. A step whose patterns match nothing plans no changes and
-records a per-target warning. Binary (non-UTF-8) files are unsupported: a matched
-binary file fails that target's plan with an error naming the file; use
-`exclude` to skip it. `optional` is not valid with `globs`, because zero matches
-is already a first-class, non-failing outcome.
+- Patterns expand per target at planning time.
+- They match regular files only — directories and symlinks are skipped.
+- Matches are deduplicated and sorted for deterministic plans.
+- `exclude` is only valid with `globs` and uses the same pattern language: `*`
+  never crosses `/`, `**` does, and a literal relative path excludes itself.
+
+Glob safety and edge cases:
+
+- Globs have no implicit safety excludes — dotfiles and `.git` internals match
+  when the pattern says so, so repo-wide sweeps should usually carry
+  `exclude: [".git/**"]`.
+- A step whose patterns match nothing plans no changes and records a per-target
+  warning.
+- Binary (non-UTF-8) files are unsupported: a matched binary file fails that
+  target's plan with an error naming the file; use `exclude` to skip it.
+- `optional` is not valid with `globs`, because zero matches is already a
+  first-class, non-failing outcome.
 
 Path fields — including glob patterns and `exclude` entries — may contain bare
 input tokens and are re-checked as confined relative paths after rendering; see
 [templating](./templating.md) for that behavior and [safety](./safety.md) for
 the underlying path-safety rules.
+
+## Step field compatibility
+
+Which optional and multi-file fields each step type accepts:
+
+| Step        | `file` | `files` | `globs` | `optional` | `if_absent` |
+| ----------- | ------ | ------- | ------- | ---------- | ----------- |
+| `validate`  | –      | –       | –       | –          | –           |
+| `template`  | –      | –       | –       | –          | ✓           |
+| `copy`      | –      | –       | –       | –          | ✓           |
+| `transform` | ✓      | ✓       | ✓       | ✓*         | –           |
+| `remove`    | ✓      | ✓       | ✓       | –          | –           |
+
+`file`, `files`, and `globs` are mutually exclusive on a step. *`optional` is not
+valid alongside `globs`.
 
 ## Hook arguments
 

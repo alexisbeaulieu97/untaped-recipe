@@ -115,17 +115,14 @@ verdict:
   message_contains: "tabs"
 ```
 
-- `inputs` supplies recipe inputs, using the same names and types `apply`
-  accepts (see [inputs](./inputs.md)).
-- `expect` is `success` (default) or `error`. `expect: error` requires
-  `error_contains` and forbids an `expected/` tree; the case passes when
-  planning fails with a message containing that substring. `error_contains` is
-  forbidden for success cases.
-- `verdict` asserts on validate-hook verdicts and is valid only with
-  `expect: success`. `status` asserts the worst produced verdict (`pass`,
-  `warn`, or `fail`); `message_contains` asserts that at least one produced
-  verdict message contains the substring. A `verdict` block must declare at
-  least one of the two.
+| field | allowed with | meaning |
+| --- | --- | --- |
+| `inputs` | any case | supplies recipe inputs, using the same names and types `apply` accepts (see [inputs](./inputs.md)) |
+| `expect` | any case | `success` (default) or `error`; `expect: error` forbids an `expected/` tree |
+| `error_contains` | `expect: error` (required); forbidden for success cases | case passes when planning fails with a message containing this substring |
+| `verdict` | `expect: success` only | asserts on validate-hook verdicts; must declare at least one of `status` / `message_contains` |
+| `verdict.status` | inside `verdict` | asserts the worst produced verdict: `pass`, `warn`, or `fail` |
+| `verdict.message_contains` | inside `verdict` | asserts that at least one produced verdict message contains the substring |
 
 There is no control flow or assertion DSL in `case.yml`; hook-level logic
 belongs in pytest.
@@ -156,11 +153,13 @@ stderr, followed by a summary line:
 Recipe tests: 1 passed, 0 failed, 0 errored
 ```
 
-`test` exits non-zero on any failed or errored case. An explicitly named pack or
-recipe with no cases emits an error row `no test cases found` and exits 1. Bare
-`test` reports packs without a `tests/` directory on stderr but does not fail
-only for that. A `tests/` directory that names no manifest recipe is reported as
-an error row, matching `check`.
+- `test` exits non-zero on any failed or errored case.
+- An explicitly named pack or recipe with no cases emits an error row
+  `no test cases found` and exits 1.
+- Bare `test` reports packs without a `tests/` directory on stderr but does not
+  fail only for that.
+- A `tests/` directory that names no manifest recipe is reported as an error
+  row, matching `check`.
 
 ### Scaffolded case
 

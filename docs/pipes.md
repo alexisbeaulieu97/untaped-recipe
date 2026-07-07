@@ -14,29 +14,33 @@ across the SDK: one JSON object per line, shaped
 
 Pass `--stdin` to read target directories from standard input instead of
 positional arguments; the two sources are mutually exclusive. Each non-blank
-line is one target. See [running recipes](./apply.md) for the `--stdin`
-confirmation rule (`--yes` is required unless `--dry-run` or `--check` is used)
-and how piped targets combine with input derivation.
+line is one target:
 
-A line is resolved as either a bare path or an untaped pipe record:
+```text
+/srv/service-a       # bare path, used as-is
+2024                 # JSON scalar → still a path, not a record
+{"untaped": "1", "kind": "workspace.repo", "record": {"target_path": "/srv/service-b"}}  # envelope record
+```
+
+See [running recipes](./apply.md) for the `--stdin` confirmation rule (`--yes`
+is required unless `--dry-run` or `--check` is used) and how piped targets
+combine with input derivation.
+
+Each line is resolved by these rules:
 
 - **Bare paths.** Any line that is not an untaped envelope object is treated as
   a literal path. Lines that parse as JSON scalars are still paths — a directory
   named `2024` or `true` is a path, not a record. Only JSON objects carrying the
   `untaped` envelope marker enter record parsing.
-- **Pipe records.** An untaped envelope object is resolved to a target
-  directory by field, in this order:
-  1. `record.target_path`, when present, must be a non-empty **absolute** path
-     and is used directly.
-  2. Otherwise the generic `record.path` field is used.
-
-Two record rules keep piped streams from writing to the wrong place:
-
-- Records whose `kind` ends in `.summary` are informational, not targets, and
-  are skipped.
-- Repo-grain records such as `workspace.repo` must provide `target_path`. Older
-  saved streams that carry only `path` plus `repo` are rejected before planning
-  rather than resolved to a possibly-wrong directory.
+- **Pipe records resolve by field, in order.** `record.target_path`, when
+  present, must be a non-empty **absolute** path and is used directly;
+  otherwise the generic `record.path` field is used.
+- **`.summary` records are skipped.** Records whose `kind` ends in `.summary`
+  are informational, not targets.
+- **Repo-grain records must provide `target_path`.** Records such as
+  `workspace.repo` must provide `target_path`; older saved streams that carry
+  only `path` plus `repo` are rejected before planning rather than resolved to
+  a possibly-wrong directory.
 
 A per-target pipe record also stays available to input derivation: an input
 `from` expression can read the incoming `record`. See [inputs](./inputs.md) for
@@ -49,18 +53,20 @@ untaped-workspace list --format pipe \
 
 ## Emitting structured output
 
-Every command that prints rows accepts `--format`. `apply` and the library
-commands (`list`, `show`, `check`, `test`, `backup …`) accept the SDK format set
-`json`, `yaml`, `table`, `raw`, and `pipe`; `hook run` accepts `json`, `yaml`,
-`table`, and `pipe`. `table` is the default human view; `pipe` emits the untaped
-NDJSON envelope for tool-to-tool chaining. Use `--columns`/`-c` (repeatable) to
-narrow the emitted fields.
-
-`--format pipe` writes one envelope per row:
+Every command that prints rows accepts `--format`; `--format pipe` writes one
+envelope per row:
 
 ```json
 {"untaped": "1", "kind": "recipe.outcome", "record": {"recipe": "ansible/playbook-migration", "target": "/srv/service-a", "status": "applied", "files_changed": 2, "warnings": "", "error": null, "inputs": {"service": "api"}}}
 ```
+
+- **`apply` and the library commands** (`list`, `show`, `check`, `test`,
+  `backup …`) accept the SDK format set `json`, `yaml`, `table`, `raw`, and
+  `pipe`.
+- **`hook run`** accepts `json`, `yaml`, `table`, and `pipe`.
+- **`table`** is the default human view.
+- **`pipe`** emits the untaped NDJSON envelope for tool-to-tool chaining.
+- **`--columns`/`-c`** (repeatable) narrows the emitted fields.
 
 stdout carries data only. Previews, prompts, progress, warnings, errors, and
 summary lines all go to stderr, so a `--format json`/`pipe` stream stays clean

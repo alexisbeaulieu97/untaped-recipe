@@ -14,13 +14,20 @@ up-front concern, owned by [packs](./packs.md#trust).
 
 Every recipe-local and target-relative path is validated before any
 engine-mediated read or write. A path is accepted only when it is a safe
-relative path: absolute paths, `..` segments, and a bare `.` are all rejected.
-The check then walks the path one component at a time against its base and
-rejects it if any component is a symlink, or if an existing component resolves
-to somewhere outside the base. This confines two roots independently:
-recipe-local `source`/`template` paths stay under the recipe directory, and
-target `dest`/`file`/`files` paths and glob-expansion results stay under the
-target root.
+relative path; the check walks it one component at a time against its base and
+rejects any of these forms:
+
+- an absolute path
+- a `..` segment
+- a bare `.`
+- a component that is a symlink
+- an existing component that resolves to somewhere outside the base
+
+This confines two roots independently:
+
+- recipe-local `source`/`template` paths stay under the recipe directory
+- target `dest`/`file`/`files` paths and glob-expansion results stay under the
+  target root
 
 Because path-bearing fields can contain input tokens, they are validated a
 second time after per-target rendering, so an input that renders to an absolute
@@ -38,13 +45,21 @@ Backups are created by default before an apply writes anything. Pass
 VCS checkout, for instance). One apply invocation produces one backup bundle
 covering every target it writes.
 
-A backup bundle records, per touched file: the target path, the relative file
-path, the before and after content hashes, the saved before-content, and the
-redacted per-target inputs for that file. The bundle also stores the canonical
-recipe ref and its creation time. Backups store **text content only** for the
-engine-managed files a recipe edits; a restore does not preserve file mode or
-mtime. Backup metadata never stores the full incoming pipe record — only the
-resolved declared inputs, with sensitive values redacted.
+A backup bundle records, per touched file:
+
+| Field | What it holds |
+| --- | --- |
+| target path | the target the file belongs to |
+| relative file path | the file's path within that target |
+| before/after content hashes | the pre-apply content hash and the applied content hash |
+| saved before-content | the pre-apply file content (text only) |
+| redacted per-target inputs | the resolved declared inputs for that file, sensitive values redacted |
+
+The bundle also stores the canonical recipe ref and its creation time. Backups
+store **text content only** for the engine-managed files a recipe edits; a
+restore does not preserve file mode or mtime. Backup metadata never stores the
+full incoming pipe record — only the resolved declared inputs, with sensitive
+values redacted.
 
 Bundle ids use the form `YYYYMMDDTHHMMSSffffffZ-8hex` (a UTC timestamp to
 microseconds plus eight hex characters). `show` and `restore` accept a full id,
@@ -53,14 +68,17 @@ an unambiguous id prefix, or `latest`.
 ```bash
 untaped-recipe backup list
 untaped-recipe backup show 20260619T120000000000Z-a1b2c3d4
-untaped-recipe backup restore 20260619T120000000000Z-a1b2c3d4
-untaped-recipe backup restore latest
 ```
 
 `backup list` shows each bundle's id and path. `backup show` renders the bundle
 metadata, one line per file in the table view.
 
 ### Restore
+
+```bash
+untaped-recipe backup restore 20260619T120000000000Z-a1b2c3d4
+untaped-recipe backup restore latest
+```
 
 `backup restore` reinstates a bundle's saved content. It previews the file
 actions and asks for confirmation like an [apply](./apply.md) (`--yes` skips the
@@ -76,15 +94,13 @@ original content; file mode and mtime are not preserved.
 
 ### Retention and `backup prune`
 
-`backup prune` deletes old bundles behind the standard destructive confirmation
-(`--yes` to skip):
-
 ```bash
 untaped-recipe backup prune --keep 20
 untaped-recipe backup prune --older-than 30
 ```
 
-`--keep N` retains only the newest N bundles; `--older-than DAYS` prunes bundles
+`backup prune` deletes old bundles behind the standard destructive confirmation
+(`--yes` to skip). `--keep N` retains only the newest N bundles; `--older-than DAYS` prunes bundles
 older than that age. When a flag is omitted, prune falls back to the
 `backup_keep` and `backup_max_age_days` settings; with neither a flag nor a
 configured value, prune errors rather than guess. Both bounds apply together —

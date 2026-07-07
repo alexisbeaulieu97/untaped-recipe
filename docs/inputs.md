@@ -32,19 +32,17 @@ inputs:
 
 A spec supports these fields:
 
-- `type`: one of `str`, `int`, `bool`, `float`, `list`, or `dict`. Defaults to
-  `str`.
-- `items`: scalar element type for `type: list` (see [Types](#types)).
-- `values`: scalar value type for `type: dict`.
-- `default`: the value used when no fixed value, source, or prompt resolves.
-- `required`: when `true`, an input that resolves to nothing after sources,
-  prompts, and defaults raises `missing required input: <name>` at plan time.
-- `description`: prompt and help text for humans.
-- `sensitive`: redact the value in output and previews (see
-  [Sensitive inputs](#sensitive-inputs)).
-- `scope`: `global` or `target` (see [Scope](#scope)).
-- `from`: one Jinja expression or an ordered list of candidate expressions (see
-  [Deriving values with `from`](#deriving-values-with-from)).
+| Field | Purpose |
+|---|---|
+| `type` | One of `str`, `int`, `bool`, `float`, `list`, or `dict`. Defaults to `str`. |
+| `items` | Scalar element type for `type: list` (see [Types](#types)). |
+| `values` | Scalar value type for `type: dict`. |
+| `default` | The value used when no fixed value, source, or prompt resolves. |
+| `required` | When `true`, an input that resolves to nothing after sources, prompts, and defaults raises `missing required input: <name>` at plan time. |
+| `description` | Prompt and help text for humans. |
+| `sensitive` | Redact the value in output and previews (see [Sensitive inputs](#sensitive-inputs)). |
+| `scope` | `global` or `target` (see [Scope](#scope)). |
+| `from` | One Jinja expression or an ordered list of candidate expressions (see [Deriving values with `from`](#deriving-values-with-from)). |
 
 Unknown input-spec fields are rejected, so a typo such as `defualt:` fails when
 the recipe loads rather than silently doing nothing.
@@ -78,6 +76,21 @@ structured inputs as native Python lists and dicts — see the hook contract in
 
 ## Scope
 
+```yaml
+inputs:
+  api_token:            # global: one value for the whole invocation
+    type: str
+    scope: global
+  service:              # target: may vary per target
+    type: str
+    from:
+      - "{{ target.name }}"
+```
+
+```bash
+untaped-recipe apply deploy ./repo --var api_token=secret --yes
+```
+
 `scope` controls how often an input resolves:
 
 - `global` resolves one value per invocation, before any target is planned.
@@ -91,6 +104,19 @@ error; passing `--input-from` for one is a usage error
 (`cannot use --input-from for input '<name>' with scope global`).
 
 ## Sensitive inputs
+
+```yaml
+inputs:
+  api_token:
+    type: str
+    scope: global
+    sensitive: true
+    required: true
+```
+
+```bash
+untaped-recipe apply deploy ./repo --var api_token=secret --yes
+```
 
 Mark an input `sensitive: true` to keep its value out of everything the engine
 records or displays, while the real value still reaches templates and hooks:
@@ -143,6 +169,22 @@ operators, and collection literals. Because operators are rejected, a negative
 numeric expression such as `{{ -1 }}` is not a valid source. No ambient Jinja
 globals are available.
 
+A valid `from` list — literal text plus attribute access:
+
+```yaml
+from:
+  - "{{ record.repo }}"
+  - "svc-{{ target.name }}"
+  - "default-service"
+```
+
+A filter makes the expression invalid; this is rejected at load time:
+
+```yaml
+from:
+  - "{{ target.name | upper }}"
+```
+
 ### Context fields
 
 The evaluation context contains:
@@ -155,6 +197,19 @@ The evaluation context contains:
   pipe records. See [pipes](./pipes.md) for how records reach targets.
 
 ### Fall-through
+
+```yaml
+inputs:
+  service:
+    type: str
+    from:
+      - "{{ record.repo }}"     # tried first; falls through when undefined
+      - "{{ target.name }}"     # used when record.repo does not resolve
+```
+
+```bash
+untaped-recipe apply deploy ./repo --yes
+```
 
 Candidates are tried in order. A candidate whose value is missing, undefined, or
 `null` falls through to the next one. Real values do not fall through: `false`,
@@ -191,6 +246,10 @@ value, in this order:
 4. The recipe `default`.
 5. Otherwise, a `missing required input: <name>` error if `required: true`; a
    non-required input with nothing to resolve is simply left unset.
+
+For example, when `--var service=web` is supplied for an input that also declares
+`from`, the fixed value wins at step 1 and the `from` candidates are never
+evaluated.
 
 When `--interactive` is active and a default exists, the default is folded into
 the prompt (it is shown and an empty answer accepts it) rather than applied as the

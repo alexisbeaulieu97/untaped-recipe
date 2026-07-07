@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 from untaped_recipe.application.files import read_existing_text_file
@@ -45,7 +46,7 @@ class ApplyRecipe:
             elif isinstance(step, CopyStep):
                 self._plan_copy(step, recipe_dir, target, buffer)
             elif isinstance(step, RemoveStep):
-                self._plan_remove(step, target, buffer)
+                self._plan_remove(step, target, buffer, warnings)
             elif isinstance(step, TransformStep):
                 self._plan_transform(
                     step,
@@ -134,10 +135,27 @@ class ApplyRecipe:
         step: RemoveStep,
         target: Path,
         buffer: dict[Path, str | None],
+        warnings: list[str] | None = None,
     ) -> None:
-        path = confined_path(target, step.file, field="file")
-        if path.exists() or step.file in buffer:
-            buffer[step.file] = None
+        if step.globs:
+            matches = _expand_glob_files(target, step.globs, step.exclude)
+            if not matches and warnings is not None:
+                warnings.append(f"globs matched no files: {', '.join(step.globs)}")
+            for relative in matches:
+                self._plan_remove_file(relative, target, buffer)
+            return
+        assert step.file is not None
+        self._plan_remove_file(step.file, target, buffer)
+
+    def _plan_remove_file(
+        self,
+        relative: Path,
+        target: Path,
+        buffer: dict[Path, str | None],
+    ) -> None:
+        path = confined_path(target, relative, field="file")
+        if path.exists() or relative in buffer:
+            buffer[relative] = None
 
     def _plan_transform(
         self,
@@ -148,18 +166,55 @@ class ApplyRecipe:
         buffer: dict[Path, str | None],
         warnings: list[str],
     ) -> None:
-        current = buffer.get(step.file)
-        path = confined_path(target, step.file, field="file")
+        if step.globs:
+            matches = _expand_glob_files(target, step.globs, step.exclude)
+            if not matches:
+                warnings.append(f"globs matched no files: {', '.join(step.globs)}")
+            for relative in matches:
+                self._plan_transform_file(
+                    step,
+                    relative,
+                    local_hook_project,
+                    target,
+                    inputs,
+                    buffer,
+                    warnings,
+                )
+            return
+        assert step.file is not None
+        self._plan_transform_file(
+            step,
+            step.file,
+            local_hook_project,
+            target,
+            inputs,
+            buffer,
+            warnings,
+        )
+
+    def _plan_transform_file(
+        self,
+        step: TransformStep,
+        relative: Path,
+        local_hook_project: Path | None,
+        target: Path,
+        inputs: dict[str, object],
+        buffer: dict[Path, str | None],
+        warnings: list[str],
+    ) -> None:
+        current = buffer.get(relative)
+        path = confined_path(target, relative, field="file")
         if current is None:
-            if step.file in buffer:
-                raise ValueError(f"cannot transform deleted file: {step.file}")
+            if relative in buffer:
+                raise ValueError(f"cannot transform deleted file: {relative}")
             if not path.exists() and step.optional:
-                warnings.append(f"optional transform skipped missing file: {step.file}")
+                warnings.append(f"optional transform skipped missing file: {relative}")
                 return
             current = read_existing_text_file(
                 path,
-                missing=f"transform file not found: {step.file}",
-                not_file=f"transform path is not a file: {step.file}",
+                missing=f"transform file not found: {relative}",
+                not_file=f"transform path is not a file: {relative}",
+                decode_error=_binary_error(relative),
             )
         execution = self._hooks.transform(
             step.hook,
@@ -170,13 +225,13 @@ class ApplyRecipe:
             file=path,
             args=step.args,
         )
-        buffer[step.file] = execution.result
+        buffer[relative] = execution.result
 
     def _changes(self, target: Path, buffer: dict[Path, str | None]) -> list[FileChange]:
         changes: list[FileChange] = []
         for relative, after in buffer.items():
             path = confined_path(target, relative, field="file")
-            before = path.read_text(encoding="utf-8", newline="") if path.is_file() else None
+            before = _read_before(path, relative) if path.is_file() else None
             if before == after:
                 continue
             changes.append(
@@ -193,3 +248,44 @@ def _destination_exists(
     if relative in buffer:
         return buffer[relative] is not None
     return confined_path(target, relative, field="dest").is_file()
+
+
+def _expand_glob_files(
+    target: Path, globs: tuple[str, ...], exclude: tuple[str, ...]
+) -> list[Path]:
+    matches: dict[str, Path] = {}
+    for pattern in globs:
+        for candidate in target.glob(pattern):
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            try:
+                relative = candidate.relative_to(target)
+            except ValueError:
+                continue
+            relative = confined_path(target, relative, field="file").relative_to(target)
+            relative_posix = relative.as_posix()
+            if _is_excluded(relative_posix, exclude):
+                continue
+            matches[relative_posix] = relative
+    return [matches[key] for key in sorted(matches)]
+
+
+def _is_excluded(relative_posix: str, patterns: tuple[str, ...]) -> bool:
+    return any(
+        relative_posix == pattern or fnmatch.fnmatchcase(relative_posix, pattern)
+        for pattern in patterns
+    )
+
+
+def _read_before(path: Path, relative: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", newline="")
+    except UnicodeDecodeError as exc:
+        raise ValueError(_binary_error(relative)) from exc
+
+
+def _binary_error(relative: Path) -> str:
+    return (
+        f"file is not valid UTF-8: {relative.as_posix()} "
+        "(binary files are unsupported; for globs, exclude: skips it)"
+    )

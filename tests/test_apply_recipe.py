@@ -9,6 +9,8 @@ import pytest
 
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.ports import HookDebugResult
+from untaped_recipe.application.run_bulk import RunBulkApply
+from untaped_recipe.application.targets import Target
 from untaped_recipe.domain.plan import Verdict
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.hook_worker import handle_request
@@ -314,6 +316,152 @@ def test_apply_recipe_if_absent_false_keeps_overwrite_behavior(tmp_path: Path) -
         "copy.txt": "copy overwrite\n",
         "template.txt": "template overwrite\n",
     }
+
+
+def test_apply_recipe_transform_globs_expand_sorted_deduped_and_excluded(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    _write_hook_project(
+        recipe_dir,
+        {
+            "stamp": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content + 'seen: ' + file.relative_to(target).as_posix() + '\\n'\n"
+            )
+        },
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "playbooks").mkdir()
+    (target / "generated").mkdir()
+    (target / "z.yml").write_text("z\n")
+    (target / "a.yml").write_text("a\n")
+    (target / "skip.yml").write_text("skip\n")
+    (target / "generated" / "drop.yml").write_text("drop\n")
+    (target / "playbooks" / "site.yml").write_text("site\n")
+    (target / "playbooks" / "skip.yml").write_text("play skip\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "transform",
+                    "globs": ["**/*.yml", "playbooks/*.yml"],
+                    "exclude": ["skip.yml", "generated/**", "playbooks/skip.yml"],
+                    "hook": "stamp",
+                }
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+    assert [change.relative_path.as_posix() for change in plan.changes] == [
+        "a.yml",
+        "playbooks/site.yml",
+        "z.yml",
+    ]
+    assert [change.after for change in plan.changes] == [
+        "a\nseen: a.yml\n",
+        "site\nseen: playbooks/site.yml\n",
+        "z\nseen: z.yml\n",
+    ]
+
+
+def test_apply_recipe_remove_globs_plan_like_literal_files_and_include_dot_git(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / ".git").mkdir()
+    (target / ".git" / "config").write_text("[core]\n")
+    (target / "build.bak").write_text("remove\n")
+    (target / "keep.txt").write_text("keep\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {"type": "remove", "globs": ["*.bak", ".git/**"]},
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+    assert [
+        (change.relative_path.as_posix(), change.before, change.after) for change in plan.changes
+    ] == [
+        (".git/config", "[core]\n", None),
+        ("build.bak", "remove\n", None),
+    ]
+
+
+def test_apply_recipe_globs_with_zero_matches_warn(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [{"type": "remove", "globs": ["**/*.generated"]}],
+        }
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+    assert plan.changes == ()
+    assert plan.warnings == ("globs matched no files: **/*.generated",)
+
+
+def test_apply_recipe_glob_transform_binary_file_reports_target_error(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    _write_hook_project(
+        recipe_dir,
+        {
+            "noop": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content\n"
+            )
+        },
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "blob.bin").write_bytes(b"\xff\xfe\x00")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [{"type": "transform", "globs": ["*.bin"], "hook": "noop"}],
+        }
+    )
+
+    runner = RunBulkApply(
+        ApplyRecipe(
+            HookExecutor(
+                HookResolver(),
+                workers=InlineWorkers(),
+                helpers=HookHelpers(),
+            )
+        )
+    )
+    plan = runner.plan(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        local_hook_project=recipe_dir,
+        targets=[Target(path=target)],
+        inputs={},
+    )[0]
+
+    assert plan.status == "error"
+    assert plan.error == (
+        "file is not valid UTF-8: blob.bin "
+        "(binary files are unsupported; for globs, exclude: skips it)"
+    )
 
 
 def test_apply_recipe_template_step_can_keep_non_bare_tokens(tmp_path: Path) -> None:

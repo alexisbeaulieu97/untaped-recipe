@@ -1719,6 +1719,24 @@ def test_apply_outcome_includes_optional_transform_warnings(tmp_path: Path) -> N
     )
 
 
+def test_apply_outcome_includes_zero_match_glob_warnings(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: remove\n    globs:\n      - '**/*.generated'\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["warnings"] == "globs matched no files: **/*.generated"
+
+
 def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()

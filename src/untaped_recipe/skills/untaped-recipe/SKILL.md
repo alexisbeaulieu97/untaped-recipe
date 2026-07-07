@@ -21,7 +21,11 @@ plain directories.
   kind, and line counts. `--check` defaults to summary-only preview output for
   CI; pass `--preview table` when you want the same file table in check mode.
   Use `--preview diff` for patch-compatible unified diffs, or `--preview none`
-  for summary-only preview output.
+  for summary-only preview output. The `recipe.preview_max_rows` setting
+  (default 50, `0` for unbounded) collapses large table previews from per-file
+  rows to per-target file/change aggregates, then to the first configured
+  target rows plus an exact hidden-target count. Collapsed previews are
+  summaries, not partial success claims; use `--preview diff` for full hunks.
 - Use `--input-from KEY=JINJA` to override a per-target input source and
   `--interactive` to prompt for unresolved inputs. Do not combine
   `--interactive` with `--check`.
@@ -63,10 +67,16 @@ plain directories.
   `edit <ref>`, and `remove <pack>` operate on the unified pack library.
   `list --hooks` and `show` also cover built-in hooks (`yaml_edit`, marked
   `(builtin)`); built-ins are engine-owned and cannot be edited.
-  `check` with no ref validates the whole library and `packs.toml`; for
-  hook-declaring projects it also verifies lockfile freshness via
+  `check` with no ref validates the whole library and `packs.toml`; `check
+  yaml_edit` can validate a built-in hook ref when no library entry shadows it
+  and emits the same `recipe.check` columns. For hook-declaring projects,
+  `check` requires `uv.lock` and verifies lockfile freshness via
   `uv lock --check`, so stale locks fail at check time, not hook run time.
-  `remove <pack>` is destructive and requires confirmation or `--yes`.
+  Hookless packs and recipe projects do not need `uv.lock`; non-stale probe
+  failures report `could not verify lockfile freshness in ...` with uv detail
+  when available. `remove <pack>` is destructive, requires confirmation or
+  `--yes`, and warns before confirmation when the installed copy has local
+  edits.
 - `untaped-recipe hook run <hook-ref> --target DIR` invokes one hook against
   explicit fixture context without running a full recipe or writing target
   files.
@@ -147,7 +157,7 @@ plain directories.
   plan, and omitting `expected/` asserts no planned changes. Optional
   `case.yml` supports only data fields: `inputs`, `expect: success|error`,
   `error_contains`, and `verdict` (`status` worst-of plus
-  `message_contains`).
+  `message_contains`). `verdict` is only valid with `expect: success`.
 - `test --update` regenerates `expected/`, deletes it when the plan is empty,
   requires an explicit pack or recipe argument, and rejects `expect: error`
   cases. A normal test run never writes pack fixtures.
@@ -159,21 +169,26 @@ plain directories.
 - Template steps are strict by default. Unknown bare names and non-bare
   `{{ ... }}` tokens fail unless the step sets `unknown_tokens: keep`, which
   preserves tokens like `${{ github.ref }}` and `{{ .Values.x }}` while still
-  rendering known inputs.
-- `transform` accepts either `file` or explicit `files`; `files` expands to
-  one step per listed file. Missing transform targets fail unless the transform
-  also sets `optional: true`.
-- `remove` accepts either `file` or explicit `files`; missing remove targets
-  are skipped.
-- Do not use globbing in recipes. List the known candidate paths the recipe is
-  allowed to touch.
+  rendering known inputs. Template and copy steps may set `if_absent: true` to
+  create only when the destination does not already exist or have an earlier
+  planned write.
+- `transform` accepts exactly one of `file`, explicit `files`, or `globs`;
+  `files` expands to one step per listed file at load time, while `globs`
+  expands per target at planning time. Missing transform targets fail unless
+  the transform uses `file`/`files` with `optional: true`.
+- `remove` accepts exactly one of `file`, explicit `files`, or `globs`; missing
+  remove targets are skipped.
+- `globs` has no implicit exclusions and can match repository internals. For
+  repo sweeps, usually add `exclude: [".git/**"]`. Zero-match globs warn.
+  Binary or non-UTF-8 files are unsupported; use `exclude` to skip them.
 - Common YAML edits should use the built-in `yaml_edit` transform hook. It
   supports `set`, `merge`, and `delete` with mapping keys, list indexes, and
   `where` list-item selectors.
 - The engine does not provide a general YAML selector DSL; `yaml_edit` is the
   lone built-in hook and custom behavior belongs in trusted Python pack hooks.
 - External hooks live in uv-managed packs with `pyproject.toml`, `uv.lock`, and
-  `[tool.untaped_recipe.hooks]` metadata.
+  `[tool.untaped_recipe.hooks]` metadata. Hookless packs can be checked without
+  `uv.lock`, but hook-declaring packs need it before hooks can run.
 - Scaffolded hooks use `TYPE_CHECKING` imports from
   `untaped_recipe.hook_api.HookHelpers` so editors can discover helper methods
   through the dev-only `untaped-recipe` dependency. That public protocol models

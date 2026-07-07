@@ -41,9 +41,9 @@ class ApplyRecipe:
         warnings: list[str] = []
         for step in recipe.steps:
             if isinstance(step, TemplateStep):
-                self._plan_template(step, recipe_dir, inputs, buffer)
+                self._plan_template(step, recipe_dir, target, inputs, buffer)
             elif isinstance(step, CopyStep):
-                self._plan_copy(step, recipe_dir, buffer)
+                self._plan_copy(step, recipe_dir, target, buffer)
             elif isinstance(step, RemoveStep):
                 self._plan_remove(step, target, buffer)
             elif isinstance(step, TransformStep):
@@ -100,22 +100,33 @@ class ApplyRecipe:
         self,
         step: TemplateStep,
         recipe_dir: Path,
+        target: Path,
         inputs: dict[str, object],
         buffer: dict[Path, str | None],
     ) -> None:
         source = confined_path(recipe_dir, step.template, field="template")
         if not source.is_file():
             raise ValueError(f"template not found: {step.template}")
+        if step.if_absent and _destination_exists(step.dest, target, buffer):
+            return
         buffer[step.dest] = render_template(
             source.read_text(encoding="utf-8", newline=""),
             inputs,
             unknown_tokens=step.unknown_tokens,
         )
 
-    def _plan_copy(self, step: CopyStep, recipe_dir: Path, buffer: dict[Path, str | None]) -> None:
+    def _plan_copy(
+        self,
+        step: CopyStep,
+        recipe_dir: Path,
+        target: Path,
+        buffer: dict[Path, str | None],
+    ) -> None:
         source = confined_path(recipe_dir, step.source, field="source")
         if not source.is_file():
             raise ValueError(f"copy source not found: {step.source}")
+        if step.if_absent and _destination_exists(step.dest, target, buffer):
+            return
         buffer[step.dest] = source.read_text(encoding="utf-8", newline="")
 
     def _plan_remove(
@@ -172,3 +183,13 @@ class ApplyRecipe:
                 FileChange(target=target, relative_path=relative, before=before, after=after)
             )
         return changes
+
+
+def _destination_exists(
+    relative: Path,
+    target: Path,
+    buffer: dict[Path, str | None],
+) -> bool:
+    if relative in buffer:
+        return buffer[relative] is not None
+    return confined_path(target, relative, field="dest").is_file()

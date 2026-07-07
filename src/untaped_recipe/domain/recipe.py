@@ -121,6 +121,7 @@ class TemplateStep(BaseStep):
     template: Path
     dest: Path
     unknown_tokens: Literal["error", "keep"] = "error"
+    if_absent: bool = False
 
     @field_validator("template", "dest")
     @classmethod
@@ -134,6 +135,7 @@ class CopyStep(BaseStep):
     type: Literal["copy"]
     source: Path
     dest: Path
+    if_absent: bool = False
 
     @field_validator("source", "dest")
     @classmethod

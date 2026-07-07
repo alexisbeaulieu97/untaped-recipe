@@ -50,6 +50,8 @@ def test_recipe_schema_accepts_all_v1_step_types() -> None:
     assert isinstance(recipe.steps[4], RemoveStep)
     assert recipe.inputs["replicas"].default == 2
     assert recipe.steps[2].unknown_tokens == "error"
+    assert recipe.steps[2].if_absent is False
+    assert recipe.steps[3].if_absent is False
 
 
 def test_template_step_unknown_tokens_accepts_keep_and_rejects_other_values() -> None:
@@ -83,6 +85,34 @@ def test_template_step_unknown_tokens_accepts_keep_and_rejects_other_values() ->
                 ],
             }
         )
+
+
+def test_template_and_copy_steps_accept_if_absent() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "workflow.yml",
+                    "dest": ".github/workflows/ci.yml",
+                    "if_absent": True,
+                },
+                {
+                    "type": "copy",
+                    "source": "files/README.md",
+                    "dest": "README.md",
+                    "if_absent": True,
+                },
+            ],
+        }
+    )
+
+    template, copy = recipe.steps
+    assert isinstance(template, TemplateStep)
+    assert isinstance(copy, CopyStep)
+    assert template.if_absent is True
+    assert copy.if_absent is True
 
 
 def test_transform_files_normalize_to_single_file_steps() -> None:

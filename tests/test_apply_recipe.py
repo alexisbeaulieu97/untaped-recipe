@@ -202,6 +202,120 @@ def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -
     assert "name: api" in "\n".join(change.after or "" for change in plan.changes)
 
 
+def test_apply_recipe_if_absent_template_and_copy_follow_planned_state(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "templates").mkdir()
+    (recipe_dir / "files").mkdir()
+    (recipe_dir / "templates" / "created.txt").write_text("created from template\n")
+    (recipe_dir / "templates" / "existing.txt").write_text("template overwrite\n")
+    (recipe_dir / "templates" / "touch.txt").write_text("touched\n")
+    (recipe_dir / "templates" / "removed.txt").write_text("recreated\n")
+    (recipe_dir / "files" / "created-copy.txt").write_text("created from copy\n")
+    (recipe_dir / "files" / "existing-copy.txt").write_text("copy overwrite\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "existing.txt").write_text("keep me\n")
+    (target / "existing-copy.txt").write_text("keep copy\n")
+    (target / "removed.txt").write_text("delete then recreate\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "templates/created.txt",
+                    "dest": "created.txt",
+                    "if_absent": True,
+                },
+                {
+                    "type": "template",
+                    "template": "templates/existing.txt",
+                    "dest": "existing.txt",
+                    "if_absent": True,
+                },
+                {
+                    "type": "copy",
+                    "source": "files/created-copy.txt",
+                    "dest": "created-copy.txt",
+                    "if_absent": True,
+                },
+                {
+                    "type": "copy",
+                    "source": "files/existing-copy.txt",
+                    "dest": "existing-copy.txt",
+                    "if_absent": True,
+                },
+                {
+                    "type": "template",
+                    "template": "templates/touch.txt",
+                    "dest": "planned.txt",
+                },
+                {
+                    "type": "copy",
+                    "source": "files/created-copy.txt",
+                    "dest": "planned.txt",
+                    "if_absent": True,
+                },
+                {"type": "remove", "file": "removed.txt"},
+                {
+                    "type": "template",
+                    "template": "templates/removed.txt",
+                    "dest": "removed.txt",
+                    "if_absent": True,
+                },
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+    changes = {change.relative_path.as_posix(): change for change in plan.changes}
+    assert sorted(changes) == ["created-copy.txt", "created.txt", "planned.txt", "removed.txt"]
+    assert changes["created.txt"].after == "created from template\n"
+    assert changes["created-copy.txt"].after == "created from copy\n"
+    assert changes["planned.txt"].after == "touched\n"
+    assert changes["removed.txt"].before == "delete then recreate\n"
+    assert changes["removed.txt"].after == "recreated\n"
+
+
+def test_apply_recipe_if_absent_false_keeps_overwrite_behavior(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "templates").mkdir()
+    (recipe_dir / "files").mkdir()
+    (recipe_dir / "templates" / "template.txt").write_text("template overwrite\n")
+    (recipe_dir / "files" / "copy.txt").write_text("copy overwrite\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "template.txt").write_text("old template\n")
+    (target / "copy.txt").write_text("old copy\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "templates/template.txt",
+                    "dest": "template.txt",
+                    "if_absent": False,
+                },
+                {"type": "copy", "source": "files/copy.txt", "dest": "copy.txt"},
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+    changes = {change.relative_path.as_posix(): change.after for change in plan.changes}
+    assert changes == {
+        "copy.txt": "copy overwrite\n",
+        "template.txt": "template overwrite\n",
+    }
+
+
 def test_apply_recipe_template_step_can_keep_non_bare_tokens(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()

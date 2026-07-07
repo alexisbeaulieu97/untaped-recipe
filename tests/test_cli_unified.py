@@ -146,6 +146,72 @@ def test_check_flags_orphaned_tests_directories(tmp_path: Path) -> None:
     assert row["error"] == "tests directory names no known recipe: renamed"
 
 
+def test_check_reports_stale_lockfile_for_hook_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="ansible",
+        recipes={"playbook": "recipes/playbook.yml"},
+        hooks={"check": "ansible_pack.hooks.check"},
+    )
+    _install_pack(source)
+
+    def _stale(project_root: Path) -> None:
+        raise ValueError(f"lockfile is stale — run 'uv lock' in {project_root}")
+
+    monkeypatch.setattr("untaped_recipe.application.check_pack.check_lock", _stale)
+    result = CliInvoker().invoke(app, ["check", "ansible", "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    row = json.loads(result.stdout)[0]
+    assert row["status"] == "error"
+    assert "lockfile is stale — run 'uv lock' in" in row["error"]
+
+
+def test_check_probes_lock_freshness_once_per_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="ansible",
+        recipes={
+            "one": "recipes/one/recipe.yml",
+            "two": "recipes/two/recipe.yml",
+            "three": "recipes/three/recipe.yml",
+        },
+        hooks={"check": "ansible_pack.hooks.check"},
+    )
+    _install_pack(source)
+    probed: list[Path] = []
+    monkeypatch.setattr("untaped_recipe.application.check_pack.check_lock", probed.append)
+
+    result = CliInvoker().invoke(app, ["check", "ansible", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert len(probed) == 1
+
+
+def test_check_skips_lock_probe_for_hookless_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="plain", recipes={"ok": "recipes/ok.yml"})
+    _install_pack(source)
+    probed: list[Path] = []
+    monkeypatch.setattr("untaped_recipe.application.check_pack.check_lock", probed.append)
+
+    result = CliInvoker().invoke(app, ["check", "plain", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert probed == []
+
+
 def test_check_without_ref_reports_library_reconcile_and_pack_rows(tmp_path: Path) -> None:
     good_source = tmp_path / "good-source"
     stale_source = tmp_path / "stale-source"

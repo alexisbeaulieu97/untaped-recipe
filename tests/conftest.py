@@ -9,6 +9,20 @@ import pytest
 from untaped.settings import get_settings
 
 
+@pytest.fixture(autouse=True)
+def stub_lock_freshness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the real `uv lock --check` probe in unit tests.
+
+    The suite's packs write placeholder uv.lock files (existence-only
+    convention); a real probe would need uv resolution per check. Tests that
+    exercise the probe re-patch `check_pack.check_lock` explicitly.
+    """
+    monkeypatch.setattr(
+        "untaped_recipe.application.check_pack.check_lock",
+        lambda project_root: None,
+    )
+
+
 @pytest.fixture
 def isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Use an isolated untaped config for CLI tests."""

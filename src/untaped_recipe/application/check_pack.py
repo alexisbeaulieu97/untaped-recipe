@@ -30,11 +30,33 @@ from untaped_recipe.infrastructure import HookResolver
 from untaped_recipe.infrastructure.hook_resolver import ensure_hook_supports
 from untaped_recipe.infrastructure.pack_store import InstalledPack, PackLibrary
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
+from untaped_recipe.infrastructure.uv_project import check_lock
+
+
+class _LockFreshness:
+    """Probe `uv lock --check` at most once per project root per command."""
+
+    def __init__(self) -> None:
+        self._results: dict[Path, str | None] = {}
+
+    def check(self, project_root: Path) -> None:
+        key = project_root.resolve()
+        if key not in self._results:
+            try:
+                check_lock(project_root)
+            except ValueError as exc:
+                self._results[key] = str(exc)
+            else:
+                self._results[key] = None
+        error = self._results[key]
+        if error is not None:
+            raise ValueError(error)
 
 
 def check_ref(root: Path, ref_text: str) -> dict[str, object]:
     """Check one installed pack, recipe ref, or explicit path."""
     library = PackLibrary(library_root=root)
+    locks = _LockFreshness()
     if is_explicit_recipe_path(ref_text):
         path = Path(ref_text).expanduser()
         if path.is_dir() and (path / "pyproject.toml").is_file():
@@ -42,22 +64,23 @@ def check_ref(root: Path, ref_text: str) -> dict[str, object]:
                 manifest = PackManifest.from_pyproject(path)
             except (ValueError, OSError) as exc:
                 return _pack_check_row(path.name, path, status="error", error=str(exc))
-            return _check_pack(root, InstalledPack.local(path, manifest))
+            return _check_pack(root, InstalledPack.local(path, manifest), locks)
         resolved = resolve_explicit_recipe(path, recipe_id=None)
-        return _check_recipe(root, resolved.path, resolved.ref, resolved.local_hook_project)
+        return _check_recipe(root, resolved.path, resolved.ref, resolved.local_hook_project, locks)
     pack = library.find_pack(ref_text)
     if pack is not None:
-        return _check_pack(root, pack)
+        return _check_pack(root, pack, locks)
     ref = parse_ref(ref_text)
     pack, recipe = library.find_recipe(ref)
-    return _check_recipe(root, pack.root / recipe.path, f"{pack.name}/{ref.name}", pack.root)
+    return _check_recipe(root, pack.root / recipe.path, f"{pack.name}/{ref.name}", pack.root, locks)
 
 
 def check_library(root: Path) -> list[dict[str, object]]:
     """Check every installed pack plus index/directory reconciliation."""
     library = PackLibrary(library_root=root)
+    locks = _LockFreshness()
     rows = [_check_reconcile_problem(root, problem) for problem in library.reconcile()]
-    rows.extend(_check_pack(root, pack) for pack in library.packs())
+    rows.extend(_check_pack(root, pack, locks) for pack in library.packs())
     return rows
 
 
@@ -95,15 +118,17 @@ def _pack_check_row(
     }
 
 
-def _check_pack(root: Path, pack: InstalledPack) -> dict[str, object]:
+def _check_pack(root: Path, pack: InstalledPack, locks: _LockFreshness) -> dict[str, object]:
     try:
         if not (pack.root / "uv.lock").is_file():
             raise ValueError(f"pack project is missing uv.lock: {pack.root}")
+        if pack.manifest.hooks:
+            locks.check(pack.root)
         validate_hook_project_contract(pack.root, pack.manifest)
         validate_hook_modules(pack.root, pack.manifest)
         for recipe_name, recipe in sorted(pack.manifest.recipes.items()):
             row = _check_recipe(
-                root, pack.root / recipe.path, f"{pack.name}/{recipe_name}", pack.root
+                root, pack.root / recipe.path, f"{pack.name}/{recipe_name}", pack.root, locks
             )
             if row["status"] == "error":
                 raise ValueError(f"{recipe_name}: {row['error']}")
@@ -133,13 +158,14 @@ def _check_recipe(
     recipe_path: Path,
     recipe_ref: str,
     local_hook_project: Path | None,
+    locks: _LockFreshness,
 ) -> dict[str, object]:
     try:
         recipe = load_recipe_file(recipe_path)
         validate_recipe_input_sources(recipe)
         _check_project_lock(local_hook_project)
         _check_assets(recipe, recipe_path.parent)
-        _check_local_hook_project(local_hook_project)
+        _check_local_hook_project(local_hook_project, locks)
         _check_hooks(recipe, root, local_hook_project)
     except (ConfigError, ValueError, OSError) as exc:
         return {
@@ -173,7 +199,7 @@ def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:
                 raise ValueError(f"copy source not found: {step.source}")
 
 
-def _check_local_hook_project(local_hook_project: Path | None) -> None:
+def _check_local_hook_project(local_hook_project: Path | None, locks: _LockFreshness) -> None:
     if local_hook_project is None or not (local_hook_project / "pyproject.toml").is_file():
         return
     metadata = read_hook_metadata(local_hook_project)
@@ -182,6 +208,7 @@ def _check_local_hook_project(local_hook_project: Path | None) -> None:
     validate_hook_project_contract(local_hook_project, metadata)
     if not (local_hook_project / "uv.lock").is_file():
         raise ValueError(f"hook project is missing uv.lock: {local_hook_project}")
+    locks.check(local_hook_project)
     validate_hook_modules(local_hook_project, metadata)
 
 

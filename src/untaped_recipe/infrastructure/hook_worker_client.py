@@ -419,13 +419,14 @@ class UvHookWorker:
             self.close()
             raise FatalHookWorkerError(message) from exc
         if line is None:
-            raise FatalHookWorkerError(
-                self._failure_message(
-                    "hook worker exited before ready",
-                    diagnostic_limit=diagnostic_limit,
-                    settle_seconds=settle_seconds,
-                )
+            diagnostics = self._drain_diagnostics(
+                limit=diagnostic_limit,
+                settle_seconds=settle_seconds,
             )
+            headline = "hook worker exited before ready"
+            if _is_stale_lock_failure(diagnostics):
+                headline = f"pack lockfile is out of date — run 'uv lock' in {self._project_root}"
+            raise FatalHookWorkerError(f"{headline}\n{diagnostics}" if diagnostics else headline)
         try:
             decoded = json.loads(line)
         except ValueError:
@@ -492,6 +493,9 @@ class UvHookWorker:
     def _start(self) -> subprocess.Popen[str]:
         worker_path = Path(hook_worker.__file__).resolve()
         env = os.environ.copy()
+        # An inherited VIRTUAL_ENV makes uv target the caller's venv instead
+        # of the pack project environment.
+        env.pop("VIRTUAL_ENV", None)
         project_src = str(self._project_root / "src")
         existing_pythonpath = env.get("PYTHONPATH")
         env["PYTHONPATH"] = (
@@ -567,6 +571,11 @@ class UvHookWorker:
             while limit is not None and size > limit and lines:
                 size -= len(lines.pop(0))
         return "".join(lines).strip()
+
+
+def _is_stale_lock_failure(diagnostics: str) -> bool:
+    lowered = diagnostics.lower()
+    return "lockfile" in lowered and "--locked" in lowered
 
 
 def _drain_stderr(stream: TextIO, queue: Queue[str]) -> None:

@@ -256,6 +256,50 @@ def _release_module() -> object:
     return module
 
 
+def test_check_lock_reports_stale_lockfile_with_uv_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from untaped_recipe.infrastructure import uv_project
+
+    def _stale_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["uv", "lock", "--check"],
+            returncode=2,
+            stdout="",
+            stderr="error: The lockfile at `uv.lock` needs to be updated\n",
+        )
+
+    monkeypatch.setattr(uv_project.subprocess, "run", _stale_run)
+    with pytest.raises(ValueError, match="lockfile is stale") as exc_info:
+        uv_project.check_lock(tmp_path)
+
+    message = str(exc_info.value)
+    assert message.startswith(f"lockfile is stale — run 'uv lock' in {tmp_path}")
+    assert "needs to be updated" in message
+
+
+def test_check_lock_passes_on_fresh_lockfile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from untaped_recipe.infrastructure import uv_project
+
+    monkeypatch.setattr(
+        uv_project.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["uv", "lock", "--check"], returncode=0, stdout="", stderr=""
+        ),
+    )
+
+    uv_project.check_lock(tmp_path)
+
+
 def test_public_hook_api_exposes_yaml_option_types() -> None:
     from untaped_recipe.hook_api import HOOK_API_VERSION, YamlDumpOptions, YamlIndentOptions
     from untaped_recipe.hook_api import HookHelpers as ExternalHookHelpers

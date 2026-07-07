@@ -501,6 +501,60 @@ def test_worker_exits_before_ready_reports_crash(
         worker.request({"kind": "transform", "module": "hooks.sample"})
 
 
+def test_stale_lock_death_names_uv_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uv_stderr = (
+        "error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.\n"
+    )
+    fake = _FakeProcess(stdout="", ready=False, stderr=uv_stderr)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
+    with pytest.raises(worker_client.FatalHookWorkerError) as exc_info:
+        worker.request({"kind": "transform", "module": "hooks.sample"}, settle_seconds=0.5)
+
+    message = str(exc_info.value)
+    assert message.startswith(f"pack lockfile is out of date — run 'uv lock' in {tmp_path}")
+    assert "needs to be updated" in message
+    assert "exited before ready" not in message
+
+
+def test_worker_death_without_stale_lock_keeps_ready_headline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(stdout="", ready=False, stderr="ImportError: boom\n")
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
+    with pytest.raises(worker_client.FatalHookWorkerError, match="exited before ready"):
+        worker.request({"kind": "transform", "module": "hooks.sample"}, settle_seconds=0.5)
+
+
+def test_worker_env_scrubs_virtual_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "outer-venv"))
+    monkeypatch.setenv("PYTHONPATH", "existing")
+    captured: dict[str, str] = {}
+
+    def _capture(*args: object, **kwargs: object) -> _FakeProcess:
+        captured.update(kwargs["env"])  # type: ignore[call-overload]
+        return _FakeProcess(stdout='{"id": "1", "ok": true, "result": "after"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", _capture)
+    worker = UvHookWorker(tmp_path)
+
+    result = worker.request({"kind": "transform", "module": "hooks.sample"})
+
+    assert result.result == "after"
+    assert "VIRTUAL_ENV" not in captured
+    assert captured["PYTHONPATH"].endswith("existing")
+
+
 def test_malformed_handshake_line_is_fatal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1451,10 +1505,10 @@ _READY_LINE = '{"ready": true}\n'
 
 
 class _FakeProcess:
-    def __init__(self, *, stdout: str, ready: bool = True) -> None:
+    def __init__(self, *, stdout: str, ready: bool = True, stderr: str = "") -> None:
         self.stdin = StringIO()
         self.stdout = StringIO((_READY_LINE if ready else "") + stdout)
-        self.stderr = StringIO()
+        self.stderr = StringIO(stderr)
 
     def wait(self, timeout: float | None = None) -> int:
         return 0

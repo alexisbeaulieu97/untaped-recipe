@@ -100,6 +100,88 @@ def test_unified_list_recipes_hooks_and_packs(tmp_path: Path) -> None:
     assert json.loads(packs.stdout)[0]["name"] == "ansible"
 
 
+def test_list_hooks_shows_builtins_even_on_empty_library(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["list", "--hooks", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows == [
+        {
+            "pack": "(builtin)",
+            "name": "yaml_edit",
+            "ref": "yaml_edit",
+            "module": "untaped_recipe.builtins.hooks.yaml_edit",
+            "path": rows[0]["path"],
+        }
+    ]
+    assert rows[0]["path"].endswith("yaml_edit.py")
+    assert "no packs installed" not in result.stderr
+
+
+def test_list_hooks_orders_library_rows_before_builtins(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="ansible",
+        recipes={"playbook": "recipes/playbook/recipe.yml"},
+        hooks={"check": "ansible_pack.hooks.check"},
+    )
+    _install_pack(source)
+
+    result = CliInvoker().invoke(app, ["list", "--hooks", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [row["ref"] for row in rows] == ["ansible/check", "yaml_edit"]
+
+
+def test_list_recipes_keeps_empty_library_message(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert "no packs installed" in result.stderr
+
+
+def test_list_packs_keeps_empty_library_message(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["list", "--packs"])
+
+    assert result.exit_code == 0, result.output
+    assert "no packs installed" in result.stderr
+
+
+def test_show_builtin_hook_renders_detail(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["show", "yaml_edit", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    detail = json.loads(result.stdout)
+    assert detail["ref"] == "yaml_edit"
+    assert detail["module"] == "untaped_recipe.builtins.hooks.yaml_edit"
+    assert "transform" in detail["exports"]
+
+
+def test_show_prefers_library_hook_over_builtin(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="shadow",
+        recipes={"playbook": "recipes/playbook.yml"},
+        hooks={"yaml_edit": "shadow_pack.hooks.yaml_edit"},
+    )
+    _install_pack(source)
+
+    result = CliInvoker().invoke(app, ["show", "yaml_edit", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["module"] == "shadow_pack.hooks.yaml_edit"
+
+
+def test_edit_rejects_builtin_hook(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["edit", "yaml_edit"])
+
+    assert result.exit_code == 1
+    assert "built-in hooks are engine-owned and cannot be edited: yaml_edit" in result.stderr
+
+
 def test_unified_show_pack_and_recipe(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_pack(source, manifest_name="ansible", recipes={"playbook": "recipes/playbook.yml"})
@@ -144,6 +226,72 @@ def test_check_flags_orphaned_tests_directories(tmp_path: Path) -> None:
     row = json.loads(result.stdout)[0]
     assert row["status"] == "error"
     assert row["error"] == "tests directory names no known recipe: renamed"
+
+
+def test_check_reports_stale_lockfile_for_hook_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="ansible",
+        recipes={"playbook": "recipes/playbook.yml"},
+        hooks={"check": "ansible_pack.hooks.check"},
+    )
+    _install_pack(source)
+
+    def _stale(project_root: Path) -> None:
+        raise ValueError(f"lockfile is stale — run 'uv lock' in {project_root}")
+
+    monkeypatch.setattr("untaped_recipe.application.check_pack.check_lock", _stale)
+    result = CliInvoker().invoke(app, ["check", "ansible", "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    row = json.loads(result.stdout)[0]
+    assert row["status"] == "error"
+    assert "lockfile is stale — run 'uv lock' in" in row["error"]
+
+
+def test_check_probes_lock_freshness_once_per_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="ansible",
+        recipes={
+            "one": "recipes/one/recipe.yml",
+            "two": "recipes/two/recipe.yml",
+            "three": "recipes/three/recipe.yml",
+        },
+        hooks={"check": "ansible_pack.hooks.check"},
+    )
+    _install_pack(source)
+    probed: list[Path] = []
+    monkeypatch.setattr("untaped_recipe.application.check_pack.check_lock", probed.append)
+
+    result = CliInvoker().invoke(app, ["check", "ansible", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert len(probed) == 1
+
+
+def test_check_skips_lock_probe_for_hookless_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="plain", recipes={"ok": "recipes/ok.yml"})
+    _install_pack(source)
+    probed: list[Path] = []
+    monkeypatch.setattr("untaped_recipe.application.check_pack.check_lock", probed.append)
+
+    result = CliInvoker().invoke(app, ["check", "plain", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert probed == []
 
 
 def test_check_without_ref_reports_library_reconcile_and_pack_rows(tmp_path: Path) -> None:
@@ -191,6 +339,65 @@ def test_check_without_ref_healthy_library_exits_zero(tmp_path: Path) -> None:
             "error": "",
         }
     ]
+
+
+def test_library_miss_hints_at_existing_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    result = CliInvoker().invoke(app, ["show", "demo"])
+
+    assert result.exit_code == 1
+    assert "recipe not found: demo" in result.stderr
+    assert "a path named 'demo' exists" in result.stderr
+    assert "prefix ./" in result.stderr
+
+
+def test_library_miss_without_matching_path_keeps_plain_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = CliInvoker().invoke(app, ["show", "demo"])
+
+    assert result.exit_code == 1
+    assert "recipe not found: demo" in result.stderr
+    assert "a path named" not in result.stderr
+
+
+def test_explicit_path_miss_hints_at_library_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="pack", recipes={"demo": "recipes/demo.yml"})
+    _install_pack(source)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", "./demo", str(tmp_path), "--yes"])
+
+    assert result.exit_code == 1
+    assert "recipe file not found" in result.stderr
+    assert "did you mean the library ref 'demo'?" in result.stderr
+
+
+def test_explicit_path_miss_without_library_match_keeps_plain_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", "./demo", str(tmp_path), "--yes"])
+
+    assert result.exit_code == 1
+    assert "recipe file not found" in result.stderr
+    assert "did you mean" not in result.stderr
 
 
 def test_apply_bare_ref_uses_library_even_when_matching_local_directory_exists(

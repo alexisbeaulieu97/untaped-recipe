@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fnmatch
+import hashlib
 import shutil
 import subprocess
 import tomllib
@@ -22,6 +24,21 @@ from untaped_recipe.domain.paths import safe_library_name
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 _GIT_URL_PREFIXES = ("https://", "git@", "ssh://")
+
+# Dev/build junk excluded from library installs; pack_content_hash prunes the
+# same names so the recorded install hash and the copied tree always agree.
+PACK_COPY_IGNORE = (
+    ".git",
+    ".venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".uv-cache",
+    "*.egg-info",
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +70,30 @@ class _IndexEntry:
     source: str = ""
     rev: str = ""
     version: str = ""
+    content_hash: str = ""
+
+
+def _is_ignored(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pattern) for pattern in PACK_COPY_IGNORE)
+
+
+def pack_content_hash(root: Path) -> str:
+    """Digest a pack tree's install-relevant content (ignore set pruned)."""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()):
+        relative = path.relative_to(root)
+        if any(_is_ignored(part) for part in relative.parts):
+            continue
+        if not path.is_file():
+            continue
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\x00")
+        try:
+            digest.update(path.read_bytes())
+        except OSError as exc:
+            raise ValueError(f"cannot hash pack file {relative.as_posix()}: {exc}") from exc
+        digest.update(b"\x00")
+    return digest.hexdigest()
 
 
 class PackLibrary:
@@ -80,6 +121,7 @@ class PackLibrary:
         rev: str | None,
         name: str | None,
         force: bool,
+        discard_edits: bool = False,
     ) -> PackManifest:
         """Install a validated pack directory into the library."""
         source_dir = source_dir.expanduser()
@@ -92,20 +134,38 @@ class PackLibrary:
                 f"pack already installed: {installed_name}; use --force to replace "
                 "or --name to install under another name"
             )
+        if force and not discard_edits and self.local_edits(installed_name):
+            raise ValueError(local_edits_message(installed_name))
 
         self.packs_dir.mkdir(parents=True, exist_ok=True)
         if force and dest.exists():
             shutil.rmtree(dest)
-        shutil.copytree(source_dir, dest, ignore=shutil.ignore_patterns(".git"))
+        shutil.copytree(source_dir, dest, ignore=shutil.ignore_patterns(*PACK_COPY_IGNORE))
         index = self._read_index()
         index[installed_name] = _IndexEntry(
             source=source,
             rev=rev or "",
             version=manifest.version,
+            content_hash=pack_content_hash(dest),
         )
         self._write_index(index)
         self._packs_cache = None
         return manifest
+
+    def local_edits(self, name: str) -> bool:
+        """Return true when the installed copy diverged from its install hash.
+
+        Absent packs and legacy index rows without a recorded hash report
+        False (unguarded).
+        """
+        installed_name = safe_library_name(name, field="pack")
+        dest = self.packs_dir / installed_name
+        if not dest.is_dir():
+            return False
+        recorded = self._read_index().get(installed_name, _IndexEntry()).content_hash
+        if not recorded:
+            return False
+        return pack_content_hash(dest) != recorded
 
     def remove(self, name: str) -> None:
         """Remove an installed pack and its index row."""
@@ -219,6 +279,7 @@ class PackLibrary:
                 source=str(raw_entry.get("source", "")),
                 rev=str(raw_entry.get("rev", "")),
                 version=str(raw_entry.get("version", "")),
+                content_hash=str(raw_entry.get("content_hash", "")),
             )
         return index
 
@@ -230,6 +291,7 @@ class PackLibrary:
             table.add("source", entry.source)
             table.add("rev", entry.rev)
             table.add("version", entry.version)
+            table.add("content_hash", entry.content_hash)
             doc.add(name, table)
         self.index_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
@@ -252,6 +314,14 @@ def _validate_pack(source_dir: Path, manifest: PackManifest) -> None:
             raise ValueError(
                 f"hook module for {hook_name!r} exports neither transform() nor validate()"
             )
+
+
+def local_edits_message(installed_name: str) -> str:
+    """Pinned guard message shared by the store and the CLI fail-fast."""
+    return (
+        f"pack '{installed_name}' has local edits in the library (via edit or "
+        "new recipe/hook); re-run with --discard-edits to overwrite them"
+    )
 
 
 def _ref_text(ref: PackRef) -> str:

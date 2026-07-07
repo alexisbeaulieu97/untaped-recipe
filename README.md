@@ -127,6 +127,13 @@ step entirely. The command exits successfully and prints a stderr note, but
 hooks cannot run until `uv lock` succeeds because workers use
 `uv run --locked --no-dev`.
 
+`new hook` also scaffolds `tests/test_hook_<name>.py`, a pytest that calls the
+exported hook function directly (hooks are pure functions; no worker needed at
+unit level). New packs get `pytest` in their dev group and a pytest
+`pythonpath = ["src"]` setting, so `uv run --project <pack> pytest` works out
+of the box. Packs scaffolded before 0.13.0 don't gain these automatically —
+add them to the pack's `pyproject.toml` if you want hook tests there.
+
 ```bash
 untaped-recipe new pack ansible
 untaped-recipe new recipe ansible/playbook-migration
@@ -213,7 +220,7 @@ redacted per-target inputs and never store the full incoming pipe record.
 untaped-recipe new pack <name> [--no-lock]
 untaped-recipe new recipe <pack>/<name> [--no-lock]
 untaped-recipe new hook <pack>/<name> [--no-lock]
-untaped-recipe add <path|git-url> [--rev REV] [--name NAME] [--force]
+untaped-recipe add <path|git-url> [--rev REV] [--name NAME] [--force] [--discard-edits]
 untaped-recipe list [--packs|--hooks]
 untaped-recipe show <pack|recipe-ref|hook-ref>
 untaped-recipe check [pack|recipe-ref|path]
@@ -228,12 +235,22 @@ untaped-recipe backup prune [--keep N] [--older-than DAYS]
 `add` installs a pack from a local path or git URL and asks for confirmation
 after listing the recipes and hooks being installed. `--name` overrides the
 installed pack key; that key is the identity used by refs, output rows,
-ambiguity errors, `check`, and `remove`.
+ambiguity errors, `check`, and `remove`. Installs copy the pack tree minus
+dev/build junk (`.git`, `.venv`, `__pycache__`, `dist`, caches, egg-info) and
+record a content hash in `packs.toml`. Because library packs are editable in
+place (`edit`, `new recipe`/`new hook` into an installed pack), `add --force`
+refuses to overwrite a library copy that diverged from its install hash;
+re-run with `--discard-edits` to overwrite deliberately.
 
 `list` shows recipes by default. `list --packs` shows installed packs and
-`list --hooks` shows hook refs. `show` renders structured pack, recipe, or hook
-detail. `check` is static preflight; without a ref it validates the whole
-library and `packs.toml`, and with a ref it validates one pack or recipe.
+`list --hooks` shows hook refs, including built-in hooks such as `yaml_edit`
+(marked `(builtin)`). `show` renders structured pack, recipe, or hook detail
+and resolves bare built-in hook names when no library entry shadows them;
+built-ins are engine-owned, so `edit` rejects them. `check` is static
+preflight; without a ref it validates the whole library and `packs.toml`, and
+with a ref it validates one pack or recipe. For hook-declaring projects,
+`check` also verifies the lockfile is current (`uv lock --check`), so a stale
+`uv.lock` fails at check time instead of at hook run time.
 `test` runs golden-fixture cases packs ship under `tests/`; `--update`
 regenerates goldens for an explicit pack or recipe.
 `remove <pack>` is destructive because library packs are editable in place; it

@@ -31,9 +31,10 @@ from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.check_pack import check_library, check_ref
 from untaped_recipe.application.inputs import PromptFunc
-from untaped_recipe.application.resolution import resolve_apply_recipe
+from untaped_recipe.application.resolution import existing_path_hint, resolve_apply_recipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
+from untaped_recipe.builtins.registry import BUILTIN_HOOKS
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import (
     edit_path,
@@ -60,7 +61,12 @@ from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolve
 from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
-from untaped_recipe.infrastructure.pack_store import InstalledPack, fetch_pack_source, is_git_url
+from untaped_recipe.infrastructure.pack_store import (
+    InstalledPack,
+    fetch_pack_source,
+    is_git_url,
+    local_edits_message,
+)
 from untaped_recipe.infrastructure.pack_store import PackLibrary as UnifiedPackLibrary
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
@@ -77,12 +83,13 @@ _NO_LOCK_NOTE = "uv.lock was not created/refreshed for {path}; hooks need `uv lo
 
 @dataclass(frozen=True)
 class _ResolvedTarget:
-    """A pack/recipe/hook ref resolved for `show` and `edit`."""
+    """A pack/recipe/hook/builtin ref resolved for `show` and `edit`."""
 
-    pack: InstalledPack
+    pack: InstalledPack | None = None
     name: str | None = None
     recipe: RecipeEntry | None = None
     hook: HookEntry | None = None
+    builtin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -321,6 +328,14 @@ def add_command(
         bool,
         Parameter(name="--force", negative="", help="Replace an existing installed pack."),
     ] = False,
+    discard_edits: Annotated[
+        bool,
+        Parameter(
+            name="--discard-edits",
+            negative="",
+            help="With --force, overwrite local edits made to the library copy.",
+        ),
+    ] = False,
     yes: Annotated[
         bool,
         Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
@@ -335,8 +350,11 @@ def add_command(
         )
         manifest = PackManifest.from_pyproject(source_dir)
         installed_name = name or manifest.name
-        _render_pack_add_preview(installed_name, manifest)
         library = UnifiedPackLibrary(library_root=library_root())
+        edited = force and library.local_edits(installed_name)
+        if edited and not discard_edits:
+            raise ConfigError(local_edits_message(installed_name))
+        _render_pack_add_preview(installed_name, manifest, local_edits=edited)
 
         def _install(item: str) -> PackManifest:
             del item
@@ -346,6 +364,7 @@ def add_command(
                 rev=rev,
                 name=name,
                 force=force,
+                discard_edits=discard_edits,
             )
 
         outcome = batch_apply(
@@ -389,6 +408,7 @@ def list_command(
             rows = [
                 _hook_row(pack, name, entry) for pack in installed for name, entry in _hooks(pack)
             ]
+            rows.extend(_builtin_hook_row(name) for name in sorted(BUILTIN_HOOKS))
             kind = "recipe.hook"
         else:
             rows = [
@@ -400,7 +420,7 @@ def list_command(
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind=kind)
         if rendered:
             echo(rendered)
-        if not installed:
+        if not installed and not (hooks and BUILTIN_HOOKS):
             ui_context(strict=False).message(
                 "info",
                 "no packs installed; scaffold one with `new pack` or install with `add`",
@@ -419,6 +439,21 @@ def show_command(
     with report_config_errors():
         library = UnifiedPackLibrary(library_root=library_root())
         target = _resolve_target(library, ref_text)
+        if target.builtin is not None:
+            builtin = BUILTIN_HOOKS[target.builtin]
+            emit(
+                hook_detail(
+                    target.builtin,
+                    HookEntry(module=builtin.module.__name__),
+                    builtin.exports,
+                    Path(builtin.module.__file__ or ""),
+                ),
+                fmt=fmt,
+                columns=columns,
+                kind="recipe.hook",
+            )
+            return
+        assert target.pack is not None
         if target.recipe is not None:
             recipe_path = target.pack.root / target.recipe.path
             emit(
@@ -516,6 +551,11 @@ def edit_command(ref_text: Annotated[str, Parameter(help="Pack, recipe, or hook 
     with report_config_errors():
         library = UnifiedPackLibrary(library_root=library_root())
         target = _resolve_target(library, ref_text)
+        if target.builtin is not None:
+            raise ConfigError(
+                f"built-in hooks are engine-owned and cannot be edited: {target.builtin}"
+            )
+        assert target.pack is not None
         if target.recipe is not None:
             edit_path(target.pack.root / target.recipe.path)
         elif target.hook is not None:
@@ -611,6 +651,10 @@ def _resolve_target(library: UnifiedPackLibrary, ref_text: str) -> _ResolvedTarg
         try:
             hook_pack, hook = library.find_hook(ref)
         except ValueError:
+            if "/" not in ref_text and ref_text in BUILTIN_HOOKS:
+                return _ResolvedTarget(name=ref_text, builtin=ref_text)
+            if str(recipe_error).startswith("recipe not found"):
+                raise ValueError(f"{recipe_error}{existing_path_hint(ref_text)}") from None
             raise recipe_error from None
         return _ResolvedTarget(pack=hook_pack, name=ref.name, hook=hook)
     return _ResolvedTarget(pack=recipe_pack, name=ref.name, recipe=recipe)
@@ -655,12 +699,33 @@ def _hook_row(pack: InstalledPack, name: str, entry: HookEntry) -> dict[str, obj
     }
 
 
-def _render_pack_add_preview(installed_name: str, manifest: PackManifest) -> None:
+def _builtin_hook_row(name: str) -> dict[str, object]:
+    module = BUILTIN_HOOKS[name].module
+    return {
+        "pack": "(builtin)",
+        "name": name,
+        "ref": name,
+        "module": module.__name__,
+        "path": module.__file__ or "",
+    }
+
+
+def _render_pack_add_preview(
+    installed_name: str,
+    manifest: PackManifest,
+    *,
+    local_edits: bool = False,
+) -> None:
     echo(f"Pack: {installed_name}", err=True)
     recipes = ", ".join(sorted(manifest.recipes)) or "(none)"
     hooks = ", ".join(sorted(manifest.hooks)) or "(none)"
     echo(f"Recipes: {recipes}", err=True)
     echo(f"Hooks: {hooks}", err=True)
+    if local_edits:
+        echo(
+            "Warning: library copy has local edits; --discard-edits will overwrite them.",
+            err=True,
+        )
 
 
 def _new_pack_child(ref_text: str) -> tuple[Path, str]:

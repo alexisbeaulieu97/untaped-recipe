@@ -33,7 +33,7 @@ def test_build_package_wheel_writes_recipe_wheel(
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     release.build_package_wheel(dist_dir)
 
-    assert list(dist_dir.glob("untaped_recipe-0.12.0-*.whl"))
+    assert list(dist_dir.glob("untaped_recipe-0.13.0-*.whl"))
 
 
 def test_release_smoke_new_runs_outside_workspace_with_local_index(
@@ -254,6 +254,50 @@ def _release_module() -> object:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_check_lock_reports_stale_lockfile_with_uv_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from untaped_recipe.infrastructure import uv_project
+
+    def _stale_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["uv", "lock", "--check"],
+            returncode=2,
+            stdout="",
+            stderr="error: The lockfile at `uv.lock` needs to be updated\n",
+        )
+
+    monkeypatch.setattr(uv_project.subprocess, "run", _stale_run)
+    with pytest.raises(ValueError, match="lockfile is stale") as exc_info:
+        uv_project.check_lock(tmp_path)
+
+    message = str(exc_info.value)
+    assert message.startswith(f"lockfile is stale — run 'uv lock' in {tmp_path}")
+    assert "needs to be updated" in message
+
+
+def test_check_lock_passes_on_fresh_lockfile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from untaped_recipe.infrastructure import uv_project
+
+    monkeypatch.setattr(
+        uv_project.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["uv", "lock", "--check"], returncode=0, stdout="", stderr=""
+        ),
+    )
+
+    uv_project.check_lock(tmp_path)
 
 
 def test_public_hook_api_exposes_yaml_option_types() -> None:

@@ -1,0 +1,11 @@
+version: 1
+description: Timing probe - yaml_edit builtin in-process.
+steps:
+  - type: transform
+    file: requirements.yml
+    hook: yaml_edit
+    args:
+      edits:
+        - op: set
+          path: [x_managed_by]
+          value: untaped-recipe

@@ -1,0 +1,17 @@
+[project]
+name = "untaped-recipe-fleet-hygiene"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = ["untaped-recipe>=0.9", "pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.untaped_recipe]
+requires_hook_api = ">=0.9,<1"
+
+[tool.untaped_recipe.recipes]
+seed-hygiene = {path = "recipes/seed-hygiene/recipe.yml"}

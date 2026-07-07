@@ -1,0 +1,5 @@
+---
+- name: Site entrypoint
+  hosts: all
+  roles:
+    - common

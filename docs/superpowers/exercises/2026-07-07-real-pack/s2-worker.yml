@@ -1,0 +1,11 @@
+version: 1
+description: Timing probe - custom hook via worker.
+inputs:
+  collections:
+    type: list
+    items: str
+    required: true
+steps:
+  - type: transform
+    file: requirements.yml
+    hook: ensure_collections

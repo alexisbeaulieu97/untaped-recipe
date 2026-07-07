@@ -1,0 +1,21 @@
+[project]
+name = "untaped-recipe-collections-ensure"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = ["ruamel.yaml>=0.18"]
+
+[dependency-groups]
+dev = ["untaped-recipe>=0.9", "pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.untaped_recipe]
+requires_hook_api = ">=0.9,<1"
+
+[tool.untaped_recipe.hooks]
+has_playbooks = {module = "collections_ensure_pack.hooks.has_playbooks"}
+ensure_collections = {module = "collections_ensure_pack.hooks.ensure_collections"}
+
+[tool.untaped_recipe.recipes]
+ensure-collections = {path = "recipes/ensure-collections/recipe.yml"}

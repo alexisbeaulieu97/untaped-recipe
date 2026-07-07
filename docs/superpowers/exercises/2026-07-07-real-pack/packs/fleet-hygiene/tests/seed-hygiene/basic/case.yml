@@ -1,0 +1,13 @@
+# Golden test case for this recipe (run with: untaped-recipe test <pack>/<recipe>).
+# Sibling directories:
+#   given/    - fixture target directory the plan runs against
+#   expected/ - full expected tree after the plan; omit to assert no changes
+# Every field below is optional.
+#
+# inputs:                     # recipe inputs, same names and types apply accepts
+#   owner: platform-team
+# expect: success             # success (default) | error
+# error_contains: "..."       # required with expect: error; forbidden otherwise
+# verdict:                    # assertions on validate-hook verdicts
+#   status: warn              # expected worst status: pass | warn | fail
+#   message_contains: "..."   # substring of at least one verdict message

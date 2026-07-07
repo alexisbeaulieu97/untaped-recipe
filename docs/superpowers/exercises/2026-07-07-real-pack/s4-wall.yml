@@ -1,0 +1,10 @@
+version: 1
+inputs:
+  pkg_name:
+    type: str
+    from:
+      - "{{ target.name | replace('-', '_') }}"
+steps:
+  - type: template
+    template: templates/owner.yml
+    dest: .owner.yml

@@ -1,0 +1,17 @@
+version: 1
+description: Ensure required Ansible collections are declared in requirements.yml.
+inputs:
+  collections:
+    type: list
+    items: str
+    required: true
+steps:
+  - type: validate
+    hook: has_playbooks
+  - type: template
+    template: templates/requirements.yml
+    dest: requirements.yml
+    if_absent: true
+  - type: transform
+    file: requirements.yml
+    hook: ensure_collections

@@ -587,6 +587,38 @@ def test_apply_table_preview_uses_configured_collection_view(
     assert str(target / "out.txt") in result.stderr
 
 
+def test_apply_table_preview_uses_configured_preview_max_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "500")
+    monkeypatch.setenv("UNTAPED_RECIPE__PREVIEW_MAX_ROWS", "1")
+    invalidate_settings_cache()
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: one.txt\n"
+        "    dest: one.txt\n"
+        "  - type: template\n"
+        "    template: two.txt\n"
+        "    dest: two.txt\n"
+    )
+    (tmp_path / "one.txt").write_text("one\n")
+    (tmp_path / "two.txt").write_text("two\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert str(target) in result.stderr
+    assert "files" in result.stderr
+    assert "one.txt" not in result.stderr
+    assert "two.txt" not in result.stderr
+
+
 def test_apply_decline_renders_cancelled_summary_without_writing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -610,6 +642,46 @@ def test_apply_decline_renders_cancelled_summary_without_writing(
     assert not (target / "out.txt").exists()
     assert "Recipe apply cancelled:" in result.stderr
     assert "1 changing target not applied" in result.stderr
+
+
+def test_apply_confirmation_reprints_summary_adjacent_to_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: one.txt\n"
+        "    dest: one.txt\n"
+        "  - type: template\n"
+        "    template: two.txt\n"
+        "    dest: two.txt\n"
+    )
+    (tmp_path / "one.txt").write_text("one\n")
+    (tmp_path / "two.txt").write_text("two\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    class _PromptUi(_DeclineUi):
+        def confirm(self, message: str, *, default: bool = False) -> bool:
+            print(f"PROMPT {message}", file=sys.stderr)
+            return False
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _PromptUi())
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--preview", "table"])
+
+    assert result.exit_code == 0, result.output
+    before_prompt = result.stderr.rsplit("PROMPT Continue?", maxsplit=1)[0]
+    assert before_prompt.rstrip().endswith(
+        "Recipe preview: 1 target, 1 changing, 0 unchanged, 0 failed, 2 files changed"
+    )
+    assert before_prompt.count("Recipe preview:") == 2
+    assert not (target / "one.txt").exists()
+    assert not (target / "two.txt").exists()
 
 
 def test_confirm_accept_applies_changes(

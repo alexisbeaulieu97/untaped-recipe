@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +48,7 @@ from untaped_recipe.cli.common import (
 )
 from untaped_recipe.cli.detail import hook_detail, pack_detail, recipe_detail
 from untaped_recipe.cli.hook_commands import app as hook_app
-from untaped_recipe.cli.preview import PreviewMode, render_preview
+from untaped_recipe.cli.preview import PreviewMode, preview_summary, render_preview
 from untaped_recipe.cli.test_commands import test_command
 from untaped_recipe.domain.hook_exports import hook_exports
 from untaped_recipe.domain.hook_project import (
@@ -288,7 +289,12 @@ def apply_command(
                 recipe_id=recipe_id,
             )
             effective_preview = _effective_preview(preview, check=check)
-            render_preview(context.recipe, context.plans, preview=effective_preview)
+            render_preview(
+                context.recipe,
+                context.plans,
+                preview=effective_preview,
+                preview_max_rows=settings().preview_max_rows,
+            )
             outcome = _execute_plans(
                 context,
                 backup=backup and not check,
@@ -803,6 +809,10 @@ def _execute_plans(
             failed[id(plan)] = str(exc)
             raise
 
+    def _confirm_preview(rows: Sequence[dict[str, object]]) -> None:
+        del rows
+        ui_context(strict=False).message("info", preview_summary(context.plans))
+
     outcome = batch_apply(
         actionable,
         _apply,
@@ -815,6 +825,7 @@ def _execute_plans(
         assume_yes=yes,
         preview_only=dry_run,
         render_generic_preview=False,
+        preview=_confirm_preview,
     )
     backup_id = draft.id if draft is not None and draft.entries else None
     if draft is not None:

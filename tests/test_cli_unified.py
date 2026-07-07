@@ -100,6 +100,81 @@ def test_unified_list_recipes_hooks_and_packs(tmp_path: Path) -> None:
     assert json.loads(packs.stdout)[0]["name"] == "ansible"
 
 
+def test_list_hooks_shows_builtins_even_on_empty_library(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["list", "--hooks", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows == [
+        {
+            "pack": "(builtin)",
+            "name": "yaml_edit",
+            "ref": "yaml_edit",
+            "module": "untaped_recipe.builtins.hooks.yaml_edit",
+            "path": rows[0]["path"],
+        }
+    ]
+    assert rows[0]["path"].endswith("yaml_edit.py")
+    assert "no packs installed" not in result.stderr
+
+
+def test_list_hooks_orders_library_rows_before_builtins(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="ansible",
+        recipes={"playbook": "recipes/playbook/recipe.yml"},
+        hooks={"check": "ansible_pack.hooks.check"},
+    )
+    _install_pack(source)
+
+    result = CliInvoker().invoke(app, ["list", "--hooks", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [row["ref"] for row in rows] == ["ansible/check", "yaml_edit"]
+
+
+def test_list_recipes_keeps_empty_library_message(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert "no packs installed" in result.stderr
+
+
+def test_show_builtin_hook_renders_detail(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["show", "yaml_edit", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    detail = json.loads(result.stdout)
+    assert detail["ref"] == "yaml_edit"
+    assert detail["module"] == "untaped_recipe.builtins.hooks.yaml_edit"
+    assert "transform" in detail["exports"]
+
+
+def test_show_prefers_library_hook_over_builtin(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="shadow",
+        recipes={"playbook": "recipes/playbook.yml"},
+        hooks={"yaml_edit": "shadow_pack.hooks.yaml_edit"},
+    )
+    _install_pack(source)
+
+    result = CliInvoker().invoke(app, ["show", "yaml_edit", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["module"] == "shadow_pack.hooks.yaml_edit"
+
+
+def test_edit_rejects_builtin_hook(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["edit", "yaml_edit"])
+
+    assert result.exit_code == 1
+    assert "built-in hooks are engine-owned and cannot be edited: yaml_edit" in result.stderr
+
+
 def test_unified_show_pack_and_recipe(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_pack(source, manifest_name="ansible", recipes={"playbook": "recipes/playbook.yml"})

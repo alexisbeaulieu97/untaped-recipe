@@ -34,6 +34,7 @@ from untaped_recipe.application.inputs import PromptFunc
 from untaped_recipe.application.resolution import existing_path_hint, resolve_apply_recipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
+from untaped_recipe.builtins.registry import BUILTIN_HOOKS
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import (
     edit_path,
@@ -82,12 +83,13 @@ _NO_LOCK_NOTE = "uv.lock was not created/refreshed for {path}; hooks need `uv lo
 
 @dataclass(frozen=True)
 class _ResolvedTarget:
-    """A pack/recipe/hook ref resolved for `show` and `edit`."""
+    """A pack/recipe/hook/builtin ref resolved for `show` and `edit`."""
 
-    pack: InstalledPack
+    pack: InstalledPack | None = None
     name: str | None = None
     recipe: RecipeEntry | None = None
     hook: HookEntry | None = None
+    builtin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -406,6 +408,7 @@ def list_command(
             rows = [
                 _hook_row(pack, name, entry) for pack in installed for name, entry in _hooks(pack)
             ]
+            rows.extend(_builtin_hook_row(name) for name in sorted(BUILTIN_HOOKS))
             kind = "recipe.hook"
         else:
             rows = [
@@ -417,7 +420,7 @@ def list_command(
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind=kind)
         if rendered:
             echo(rendered)
-        if not installed:
+        if not installed and not (hooks and BUILTIN_HOOKS):
             ui_context(strict=False).message(
                 "info",
                 "no packs installed; scaffold one with `new pack` or install with `add`",
@@ -436,6 +439,21 @@ def show_command(
     with report_config_errors():
         library = UnifiedPackLibrary(library_root=library_root())
         target = _resolve_target(library, ref_text)
+        if target.builtin is not None:
+            builtin = BUILTIN_HOOKS[target.builtin]
+            emit(
+                hook_detail(
+                    target.builtin,
+                    HookEntry(module=builtin.module.__name__),
+                    builtin.exports,
+                    Path(builtin.module.__file__ or ""),
+                ),
+                fmt=fmt,
+                columns=columns,
+                kind="recipe.hook",
+            )
+            return
+        assert target.pack is not None
         if target.recipe is not None:
             recipe_path = target.pack.root / target.recipe.path
             emit(
@@ -533,6 +551,11 @@ def edit_command(ref_text: Annotated[str, Parameter(help="Pack, recipe, or hook 
     with report_config_errors():
         library = UnifiedPackLibrary(library_root=library_root())
         target = _resolve_target(library, ref_text)
+        if target.builtin is not None:
+            raise ConfigError(
+                f"built-in hooks are engine-owned and cannot be edited: {target.builtin}"
+            )
+        assert target.pack is not None
         if target.recipe is not None:
             edit_path(target.pack.root / target.recipe.path)
         elif target.hook is not None:
@@ -628,6 +651,8 @@ def _resolve_target(library: UnifiedPackLibrary, ref_text: str) -> _ResolvedTarg
         try:
             hook_pack, hook = library.find_hook(ref)
         except ValueError:
+            if "/" not in ref_text and ref_text in BUILTIN_HOOKS:
+                return _ResolvedTarget(name=ref_text, builtin=ref_text)
             if str(recipe_error).startswith("recipe not found"):
                 raise ValueError(f"{recipe_error}{existing_path_hint(ref_text)}") from None
             raise recipe_error from None
@@ -671,6 +696,17 @@ def _hook_row(pack: InstalledPack, name: str, entry: HookEntry) -> dict[str, obj
         "ref": f"{pack.name}/{name}",
         "module": entry.module,
         "path": str(hook_module_file(pack.root, entry.module)),
+    }
+
+
+def _builtin_hook_row(name: str) -> dict[str, object]:
+    module = BUILTIN_HOOKS[name].module
+    return {
+        "pack": "(builtin)",
+        "name": name,
+        "ref": name,
+        "module": module.__name__,
+        "path": module.__file__ or "",
     }
 
 

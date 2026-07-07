@@ -137,9 +137,9 @@ def _pack_check_row(
 
 def _check_pack(root: Path, pack: InstalledPack, locks: _LockFreshness) -> dict[str, object]:
     try:
-        if not (pack.root / "uv.lock").is_file():
-            raise ValueError(f"pack project is missing uv.lock: {pack.root}")
         if pack.manifest.hooks:
+            if not (pack.root / "uv.lock").is_file():
+                raise ValueError(f"pack project is missing uv.lock: {pack.root}")
             locks.check(pack.root)
         validate_hook_project_contract(pack.root, pack.manifest)
         validate_hook_modules(pack.root, pack.manifest)
@@ -180,7 +180,6 @@ def _check_recipe(
     try:
         recipe = load_recipe_file(recipe_path)
         validate_recipe_input_sources(recipe)
-        _check_project_lock(local_hook_project)
         _check_assets(recipe, recipe_path.parent)
         _check_local_hook_project(local_hook_project, locks)
         _check_hooks(recipe, root, local_hook_project)
@@ -197,11 +196,6 @@ def _check_recipe(
         "path": str(recipe_path),
         "error": "",
     }
-
-
-def _check_project_lock(local_hook_project: Path | None) -> None:
-    if local_hook_project is not None and not (local_hook_project / "uv.lock").is_file():
-        raise ValueError(f"recipe project is missing uv.lock: {local_hook_project}")
 
 
 def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:

@@ -365,6 +365,69 @@ def test_check_skips_lock_probe_for_hookless_pack(
     assert probed == []
 
 
+def test_check_hookless_pack_without_lock_passes_pack_ref_and_library(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="plain", recipes={"ok": "recipes/ok.yml"})
+    _install_pack(source)
+    installed = library_root() / "packs" / "plain"
+    (installed / "uv.lock").unlink()
+
+    pack_ref = CliInvoker().invoke(app, ["check", "plain", "--format", "json"])
+    library = CliInvoker().invoke(app, ["check", "--format", "json"])
+
+    assert pack_ref.exit_code == 0, pack_ref.output
+    assert library.exit_code == 0, library.output
+    assert json.loads(pack_ref.stdout) == [
+        {
+            "pack": "plain",
+            "status": "pass",
+            "path": str(installed),
+            "recipes": 1,
+            "hooks": 0,
+            "error": "",
+        }
+    ]
+    assert json.loads(library.stdout) == json.loads(pack_ref.stdout)
+
+
+def test_check_hookless_explicit_project_without_lock_passes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="plain", recipes={"ok": "recipes/ok.yml"})
+    (source / "uv.lock").unlink()
+
+    result = CliInvoker().invoke(app, ["check", str(source), "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == [
+        {
+            "pack": "plain",
+            "status": "pass",
+            "path": str(source),
+            "recipes": 1,
+            "hooks": 0,
+            "error": "",
+        }
+    ]
+
+
+def test_check_hook_pack_without_lock_keeps_pack_error_exact(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source,
+        manifest_name="ansible",
+        recipes={"playbook": "recipes/playbook.yml"},
+        hooks={"check": "ansible_pack.hooks.check"},
+    )
+    _install_pack(source)
+    installed = library_root() / "packs" / "ansible"
+    (installed / "uv.lock").unlink()
+
+    result = CliInvoker().invoke(app, ["check", "ansible", "--format", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)[0]["error"] == f"pack project is missing uv.lock: {installed}"
+
+
 def test_check_without_ref_reports_library_reconcile_and_pack_rows(tmp_path: Path) -> None:
     good_source = tmp_path / "good-source"
     stale_source = tmp_path / "stale-source"

@@ -79,7 +79,9 @@ def scaffold_pack(dest: Path, name: str, *, lock: bool = True) -> Path:
             'requires-python = ">=3.14"\n'
             "dependencies = []\n\n"
             "[dependency-groups]\n"
-            f'dev = ["{_HOOK_API_DEV_REQUIREMENT}"]\n\n'
+            f'dev = ["{_HOOK_API_DEV_REQUIREMENT}", "pytest"]\n\n'
+            "[tool.pytest.ini_options]\n"
+            'pythonpath = ["src"]\n\n'
             "[tool.untaped_recipe]\n"
             f'requires_hook_api = "{_HOOK_API_PROJECT_REQUIREMENT}"\n',
             encoding="utf-8",
@@ -176,15 +178,25 @@ def scaffold_hook(
     module_path = pack_dir / "src" / package / "hooks" / f"{module_leaf}.py"
     if module_path.exists():
         raise ValueError(f"hook already exists: {hook_name}")
+    tests_dir = pack_dir / "tests"
+    test_path = tests_dir / f"test_hook_{module_leaf}.py"
+    if test_path.exists():
+        raise ValueError(f"hook test already exists: {test_path}")
+    created_tests_dir = not tests_dir.exists()
     try:
         module_path.parent.mkdir(parents=True, exist_ok=True)
         (pack_dir / "src" / package / "__init__.py").touch()
         (pack_dir / "src" / package / "hooks" / "__init__.py").touch()
         module_path.write_text(_hook_stub(kind), encoding="utf-8")
+        tests_dir.mkdir(exist_ok=True)
+        test_path.write_text(_hook_test_stub(kind, module), encoding="utf-8")
         _append_hook_row(pack_dir / "pyproject.toml", hook_name, module)
     except Exception:
         _remove_manifest_row(pack_dir / "pyproject.toml", "hooks", hook_name)
         module_path.unlink(missing_ok=True)
+        test_path.unlink(missing_ok=True)
+        if created_tests_dir:
+            shutil.rmtree(tests_dir, ignore_errors=True)
         raise
     if lock:
         try:
@@ -219,6 +231,39 @@ def _hook_stub(kind: Literal["transform", "validate"]) -> str:
         _HOOK_STUB_PREAMBLE
         + 'def transform(content, *, inputs, target, file, args, helpers: "HookHelpers"):\n'
         "    return content\n"
+    )
+
+
+def _hook_test_stub(kind: Literal["transform", "validate"], module: str) -> str:
+    if kind == "validate":
+        return (
+            "from untaped_recipe.hook_worker import HookHelpers\n"
+            "\n"
+            f"from {module} import validate\n"
+            "\n"
+            "\n"
+            "def test_validate_returns_pass_verdict() -> None:\n"
+            '    result = validate(inputs={}, target=".", args={}, helpers=HookHelpers())\n'
+            "\n"
+            "    assert result == HookHelpers().pass_()\n"
+        )
+    return (
+        "from untaped_recipe.hook_worker import HookHelpers\n"
+        "\n"
+        f"from {module} import transform\n"
+        "\n"
+        "\n"
+        "def test_transform_returns_content_unchanged() -> None:\n"
+        "    result = transform(\n"
+        '        "example\\n",\n'
+        "        inputs={},\n"
+        '        target=".",\n'
+        '        file="example.txt",\n'
+        "        args={},\n"
+        "        helpers=HookHelpers(),\n"
+        "    )\n"
+        "\n"
+        '    assert result == "example\\n"\n'
     )
 
 

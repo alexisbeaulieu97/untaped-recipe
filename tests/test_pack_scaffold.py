@@ -60,7 +60,10 @@ def test_scaffold_pack_writes_parseable_manifest_with_hook_api_floors(
         "dependencies = []\n"
         "\n"
         "[dependency-groups]\n"
-        'dev = ["untaped-recipe>=0.9"]\n'
+        'dev = ["untaped-recipe>=0.9", "pytest"]\n'
+        "\n"
+        "[tool.pytest.ini_options]\n"
+        'pythonpath = ["src"]\n'
         "\n"
         "[tool.untaped_recipe]\n"
         'requires_hook_api = ">=0.9,<1"\n'
@@ -188,6 +191,94 @@ def test_scaffold_hook_can_write_validate_stub(
     module_path = pack_scaffold.scaffold_hook(tmp_path / "ansible", "check", kind="validate")
 
     assert hook_exports(module_path) == frozenset({"validate"})
+
+
+def test_scaffold_hook_writes_direct_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+
+    pack_scaffold.scaffold_hook(tmp_path / "ansible", "set_owner")
+
+    test_path = tmp_path / "ansible" / "tests" / "test_hook_set_owner.py"
+    content = test_path.read_text(encoding="utf-8")
+    compile(content, str(test_path), "exec")
+    assert "from untaped_recipe.hook_worker import HookHelpers" in content
+    assert "from ansible_pack.hooks.set_owner import transform" in content
+    assert "def test_" in content
+
+
+def test_scaffold_hook_validate_kind_writes_matching_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+
+    pack_scaffold.scaffold_hook(tmp_path / "ansible", "check", kind="validate")
+
+    test_path = tmp_path / "ansible" / "tests" / "test_hook_check.py"
+    content = test_path.read_text(encoding="utf-8")
+    compile(content, str(test_path), "exec")
+    assert "from ansible_pack.hooks.check import validate" in content
+    assert "pass_()" in content
+
+
+def test_scaffold_hook_rejects_existing_test_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+    tests_dir = tmp_path / "ansible" / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_hook_set_owner.py").write_text("mine\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="hook test already exists"):
+        pack_scaffold.scaffold_hook(tmp_path / "ansible", "set_owner")
+
+    module_path = tmp_path / "ansible" / "src" / "ansible_pack" / "hooks" / "set_owner.py"
+    assert not module_path.exists()
+    assert (tests_dir / "test_hook_set_owner.py").read_text(encoding="utf-8") == "mine\n"
+
+
+def test_scaffold_hook_creation_failure_removes_test_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+
+    def _boom(pyproject: Path, name: str, module: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pack_scaffold, "_append_hook_row", _boom)
+    with pytest.raises(OSError, match="disk full"):
+        pack_scaffold.scaffold_hook(tmp_path / "ansible", "set_owner")
+
+    assert not (tmp_path / "ansible" / "tests" / "test_hook_set_owner.py").exists()
+    assert not (tmp_path / "ansible" / "tests").exists()
+
+
+def test_scaffolded_hook_pack_passes_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from untaped_recipe.application.harness import orphaned_test_dirs
+    from untaped_recipe.infrastructure.pack_store import InstalledPack
+
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_dir = tmp_path / "ansible"
+    pack_scaffold.scaffold_pack(pack_dir, "ansible")
+    pack_scaffold.scaffold_hook(pack_dir, "set_owner")
+    (pack_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    manifest = PackManifest.from_pyproject(pack_dir)
+    assert orphaned_test_dirs(InstalledPack.local(pack_dir, manifest)) == []
+    result = CliInvoker().invoke(app, ["check", str(pack_dir), "--format", "json"])
+    assert result.exit_code == 0, result.output
 
 
 def test_scaffold_hook_lock_failure_keeps_module_and_manifest_row(

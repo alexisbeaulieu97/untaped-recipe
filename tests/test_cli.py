@@ -164,6 +164,75 @@ def test_add_force_discard_edits_warns_in_preview_and_overwrites(
     assert result.exit_code == 0, result.output
 
 
+def test_remove_warns_on_local_edits_before_confirm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert result.exit_code == 0, result.output
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
+
+    result = CliInvoker().invoke(app, ["remove", "demo"])
+
+    assert result.exit_code == 0, result.output
+    assert "About to remove 1 pack(s):\n  - demo\n" in result.stderr
+    assert (
+        "Warning: pack 'demo' has local edits in the library (via edit or new "
+        "recipe/hook); removing discards them."
+    ) in result.stderr
+    assert (library_root() / "packs" / "demo").exists()
+
+
+def test_remove_clean_and_legacy_rows_keep_generic_preview_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert result.exit_code == 0, result.output
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _DeclineUi())
+
+    clean = CliInvoker().invoke(app, ["remove", "demo"])
+
+    index_path = library_root() / "packs.toml"
+    index_path.write_text(
+        index_path.read_text(encoding="utf-8").replace("content_hash", "ignored_field"),
+        encoding="utf-8",
+    )
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+    legacy = CliInvoker().invoke(app, ["remove", "demo"])
+
+    assert clean.exit_code == 0, clean.output
+    assert legacy.exit_code == 0, legacy.output
+    assert clean.stderr == "About to remove 1 pack(s):\n  - demo\n"
+    assert legacy.stderr == "About to remove 1 pack(s):\n  - demo\n"
+
+
+def test_remove_yes_skips_local_edits_warning(
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert result.exit_code == 0, result.output
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+
+    result = CliInvoker().invoke(app, ["remove", "demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "local edits" not in result.stderr
+    assert not (library_root() / "packs" / "demo").exists()
+
+
 def test_apply_yes_writes_and_emits_json_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -587,6 +656,38 @@ def test_apply_table_preview_uses_configured_collection_view(
     assert str(target / "out.txt") in result.stderr
 
 
+def test_apply_table_preview_uses_configured_preview_max_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "500")
+    monkeypatch.setenv("UNTAPED_RECIPE__PREVIEW_MAX_ROWS", "1")
+    invalidate_settings_cache()
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: one.txt\n"
+        "    dest: one.txt\n"
+        "  - type: template\n"
+        "    template: two.txt\n"
+        "    dest: two.txt\n"
+    )
+    (tmp_path / "one.txt").write_text("one\n")
+    (tmp_path / "two.txt").write_text("two\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert str(target) in result.stderr
+    assert "files" in result.stderr
+    assert "one.txt" not in result.stderr
+    assert "two.txt" not in result.stderr
+
+
 def test_apply_decline_renders_cancelled_summary_without_writing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -610,6 +711,46 @@ def test_apply_decline_renders_cancelled_summary_without_writing(
     assert not (target / "out.txt").exists()
     assert "Recipe apply cancelled:" in result.stderr
     assert "1 changing target not applied" in result.stderr
+
+
+def test_apply_confirmation_reprints_summary_adjacent_to_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: one.txt\n"
+        "    dest: one.txt\n"
+        "  - type: template\n"
+        "    template: two.txt\n"
+        "    dest: two.txt\n"
+    )
+    (tmp_path / "one.txt").write_text("one\n")
+    (tmp_path / "two.txt").write_text("two\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    class _PromptUi(_DeclineUi):
+        def confirm(self, message: str, *, default: bool = False) -> bool:
+            print(f"PROMPT {message}", file=sys.stderr)
+            return False
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _PromptUi())
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--preview", "table"])
+
+    assert result.exit_code == 0, result.output
+    before_prompt = result.stderr.rsplit("PROMPT Continue?", maxsplit=1)[0]
+    assert before_prompt.rstrip().endswith(
+        "Recipe preview: 1 target, 1 changing, 0 unchanged, 0 failed, 2 files changed"
+    )
+    assert before_prompt.count("Recipe preview:") == 2
+    assert not (target / "one.txt").exists()
+    assert not (target / "two.txt").exists()
 
 
 def test_confirm_accept_applies_changes(
@@ -1717,6 +1858,24 @@ def test_apply_outcome_includes_optional_transform_warnings(tmp_path: Path) -> N
     assert pipe_row["record"]["warnings"] == (
         "optional transform skipped missing file: missing.yml"
     )
+
+
+def test_apply_outcome_includes_zero_match_glob_warnings(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: remove\n    globs:\n      - '**/*.generated'\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert rows[0]["warnings"] == "globs matched no files: **/*.generated"
 
 
 def test_ansible_style_optional_multi_file_recipe_acceptance(tmp_path: Path) -> None:

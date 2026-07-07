@@ -116,13 +116,15 @@ fail before planning. The CLI renders stderr previews from
 `cli/preview.py`: normal apply and `--dry-run` default to a file-level table,
 while `--check` defaults to summary-only CI output unless `--preview table` or
 `--preview diff` is passed. Diff mode keeps patch-compatible `a/` and `b/`
-headers. The command path calls the SDK batch confirmation helper with the
-generic target-row preview suppressed because recipe owns richer file-level
-preview detail. Successful target plans are flushed only after confirmation and
-one backup bundle has been created for the invocation. Target parsing preserves
-optional untaped pipe record context for per-target input derivation;
-`ApplyRecipe` still receives only a concrete target path plus resolved plain
-inputs.
+headers. Table mode uses `RecipeSettings.preview_max_rows` to keep small plans
+file-level and collapse larger plans to truthful per-target aggregates, with an
+exact hidden-target count once the target table itself is capped. The command
+path calls the SDK batch confirmation helper with the generic target-row
+preview suppressed because recipe owns richer file-level preview detail.
+Successful target plans are flushed only after confirmation and one backup
+bundle has been created for the invocation. Target parsing preserves optional
+untaped pipe record context for per-target input derivation; `ApplyRecipe`
+still receives only a concrete target path plus resolved plain inputs.
 
 ## Settings And Library Layout
 
@@ -132,8 +134,9 @@ can be configured in the shared untaped profile under `recipe.library_root`.
 request timeouts. `hook_startup_timeout_seconds` (default `300`, `0` =
 unbounded) separately bounds worker environment startup — the worker emits a
 ready handshake line after imports, and the per-hook timeout only starts
-after it. `backup_keep` and `backup_max_age_days` (both optional) are the
-retention defaults `backup prune` falls back to.
+after it. `preview_max_rows` defaults to `50` and caps table preview row detail;
+`0` disables the cap. `backup_keep` and `backup_max_age_days` (both optional)
+are the retention defaults `backup prune` falls back to.
 The directory layout is:
 
 ```text
@@ -146,6 +149,14 @@ Installed library entries are uv pack projects under `packs/<pack-id>/`.
 `packs.toml` records source path or git URL, rev, and installed version. The
 installed key is the pack identity everywhere: refs, `list`, `check`,
 `remove`, ambiguity messages, and output rows.
+
+`check` without a ref validates the installed library and `packs.toml`; with a
+ref it validates one pack, recipe, explicit path, or bare built-in hook ref
+when no library entry shadows it. Hook-declaring packs require `uv.lock` and
+run `uv lock --check`; hookless packs and recipe projects do not require a
+lockfile. Non-stale lock probe failures report
+`could not verify lockfile freshness in ...`. `remove` previews the pack being
+removed and warns before confirmation when the installed copy has local edits.
 
 Pack identity comes from top-level `[project].name`, not from `recipe.yml`.
 Project names may use the `untaped-recipe-` prefix; the public pack name drops
@@ -229,8 +240,13 @@ metadata. Step types are:
 
 `transform` and `remove` may accept `files` as explicit fan-out syntax. Keep
 that behavior normalized in `Recipe` model validation so `ApplyRecipe` continues
-to plan ordinary single-file steps. Do not add globbing or selector discovery
-to the engine; recipes must list known candidate paths explicitly.
+to plan ordinary single-file steps. They may also accept `globs`, which expand
+per target at planning time and may use `exclude` to skip matches. Globs have
+no implicit excludes; repo sweeps should usually include
+`exclude: [".git/**"]`. Zero matches warn, and binary/non-UTF-8 files are
+unsupported unless excluded. `template` and `copy` may set `if_absent: true` to
+skip writes whose destination already exists in target state or planned state.
+Do not add selector discovery to the engine.
 
 Do not add a general YAML selector DSL to the core engine. Common YAML edits
 belong in the shipped `yaml_edit` transform hook backed by `ruamel.yaml`.
@@ -279,8 +295,9 @@ cases stored inside packs at `tests/<recipe>/<case>/`:
 - `case.yml` is optional data-only config: `inputs`, `expect: success|error`,
   `error_contains` (required with `expect: error`), and `verdict` (`status` is
   the expected worst produced verdict; `message_contains` matches any verdict
-  message). No assertion language beyond this exists or will exist; logic in
-  tests is pytest's job at the hook level.
+  message). `verdict` is only valid with `expect: success`. No assertion
+  language beyond this exists or will exist; logic in tests is pytest's job at
+  the hook level.
 - Planning is the only execution: the harness runs the same planner as `apply`
   with the normal hook resolution order. `--update` regenerates `expected/`,
   deleting it when the plan is empty, requires an explicit pack or recipe
@@ -298,7 +315,9 @@ cases stored inside packs at `tests/<recipe>/<case>/`:
 ## Hook Contracts
 
 External hook code lives in uv-managed pack directories with `pyproject.toml`,
-`uv.lock`, package code under `src/`, and a hook metadata table:
+`uv.lock`, package code under `src/`, and a hook metadata table. Hookless packs
+can be checked without `uv.lock`, but hook-declaring packs need it before hooks
+can run:
 
 ```toml
 [tool.untaped_recipe.hooks]

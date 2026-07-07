@@ -27,6 +27,17 @@ def test_error_contains_is_forbidden_on_success_cases() -> None:
         CaseSpec(error_contains="boom")
 
 
+def test_verdict_is_forbidden_on_expect_error_cases() -> None:
+    with pytest.raises(ValidationError, match="verdict is not valid with expect: error"):
+        CaseSpec.model_validate(
+            {
+                "expect": "error",
+                "error_contains": "boom",
+                "verdict": {"status": "pass"},
+            }
+        )
+
+
 def test_verdict_expectation_requires_an_assertion() -> None:
     with pytest.raises(ValidationError, match="status or message_contains"):
         VerdictExpectation()

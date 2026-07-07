@@ -104,14 +104,28 @@ class TransformStep(BaseStep):
     """Content transform hook step."""
 
     type: Literal["transform"]
-    file: Path
+    file: Path | None = None
+    globs: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
     hook: str
     optional: bool = False
 
     @field_validator("file")
     @classmethod
-    def _safe_file(cls, value: Path) -> Path:
+    def _safe_file(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
         return safe_relative_path(value, field="file")
+
+    @model_validator(mode="after")
+    def _validate_file_or_globs(self) -> TransformStep:
+        if (self.file is None) == (not self.globs):
+            raise ValueError("transform step requires exactly one of file, files, or globs")
+        if self.exclude and not self.globs:
+            raise ValueError("exclude is only valid with globs")
+        if self.optional and self.globs:
+            raise ValueError("optional is not valid with globs")
+        return self
 
 
 class TemplateStep(BaseStep):
@@ -121,6 +135,7 @@ class TemplateStep(BaseStep):
     template: Path
     dest: Path
     unknown_tokens: Literal["error", "keep"] = "error"
+    if_absent: bool = False
 
     @field_validator("template", "dest")
     @classmethod
@@ -134,6 +149,7 @@ class CopyStep(BaseStep):
     type: Literal["copy"]
     source: Path
     dest: Path
+    if_absent: bool = False
 
     @field_validator("source", "dest")
     @classmethod
@@ -145,12 +161,24 @@ class RemoveStep(BaseStep):
     """Remove one target-relative file."""
 
     type: Literal["remove"]
-    file: Path
+    file: Path | None = None
+    globs: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
     @field_validator("file")
     @classmethod
-    def _safe_file(cls, value: Path) -> Path:
+    def _safe_file(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
         return safe_relative_path(value, field="file")
+
+    @model_validator(mode="after")
+    def _validate_file_or_globs(self) -> RemoveStep:
+        if (self.file is None) == (not self.globs):
+            raise ValueError("remove step requires exactly one of file, files, or globs")
+        if self.exclude and not self.globs:
+            raise ValueError("exclude is only valid with globs")
+        return self
 
 
 Step = Annotated[
@@ -194,8 +222,18 @@ def _normalize_file_step(step: object) -> list[object]:
 
     has_file = "file" in step
     has_files = "files" in step
-    if has_file == has_files:
-        raise ValueError(f"{step_type} step requires exactly one of file or files")
+    has_globs = "globs" in step
+    if "exclude" in step and not has_globs:
+        raise ValueError("exclude is only valid with globs")
+    if step_type == "transform" and has_globs and "optional" in step:
+        raise ValueError("optional is not valid with globs")
+    if sum((has_file, has_files, has_globs)) != 1:
+        raise ValueError(f"{step_type} step requires exactly one of file, files, or globs")
+    if has_globs:
+        _validate_non_empty_strings(step["globs"], field="globs")
+        if "exclude" in step:
+            _validate_non_empty_strings(step["exclude"], field="exclude")
+        return [step]
     if not has_files:
         return [step]
 
@@ -211,3 +249,10 @@ def _normalize_file_step(step: object) -> list[object]:
         single["file"] = file_value
         expanded.append(single)
     return expanded
+
+
+def _validate_non_empty_strings(value: object, *, field: str) -> None:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or not value:
+        raise ValueError(f"{field} must not be empty")
+    if any(not isinstance(entry, str) or not entry for entry in value):
+        raise ValueError(f"{field} entries must be non-empty strings")

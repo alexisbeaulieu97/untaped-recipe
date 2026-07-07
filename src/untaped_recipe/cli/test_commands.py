@@ -25,6 +25,7 @@ from untaped_recipe.application.harness import (
     run_case,
     update_case,
 )
+from untaped_recipe.application.resolution import resolve_explicit_recipe
 from untaped_recipe.cli.common import (
     hook_startup_notice,
     hook_timeout_seconds,
@@ -100,6 +101,8 @@ def _select(root: Path, ref_text: str | None) -> _Selection:
             _extend_for_pack(selection, pack)
         return selection
     if ref_text.endswith((".yml", ".yaml")):
+        if _is_pack_path(ref_text):
+            resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=None)
         raise ConfigError("test requires a pack directory or ref, not a recipe file")
     if _is_pack_path(ref_text):
         path = Path(ref_text).expanduser()

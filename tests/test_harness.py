@@ -142,6 +142,14 @@ def _case(pack: InstalledPack, recipe: str, case: str) -> DiscoveredCase:
     return next(found for found in discover_cases(pack, recipe=recipe) if found.case_name == case)
 
 
+def _snapshot_tree(root: Path) -> dict[str, bytes | None]:
+    snapshot: dict[str, bytes | None] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        snapshot[relative] = None if path.is_dir() else path.read_bytes()
+    return snapshot
+
+
 def test_discover_cases_lists_cases_per_manifest_recipe_sorted(tmp_path: Path) -> None:
     pack = _write_pack(
         tmp_path / "demo",
@@ -387,12 +395,15 @@ def test_run_case_missing_given_is_an_error(tmp_path: Path) -> None:
 
 def test_run_case_never_mutates_fixtures(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
-    case_dir = _write_case(pack.root, "emit", "basic")
+    case_dir = _write_case(pack.root, "emit", "basic", case_yml="inputs: {}\n")
     (case_dir / "given" / "keep.txt").write_text("keep\n", encoding="utf-8")
+    (case_dir / "expected").mkdir()
+    (case_dir / "expected" / "out.txt").write_text("payload\n", encoding="utf-8")
+    before = _snapshot_tree(case_dir)
 
     run_case(_case(pack, "emit", "basic"), executor=_FakeExecutor())
 
-    assert sorted(p.name for p in (case_dir / "given").iterdir()) == ["keep.txt"]
+    assert _snapshot_tree(case_dir) == before
 
 
 def test_run_case_non_utf8_fixture_is_a_per_case_error(tmp_path: Path) -> None:

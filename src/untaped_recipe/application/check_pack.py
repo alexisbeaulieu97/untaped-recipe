@@ -12,6 +12,7 @@ from untaped_recipe.application.resolution import (
     is_explicit_recipe_path,
     resolve_explicit_recipe,
 )
+from untaped_recipe.builtins.registry import BUILTIN_HOOKS
 from untaped_recipe.domain.hook_project import (
     read_hook_metadata,
     validate_hook_modules,
@@ -71,7 +72,14 @@ def check_ref(root: Path, ref_text: str) -> dict[str, object]:
     if pack is not None:
         return _check_pack(root, pack, locks)
     ref = parse_ref(ref_text)
-    pack, recipe = library.find_recipe(ref)
+    try:
+        pack, recipe = library.find_recipe(ref)
+    except ValueError as exc:
+        if str(exc).startswith("recipe not found") and "/" not in ref_text:
+            builtin = BUILTIN_HOOKS.get(ref_text)
+            if builtin is not None:
+                return _builtin_check_row(ref_text, Path(builtin.module.__file__ or ""))
+        raise
     return _check_recipe(root, pack.root / recipe.path, f"{pack.name}/{ref.name}", pack.root, locks)
 
 
@@ -99,6 +107,15 @@ def _quoted_name(message: str) -> str:
     return parts[1] if len(parts) == 3 else ""
 
 
+def _builtin_check_row(name: str, path: Path) -> dict[str, object]:
+    return {
+        "recipe": name,
+        "status": "pass",
+        "path": str(path),
+        "error": "",
+    }
+
+
 def _pack_check_row(
     name: str,
     path: Path | None,
@@ -120,9 +137,9 @@ def _pack_check_row(
 
 def _check_pack(root: Path, pack: InstalledPack, locks: _LockFreshness) -> dict[str, object]:
     try:
-        if not (pack.root / "uv.lock").is_file():
-            raise ValueError(f"pack project is missing uv.lock: {pack.root}")
         if pack.manifest.hooks:
+            if not (pack.root / "uv.lock").is_file():
+                raise ValueError(f"pack project is missing uv.lock: {pack.root}")
             locks.check(pack.root)
         validate_hook_project_contract(pack.root, pack.manifest)
         validate_hook_modules(pack.root, pack.manifest)
@@ -163,7 +180,6 @@ def _check_recipe(
     try:
         recipe = load_recipe_file(recipe_path)
         validate_recipe_input_sources(recipe)
-        _check_project_lock(local_hook_project)
         _check_assets(recipe, recipe_path.parent)
         _check_local_hook_project(local_hook_project, locks)
         _check_hooks(recipe, root, local_hook_project)
@@ -180,11 +196,6 @@ def _check_recipe(
         "path": str(recipe_path),
         "error": "",
     }
-
-
-def _check_project_lock(local_hook_project: Path | None) -> None:
-    if local_hook_project is not None and not (local_hook_project / "uv.lock").is_file():
-        raise ValueError(f"recipe project is missing uv.lock: {local_hook_project}")
 
 
 def _check_assets(recipe: Recipe, recipe_dir: Path) -> None:

@@ -80,6 +80,8 @@ def resolve_apply_recipe(root: Path, ref_text: str, *, recipe_id: str | None) ->
 
 def resolve_explicit_recipe(path: Path, *, recipe_id: str | None) -> ResolvedRecipe:
     """Resolve an explicit path to a recipe file, pack recipe, or bare recipe.yml."""
+    if not path.exists():
+        raise ValueError(f"recipe file not found: {path}")
     if path.is_dir():
         if recipe_id is not None:
             manifest = PackManifest.from_pyproject(path)

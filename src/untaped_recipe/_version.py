@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-PACKAGE_VERSION = "0.13.0"
+PACKAGE_VERSION = "0.14.0"
 
 __all__ = ["PACKAGE_VERSION"]

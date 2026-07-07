@@ -29,6 +29,8 @@ unbounded), with a `preparing hook environment for ...` notice on stderr — a
 cold cache or lagging package index no longer counts against the hook timeout.
 Backup retention can be configured with `backup_keep` (newest N bundles) and
 `backup_max_age_days`; `backup prune` uses them when its flags are omitted.
+`preview_max_rows` controls table preview scale, default `50`; set it to `0`
+to keep full per-file table previews.
 
 ## Library Model
 
@@ -164,18 +166,29 @@ CI; pass `--preview table` when you want the same file table in check mode.
 Use `--preview diff` for patch-compatible unified diffs with `a/` and `b/`
 relative paths, or `--preview none` for summary-only runs. `--preview` controls
 safety review detail; `--quiet` only mutes success chatter after the run.
+Table previews stay file-level at or below `preview_max_rows`; above that they
+collapse to per-target file/change aggregates, and very large target sets show
+the first configured rows plus an exact hidden-target count. Collapsed previews
+are summaries, not partial success claims; use `--preview diff` when every file
+hunk must be visible.
 Backups are created by default before writing and can be restored later. Target
 writes are transactional: if a target cannot be written safely, that target is
 rolled back and reported as failed. Use `--check` for CI or compliance checks:
 it writes nothing, creates no backups, prompts for nothing, and exits non-zero
 when any target would change.
 
-Recipes can list known candidate files explicitly for `transform` and `remove`
-steps. `transform.files` and `remove.files` are expanded into ordinary
-per-file steps, and `transform` can use `optional: true` to skip playbooks or
-config files that are absent in some targets. Missing optional transforms are
-reported as warnings in `recipe.outcome` rows. There is no globbing; recipes
-name the candidate paths they intend to touch.
+Recipes can list known candidate files explicitly for `transform` and
+`remove` steps. `transform.files` and `remove.files` are expanded into ordinary
+per-file steps at recipe load time, and `transform` can use `optional: true`
+to skip playbooks or config files that are absent in some targets. Missing
+optional transforms are reported as warnings in `recipe.outcome` rows.
+`transform.globs` and `remove.globs` expand per target at planning time; use
+`exclude` with globs to skip matched paths. Globs have no implicit safety
+excludes, so repo-wide sweeps should usually include `exclude: [".git/**"]`.
+Zero-match globs warn, and binary or non-UTF-8 files are unsupported; exclude
+those paths when sweeping broad trees. `template` and `copy` steps can set
+`if_absent: true` to create only when the destination does not already exist
+or have an earlier planned write.
 
 Piped stdin accepts bare paths and untaped pipe records. Recipe resolves
 absolute `record.target_path` first, then falls back to `record.path` for
@@ -248,14 +261,19 @@ re-run with `--discard-edits` to overwrite deliberately.
 and resolves bare built-in hook names when no library entry shadows them;
 built-ins are engine-owned, so `edit` rejects them. `check` is static
 preflight; without a ref it validates the whole library and `packs.toml`, and
-with a ref it validates one pack or recipe. For hook-declaring projects,
-`check` also verifies the lockfile is current (`uv lock --check`), so a stale
-`uv.lock` fails at check time instead of at hook run time.
+with a ref it validates one pack, recipe, path, or bare built-in hook name.
+Built-in check rows use the same `recipe.check` columns. For hook-declaring
+projects, `check` requires `uv.lock` and verifies freshness with
+`uv lock --check`, so stale locks fail at check time instead of at hook run
+time. Hookless packs and recipe projects do not need `uv.lock`. If freshness
+cannot be verified for a non-stale reason, `check` reports
+`could not verify lockfile freshness in ...` with uv's detail when available.
 `test` runs golden-fixture cases packs ship under `tests/`; `--update`
 regenerates goldens for an explicit pack or recipe.
 `remove <pack>` is destructive because library packs are editable in place; it
-requires confirmation or `--yes`. `backup show` and `backup restore` accept
-full ids, unambiguous prefixes, or `latest`; restore previews and confirms like
+requires confirmation or `--yes` and warns before confirmation when the
+installed copy has local edits. `backup show` and `backup restore` accept full
+ids, unambiguous prefixes, or `latest`; restore previews and confirms like
 apply, uses the same transactional write path and symlink confinement, and
 preserves the changed-since-backup hash guard unless `--force` is passed.
 Backups store text content and do not preserve file mode or mtime.

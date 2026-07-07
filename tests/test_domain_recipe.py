@@ -50,6 +50,8 @@ def test_recipe_schema_accepts_all_v1_step_types() -> None:
     assert isinstance(recipe.steps[4], RemoveStep)
     assert recipe.inputs["replicas"].default == 2
     assert recipe.steps[2].unknown_tokens == "error"
+    assert recipe.steps[2].if_absent is False
+    assert recipe.steps[3].if_absent is False
 
 
 def test_template_step_unknown_tokens_accepts_keep_and_rejects_other_values() -> None:
@@ -85,6 +87,34 @@ def test_template_step_unknown_tokens_accepts_keep_and_rejects_other_values() ->
         )
 
 
+def test_template_and_copy_steps_accept_if_absent() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "workflow.yml",
+                    "dest": ".github/workflows/ci.yml",
+                    "if_absent": True,
+                },
+                {
+                    "type": "copy",
+                    "source": "files/README.md",
+                    "dest": "README.md",
+                    "if_absent": True,
+                },
+            ],
+        }
+    )
+
+    template, copy = recipe.steps
+    assert isinstance(template, TemplateStep)
+    assert isinstance(copy, CopyStep)
+    assert template.if_absent is True
+    assert copy.if_absent is True
+
+
 def test_transform_files_normalize_to_single_file_steps() -> None:
     recipe = Recipe.model_validate(
         {
@@ -114,6 +144,52 @@ def test_transform_files_normalize_to_single_file_steps() -> None:
     assert second.optional is True
 
 
+def test_transform_globs_remain_single_planning_time_step() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "transform",
+                    "globs": ["**/*.yml", "playbooks/*.yaml"],
+                    "exclude": [".git/**", "skip.yml"],
+                    "hook": "add_collections",
+                    "args": {"collections": ["ansible.builtin"]},
+                }
+            ],
+        }
+    )
+
+    assert len(recipe.steps) == 1
+    step = recipe.steps[0]
+    assert isinstance(step, TransformStep)
+    assert step.file is None
+    assert step.globs == ("**/*.yml", "playbooks/*.yaml")
+    assert step.exclude == (".git/**", "skip.yml")
+
+
+def test_remove_globs_remain_single_planning_time_step() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "remove",
+                    "globs": ["**/*.bak"],
+                    "exclude": ["keep.bak"],
+                }
+            ],
+        }
+    )
+
+    assert len(recipe.steps) == 1
+    step = recipe.steps[0]
+    assert isinstance(step, RemoveStep)
+    assert step.file is None
+    assert step.globs == ("**/*.bak",)
+    assert step.exclude == ("keep.bak",)
+
+
 def test_remove_files_normalize_to_single_file_steps() -> None:
     recipe = Recipe.model_validate(
         {
@@ -140,15 +216,19 @@ def test_remove_files_normalize_to_single_file_steps() -> None:
     "step",
     [
         {"type": "transform", "file": "local.yml", "files": ["site.yml"], "hook": "edit"},
+        {"type": "transform", "file": "local.yml", "globs": ["*.yml"], "hook": "edit"},
+        {"type": "transform", "files": ["local.yml"], "globs": ["*.yml"], "hook": "edit"},
         {"type": "transform", "hook": "edit"},
         {"type": "remove", "file": "ansible.cfg", "files": ["old.cfg"]},
+        {"type": "remove", "file": "ansible.cfg", "globs": ["*.cfg"]},
+        {"type": "remove", "files": ["ansible.cfg"], "globs": ["*.cfg"]},
         {"type": "remove"},
     ],
 )
-def test_file_fanout_steps_require_exactly_one_of_file_or_files(
+def test_file_fanout_steps_require_exactly_one_of_file_files_or_globs(
     step: dict[str, object],
 ) -> None:
-    with pytest.raises(ValidationError, match="exactly one of file or files"):
+    with pytest.raises(ValidationError, match="exactly one of file, files, or globs"):
         Recipe.model_validate({"version": 1, "name": "bad", "steps": [step]})
 
 
@@ -161,6 +241,44 @@ def test_file_fanout_steps_require_exactly_one_of_file_or_files(
 )
 def test_file_fanout_steps_reject_empty_files(step: dict[str, object]) -> None:
     with pytest.raises(ValidationError, match="files must not be empty"):
+        Recipe.model_validate({"version": 1, "name": "bad", "steps": [step]})
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"type": "transform", "globs": [], "hook": "edit"},
+        {"type": "remove", "globs": []},
+    ],
+)
+def test_file_fanout_steps_reject_empty_globs(step: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="globs must not be empty"):
+        Recipe.model_validate({"version": 1, "name": "bad", "steps": [step]})
+
+
+@pytest.mark.parametrize(
+    ("step", "message"),
+    [
+        (
+            {"type": "transform", "file": "local.yml", "exclude": ["skip.yml"], "hook": "edit"},
+            "exclude is only valid with globs",
+        ),
+        (
+            {"type": "remove", "file": "old.yml", "exclude": ["skip.yml"]},
+            "exclude is only valid with globs",
+        ),
+        (
+            {"type": "transform", "globs": ["*.yml"], "optional": True, "hook": "edit"},
+            "optional is not valid with globs",
+        ),
+        (
+            {"type": "transform", "globs": ["*.yml"], "optional": False, "hook": "edit"},
+            "optional is not valid with globs",
+        ),
+    ],
+)
+def test_glob_steps_reject_invalid_options(step: dict[str, object], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
         Recipe.model_validate({"version": 1, "name": "bad", "steps": [step]})
 
 

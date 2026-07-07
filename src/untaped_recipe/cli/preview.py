@@ -21,6 +21,7 @@ def render_preview(
     plans: list[TargetPlan],
     *,
     preview: PreviewMode,
+    preview_max_rows: int = 50,
 ) -> None:
     """Render the selected stderr preview for planned targets."""
     ui_context(strict=False).message("info", preview_summary(plans))
@@ -29,7 +30,7 @@ def render_preview(
     if preview == "diff":
         _render_diff_preview(recipe, plans)
         return
-    _render_table_preview(recipe, plans)
+    _render_table_preview(recipe, plans, preview_max_rows=preview_max_rows)
 
 
 def preview_summary(plans: list[TargetPlan]) -> str:
@@ -68,19 +69,39 @@ def _render_diff_preview(recipe: Recipe, plans: list[TargetPlan]) -> None:
     _render_stderr_table(error_rows, columns=["target", "error"])
 
 
-def _render_table_preview(recipe: Recipe, plans: list[TargetPlan]) -> None:
+def _render_table_preview(
+    recipe: Recipe,
+    plans: list[TargetPlan],
+    *,
+    preview_max_rows: int,
+) -> None:
     diffable_plans, suppressed_rows, error_rows = _preview_groups(recipe, plans)
-    normal_rows: list[dict[str, object]] = []
-    for plan in diffable_plans:
-        normal_rows.extend(
-            {
-                "path": str(_display_change_path(change)),
-                "action": change.kind,
-                "changes": _change_counts(change),
-            }
-            for change in plan.changes
-        )
-    _render_stderr_table(normal_rows, columns=["path", "action", "changes"])
+    total_rows = sum(len(plan.changes) for plan in diffable_plans)
+    if preview_max_rows == 0 or total_rows <= preview_max_rows:
+        normal_rows: list[dict[str, object]] = []
+        for plan in diffable_plans:
+            normal_rows.extend(
+                {
+                    "path": str(_display_change_path(change)),
+                    "action": change.kind,
+                    "changes": _change_counts(change),
+                }
+                for change in plan.changes
+            )
+        _render_stderr_table(normal_rows, columns=["path", "action", "changes"])
+    else:
+        target_rows = [_target_summary_row(plan) for plan in diffable_plans]
+        rendered_rows = target_rows
+        if len(target_rows) > preview_max_rows:
+            rendered_rows = target_rows[:preview_max_rows]
+        _render_stderr_table(rendered_rows, columns=["target", "files", "changes"])
+        if len(target_rows) > preview_max_rows:
+            echo(
+                "showing first "
+                f"{preview_max_rows} of {len(target_rows)} targets "
+                "(use --preview diff for full detail)",
+                err=True,
+            )
     _render_stderr_table(suppressed_rows, columns=["target", "files_changed"])
     _render_stderr_table(error_rows, columns=["target", "error"])
 
@@ -132,7 +153,26 @@ def _absolute_display_path(path: Path) -> Path:
     return Path.cwd() / path
 
 
+def _target_summary_row(plan: TargetPlan) -> dict[str, object]:
+    additions = 0
+    deletions = 0
+    for change in plan.changes:
+        change_additions, change_deletions = _count_change_lines(change)
+        additions += change_additions
+        deletions += change_deletions
+    return {
+        "target": str(_display_target(plan)),
+        "files": plan.files_changed,
+        "changes": f"+{additions} -{deletions}",
+    }
+
+
 def _change_counts(change: FileChange) -> str:
+    additions, deletions = _count_change_lines(change)
+    return f"+{additions} -{deletions}"
+
+
+def _count_change_lines(change: FileChange) -> tuple[int, int]:
     before = [] if change.before is None else change.before.splitlines(keepends=True)
     after = [] if change.after is None else change.after.splitlines(keepends=True)
     additions = 0
@@ -146,4 +186,4 @@ def _change_counts(change: FileChange) -> str:
             deletions += before_end - before_start
         elif tag == "insert":
             additions += after_end - after_start
-    return f"+{additions} -{deletions}"
+    return additions, deletions

@@ -300,6 +300,10 @@ verbatim.
 
 `copy` copies a recipe-local text file into a target-relative destination.
 
+`template` and `copy` accept `if_absent: true` to create the destination only
+when it does not already exist in the planned state; an existing file is left
+untouched (and a file removed earlier in the same recipe counts as absent).
+
 `transform` reads one target file, calls a trusted Python hook, and plans the
 returned content as the new file body. A transform may use `optional: true` to
 skip a missing target file and record a warning instead of failing that target.
@@ -327,9 +331,30 @@ created earlier in the same target plan.
 
 Multi-file syntax is only DRY sugar. The recipe model expands it into ordinary
 single-file steps before planning, and hooks are still called once per file
-with that file's path. `file` and `files` are mutually exclusive, and `files`
-must not be empty. There is no globbing or discovery in v1; list the known
-candidate paths that the recipe is allowed to touch.
+with that file's path. `file`, `files`, and `globs` are mutually exclusive,
+and `files`/`globs` must not be empty.
+
+`transform` and `remove` also accept `globs` for planning-time discovery:
+
+```yaml
+- type: remove
+  globs:
+    - "**/*.retry"
+  exclude:
+    - ".git/**"
+```
+
+Glob patterns expand per target at planning time, match regular files only
+(directories and symlinks are skipped), and are deduplicated and sorted for
+deterministic plans. `exclude` is only valid with `globs` and uses the same
+pattern language (`*` never crosses `/`, `**` does; a literal relative path
+excludes itself). Globs have no implicit safety excludes — dotfiles and
+`.git` internals match when the pattern says so, so repo sweeps should
+usually carry `exclude: [".git/**"]`. A step whose patterns match nothing
+plans no changes and records a per-target warning. Binary (non-UTF-8) files
+are unsupported: a matched binary file fails that target's plan with an error
+naming the file; use `exclude` to skip it. `optional` is not valid with
+`globs` — zero matches is already a first-class outcome.
 
 All recipe-local and target-relative paths must be safe relative paths. Absolute
 paths, `..` segments, and nested symlink traversal are rejected before
@@ -358,7 +383,13 @@ Important behavior:
   kind, and line counts. `--check` defaults to summary-only preview output for
   CI; pass `--preview table` when you want the same file table in check mode.
   Use `--preview diff` for patch-compatible unified diffs or `--preview none`
-  for summary-only preview output.
+  for summary-only preview output. Table previews stay file-level at or below
+  the `preview_max_rows` setting (default 50; `0` = unlimited); above it they
+  collapse to per-target rows and, past the same threshold, truncate with an
+  explicit "showing first N of M targets" notice. Exact totals are always
+  printed and re-echoed at the confirmation prompt; collapsed previews are
+  summaries backed by exact totals, with `--preview diff` as the full-detail
+  escape.
 - File-level preview details and diffs are suppressed for targets with
   sensitive inputs because the generated content may contain secret values.
 - Provide targets either as positional directories or with `--stdin`, not both.

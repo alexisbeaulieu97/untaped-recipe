@@ -36,8 +36,13 @@ class CaseSpec(BaseModel):
 
     @model_validator(mode="after")
     def _validate_error_contract(self) -> CaseSpec:
+        # verdict + expect: error is rejected because whether validate
+        # verdicts exist under an expected error depends on where planning
+        # fails relative to validate steps — a fragile contract.
         if self.expect == "error" and not self.error_contains:
             raise ValueError("expect: error requires error_contains")
+        if self.expect == "error" and self.verdict is not None:
+            raise ValueError("verdict is not valid with expect: error")
         if self.expect == "success" and self.error_contains is not None:
             raise ValueError("error_contains is only valid with expect: error")
         return self

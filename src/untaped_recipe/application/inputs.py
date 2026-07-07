@@ -174,10 +174,17 @@ def _resolve_one(
             return _coerce_derived_value(spec, rendered)
     if config.interactive:
         if spec.type in {"list", "dict"}:
-            raise ConfigError(
-                f"interactive prompting is not supported for structured input {name!r}; "
-                "pass --var or --vars"
-            )
+            # Structured inputs cannot prompt, so they resolve exactly as in
+            # non-interactive mode; the error replaces "missing required input"
+            # only where a prompt would otherwise have been the last resort.
+            if spec.default is not None:
+                return spec.coerce(spec.default)
+            if spec.required:
+                raise ConfigError(
+                    f"interactive prompting is not supported for structured input {name!r}; "
+                    "pass --var or --vars"
+                )
+            return _UNSET
         prompt_target = None if target is None else target.path
         prompted = _prompt_value(name, spec, prompt_target, config)
         return _UNSET if prompted is _UNSET else spec.coerce(prompted)

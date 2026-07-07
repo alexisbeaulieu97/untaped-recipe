@@ -396,6 +396,50 @@ def test_interactive_prompting_rejects_structured_inputs() -> None:
     assert prompt.messages == []
 
 
+def test_interactive_resolution_uses_structured_default_without_prompting() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "cols": {"type": "list", "default": ["name", "path"]},
+            },
+        }
+    )
+    prompt = PromptRecorder({})
+
+    result = _resolve(
+        recipe,
+        Target(path=Path("/work/acme/api")),
+        interactive=True,
+        prompt=prompt,
+    )
+
+    assert result.values == {"cols": ["name", "path"]}
+    assert prompt.messages == []
+
+
+def test_interactive_resolution_skips_optional_structured_input() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "cols": {"type": "list", "required": False},
+            },
+        }
+    )
+    prompt = PromptRecorder({})
+
+    result = _resolve(
+        recipe,
+        Target(path=Path("/work/acme/api")),
+        interactive=True,
+        prompt=prompt,
+    )
+
+    assert "cols" not in result.values
+    assert prompt.messages == []
+
+
 def test_sensitive_default_is_not_shown_or_passed_to_prompt_backend() -> None:
     recipe = Recipe.model_validate(
         {

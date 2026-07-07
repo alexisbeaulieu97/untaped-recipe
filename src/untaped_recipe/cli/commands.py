@@ -776,7 +776,10 @@ def _outcome_rows(
         return [
             {**row, "status": preview_status} if row["status"] == "planned" else row for row in rows
         ]
-    if not execution.outcome.results and not execution.failed:
+    if execution.cancelled:
+        # Declined confirmation: nothing ran, so rows honestly stay "planned".
+        # (An executed run where every target was already conformant is NOT
+        # cancelled and falls through to report "unchanged" per target.)
         return rows
     rendered: list[dict[str, object]] = []
     for plan, row in zip(plans, rows, strict=True):

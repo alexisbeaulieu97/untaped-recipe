@@ -3183,3 +3183,83 @@ def test_backup_show_renders_files_as_lines(tmp_path: Path) -> None:
     assert "files:" in result.stdout
     assert f"  - {target}/config.yml" in result.stdout
     assert "[{" not in result.stdout
+
+
+def test_apply_all_unchanged_run_reports_unchanged_not_planned(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "out.txt").write_text("hello\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [row["status"] for row in rows] == ["unchanged"]
+    assert "0 applied, 1 unchanged" in result.stderr
+
+
+def test_backup_restore_decline_prints_no_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yml").write_text("before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            )
+        ],
+    )
+    (target / "config.yml").write_text("after\n")
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr(
+        "untaped_recipe.cli.backup_commands.ui_context", lambda **kwargs: _DeclineUi()
+    )
+    result = CliInvoker().invoke(app, ["backup", "restore", bundle.id])
+
+    assert result.exit_code == 0, result.output
+    assert "restored" not in result.stderr
+    assert (target / "config.yml").read_text() == "after\n"
+
+
+def test_backup_prune_counts_failed_deletions_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = library_root() / "backups"
+    first = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    second = _seed_bundle(backups, "20250201T000000000000Z-bbbbbbbb")
+    _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    original_delete = BackupStore.delete
+
+    def flaky_delete(self: BackupStore, backup_id: str) -> None:
+        if backup_id.endswith("aaaaaaaa"):
+            raise ValueError(f"backup not found: {backup_id}")
+        original_delete(self, backup_id)
+
+    monkeypatch.setattr(BackupStore, "delete", flaky_delete)
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--keep", "1", "--yes"])
+
+    assert result.exit_code == 1, result.output
+    assert "error: 20250101T000000000000Z-aaaaaaaa" in result.stderr
+    assert first.exists()
+    assert not second.exists()

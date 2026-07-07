@@ -120,7 +120,7 @@ def restore_command(
             assume_yes=yes,
             preview=_preview,
         )
-        if not outcome.any_failed:
+        if not outcome.any_failed and outcome.results:
             ui.message("success", f"restored {backup_id}")
         finish(outcome)
 
@@ -167,7 +167,12 @@ def prune_command(
         ui = ui_context(strict=False)
 
         def _delete(bundle: BackupBundle) -> BackupBundle:
-            store.delete(bundle.id)
+            try:
+                store.delete(bundle.id)
+            except (ValueError, OSError) as exc:
+                # batch_apply only counts UntapedError as a per-item failure;
+                # anything else would abort the whole batch mid-prune.
+                raise ConfigError(str(exc)) from exc
             return bundle
 
         outcome = batch_apply(

@@ -160,27 +160,9 @@ class BackupStore:
             if (path / "metadata.json").is_file()
         ]
 
-    def restore(
-        self,
-        backup_id: str,
-        *,
-        force: bool = False,
-        items: Sequence[RestoreItem] | None = None,
-    ) -> None:
-        """Restore a backup bundle."""
-        if items is None:
-            planned = self._restore_plan(backup_id, force=force)
-        else:
-            selected_paths = {item.path for item in items}
-            planned = self._restore_plan(
-                backup_id,
-                force=force,
-                selected_paths=selected_paths,
-            )
-            found_paths = {entry.item.path for entry in planned}
-            missing = sorted(selected_paths - found_paths)
-            if missing:
-                raise ValueError(f"restore item not found: {missing[0]}")
+    def restore(self, backup_id: str, *, force: bool = False) -> None:
+        """Restore a backup bundle as one staged transaction."""
+        planned = self._restore_plan(backup_id, force=force)
         flush_changes(tuple(planned_item.change for planned_item in planned))
 
     def plan_restore(self, backup_id: str, *, force: bool = False) -> builtins.list[RestoreItem]:
@@ -192,7 +174,6 @@ class BackupStore:
         backup_id: str,
         *,
         force: bool,
-        selected_paths: set[Path] | None = None,
     ) -> builtins.list[_PlannedRestore]:
         bundle = self._resolve(backup_id)
         bundle_dir = bundle.path
@@ -203,8 +184,6 @@ class BackupStore:
             target = Path(entry["target"])
             relative_path = Path(entry["relative_path"])
             path = confined_path(target, relative_path, field="relative_path")
-            if selected_paths is not None and path not in selected_paths:
-                continue
             current_hash = _current_hash(path)
             if not force and current_hash != entry["after_hash"]:
                 raise ValueError(

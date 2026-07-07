@@ -19,8 +19,11 @@ def check_lock(project_root: Path) -> None:
     except FileNotFoundError as exc:
         raise ValueError("uv executable not found for project lock") from exc
     if result.returncode != 0:
-        message = f"lockfile is stale — run 'uv lock' in {project_root}"
         detail = result.stderr.strip() or result.stdout.strip()
+        if "needs to be updated" in detail.lower():
+            message = f"lockfile is stale — run 'uv lock' in {project_root}"
+        else:
+            message = f"could not verify lockfile freshness in {project_root}"
         if detail:
             message = f"{message}: {detail}"
         raise ValueError(message)

@@ -281,6 +281,54 @@ def test_check_lock_reports_stale_lockfile_with_uv_detail(
     assert "needs to be updated" in message
 
 
+def test_check_lock_reports_unverifiable_probe_with_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from untaped_recipe.infrastructure import uv_project
+
+    def _network_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["uv", "lock", "--check"],
+            returncode=2,
+            stdout="",
+            stderr="error: failed to fetch package metadata\n",
+        )
+
+    monkeypatch.setattr(uv_project.subprocess, "run", _network_run)
+    with pytest.raises(ValueError) as exc_info:
+        uv_project.check_lock(tmp_path)
+
+    assert str(exc_info.value) == (
+        f"could not verify lockfile freshness in {tmp_path}: "
+        "error: failed to fetch package metadata"
+    )
+    assert "stale" not in str(exc_info.value)
+
+
+def test_check_lock_reports_unverifiable_probe_without_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from untaped_recipe.infrastructure import uv_project
+
+    def _empty_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["uv", "lock", "--check"], returncode=2, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(uv_project.subprocess, "run", _empty_run)
+    with pytest.raises(ValueError) as exc_info:
+        uv_project.check_lock(tmp_path)
+
+    assert str(exc_info.value) == f"could not verify lockfile freshness in {tmp_path}"
+    assert "stale" not in str(exc_info.value)
+
+
 def test_check_lock_passes_on_fresh_lockfile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -271,6 +271,10 @@ def test_file_fanout_steps_reject_empty_globs(step: dict[str, object]) -> None:
             {"type": "transform", "globs": ["*.yml"], "optional": True, "hook": "edit"},
             "optional is not valid with globs",
         ),
+        (
+            {"type": "transform", "globs": ["*.yml"], "optional": False, "hook": "edit"},
+            "optional is not valid with globs",
+        ),
     ],
 )
 def test_glob_steps_reject_invalid_options(step: dict[str, object], message: str) -> None:

@@ -76,17 +76,18 @@ def _render_table_preview(
     preview_max_rows: int,
 ) -> None:
     diffable_plans, suppressed_rows, error_rows = _preview_groups(recipe, plans)
-    normal_rows: list[dict[str, object]] = []
-    for plan in diffable_plans:
-        normal_rows.extend(
-            {
-                "path": str(_display_change_path(change)),
-                "action": change.kind,
-                "changes": _change_counts(change),
-            }
-            for change in plan.changes
-        )
-    if preview_max_rows == 0 or len(normal_rows) <= preview_max_rows:
+    total_rows = sum(len(plan.changes) for plan in diffable_plans)
+    if preview_max_rows == 0 or total_rows <= preview_max_rows:
+        normal_rows: list[dict[str, object]] = []
+        for plan in diffable_plans:
+            normal_rows.extend(
+                {
+                    "path": str(_display_change_path(change)),
+                    "action": change.kind,
+                    "changes": _change_counts(change),
+                }
+                for change in plan.changes
+            )
         _render_stderr_table(normal_rows, columns=["path", "action", "changes"])
     else:
         target_rows = [_target_summary_row(plan) for plan in diffable_plans]

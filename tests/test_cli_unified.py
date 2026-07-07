@@ -390,6 +390,26 @@ def test_check_hookless_pack_without_lock_passes_pack_ref_and_library(tmp_path: 
     assert json.loads(library.stdout) == json.loads(pack_ref.stdout)
 
 
+def test_check_hookless_recipe_ref_without_lock_passes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="plain", recipes={"ok": "recipes/ok.yml"})
+    _install_pack(source)
+    installed = library_root() / "packs" / "plain"
+    (installed / "uv.lock").unlink()
+
+    result = CliInvoker().invoke(app, ["check", "plain/ok", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == [
+        {
+            "recipe": "plain/ok",
+            "status": "pass",
+            "path": str(installed / "recipes" / "ok.yml"),
+            "error": "",
+        }
+    ]
+
+
 def test_check_hookless_explicit_project_without_lock_passes(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_pack(source, manifest_name="plain", recipes={"ok": "recipes/ok.yml"})

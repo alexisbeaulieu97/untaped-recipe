@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import fnmatch
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from untaped_recipe.application.files import read_existing_text_file
 from untaped_recipe.application.ports import HookExecutorPort
@@ -135,11 +134,11 @@ class ApplyRecipe:
         step: RemoveStep,
         target: Path,
         buffer: dict[Path, str | None],
-        warnings: list[str] | None = None,
+        warnings: list[str],
     ) -> None:
         if step.globs:
             matches = _expand_glob_files(target, step.globs, step.exclude)
-            if not matches and warnings is not None:
+            if not matches:
                 warnings.append(f"globs matched no files: {', '.join(step.globs)}")
             for relative in matches:
                 self._plan_remove_file(relative, target, buffer)
@@ -271,10 +270,10 @@ def _expand_glob_files(
 
 
 def _is_excluded(relative_posix: str, patterns: tuple[str, ...]) -> bool:
-    return any(
-        relative_posix == pattern or fnmatch.fnmatchcase(relative_posix, pattern)
-        for pattern in patterns
-    )
+    # full_match keeps exclude in the same pattern language as globs
+    # (`*` never crosses `/`; `**` does).
+    path = PurePosixPath(relative_posix)
+    return any(relative_posix == pattern or path.full_match(pattern) for pattern in patterns)
 
 
 def _read_before(path: Path, relative: Path) -> str:

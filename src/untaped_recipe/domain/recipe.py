@@ -225,7 +225,7 @@ def _normalize_file_step(step: object) -> list[object]:
     has_globs = "globs" in step
     if "exclude" in step and not has_globs:
         raise ValueError("exclude is only valid with globs")
-    if step_type == "transform" and has_globs and step.get("optional") is True:
+    if step_type == "transform" and has_globs and "optional" in step:
         raise ValueError("optional is not valid with globs")
     if sum((has_file, has_files, has_globs)) != 1:
         raise ValueError(f"{step_type} step requires exactly one of file, files, or globs")

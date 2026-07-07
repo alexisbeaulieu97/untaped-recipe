@@ -400,6 +400,43 @@ def test_apply_recipe_remove_globs_plan_like_literal_files_and_include_dot_git(
     ]
 
 
+def test_apply_recipe_glob_exclude_uses_glob_semantics_not_fnmatch(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    target = tmp_path / "target"
+    (target / "sub").mkdir(parents=True)
+    (target / "top.yml").write_text("top\n")
+    (target / "sub" / "nested.yml").write_text("nested\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [{"type": "remove", "globs": ["**/*.yml"], "exclude": ["*.yml"]}],
+        }
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+    assert [change.relative_path.as_posix() for change in plan.changes] == ["sub/nested.yml"]
+
+
+def test_apply_recipe_glob_expansion_skips_directories_and_symlinks(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    target = tmp_path / "target"
+    (target / "dir.yml").mkdir(parents=True)
+    (target / "real.yml").write_text("real\n")
+    outside = tmp_path / "outside.yml"
+    outside.write_text("outside\n")
+    (target / "link.yml").symlink_to(outside)
+    recipe = Recipe.model_validate(
+        {"version": 1, "steps": [{"type": "remove", "globs": ["*.yml"]}]}
+    )
+
+    plan = _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+    assert [change.relative_path.as_posix() for change in plan.changes] == ["real.yml"]
+
+
 def test_apply_recipe_globs_with_zero_matches_warn(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()

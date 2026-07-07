@@ -533,7 +533,6 @@ def remove_command(
     """Remove an installed pack."""
     with report_config_errors():
         library = UnifiedPackLibrary(library_root=library_root())
-        edited = library.local_edits(name)
 
         def _remove(item: str) -> str:
             library.remove(item)
@@ -543,7 +542,7 @@ def remove_command(
             echo(f"About to remove {len(rows)} pack(s):", err=True)
             for row in rows:
                 echo(f"  - {row['name']}", err=True)
-            if edited:
+            if library.local_edits(name):
                 echo(
                     f"Warning: pack '{name}' has local edits in the library "
                     "(via edit or new recipe/hook); removing discards them.",

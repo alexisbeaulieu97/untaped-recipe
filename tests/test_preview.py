@@ -102,6 +102,29 @@ def test_table_preview_tier_two_aggregates_exact_change_counts(
     assert "+4 -1" in stderr
 
 
+def test_table_preview_tier_two_at_target_threshold_shows_all_targets(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plans = []
+    for index in range(2):
+        target = tmp_path / f"target-{index}"
+        plans.append(
+            _plan(
+                target,
+                _change(target, "a.txt", after="a\n"),
+                _change(target, "b.txt", after="b\n"),
+            )
+        )
+
+    render_preview(_recipe(), plans, preview="table", preview_max_rows=2)
+
+    stderr = capsys.readouterr().err
+    assert str(tmp_path / "target-0") in stderr
+    assert str(tmp_path / "target-1") in stderr
+    assert "showing first" not in stderr
+
+
 def test_table_preview_tier_three_truncates_target_rows(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

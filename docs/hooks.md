@@ -1,11 +1,15 @@
 # Hooks
 
-Hooks are trusted Python callables used by `validate` and `transform` recipe
-steps. Pack-local hooks live in uv-managed pack projects and run
-out-of-process through the worker protocol. Built-ins are engine-owned modules
-and run in-process through the direct registry.
+Hooks are the trusted Python callables that back the `validate` and `transform`
+recipe steps (see [recipes](./recipes.md) for which step types call a hook and
+how). This page covers the hook contract, how names resolve, the out-of-process
+execution model, the helper API, the `hook run` debugging command, and the
+built-in `yaml_edit` hook.
 
-Recipes only reference hook names:
+Hooks come in two flavors. Pack-local hooks live in uv-managed pack projects and
+run out-of-process through a worker protocol. Built-ins are engine-owned modules
+and run in-process through a direct registry. Recipes only ever reference hook
+names:
 
 ```yaml
 steps:
@@ -14,27 +18,29 @@ steps:
     hook: set_owner
 ```
 
-Recipes do not declare runtimes. The resolver checks the recipe's own pack,
-installed packs, then built-ins.
+Recipes do not declare runtimes. The resolver decides where a name lives by
+checking the recipe's own pack, then installed packs, then built-ins.
 
-## Hook Contract
+## Hook contract
 
-The exported function name is the contract. A hook module exports
-`transform()`, `validate()`, or both. The recipe step `type` selects which
-function runs.
+The exported function name is the contract. A hook module exports `transform()`,
+`validate()`, or both. The recipe step `type` selects which function runs. Hook
+manifest rows do not carry a `kind` — the metadata declares only the module (the
+manifest format itself belongs to [packs](./packs.md)):
 
 ```toml
 [tool.untaped_recipe.hooks]
 "set_owner" = { module = "service_hooks.hooks.set_owner" }
 ```
 
-Hook manifest rows do not contain `kind`. `check` keeps its no-import guarantee
-by AST-scanning the resolved module file for `def transform` and
-`def validate`; it rejects a recipe step wired to a hook that does not export
-the required function.
+`check` keeps its no-import guarantee by AST-scanning the resolved module file
+for `def transform` and `def validate`; it rejects a recipe step wired to a hook
+that does not export the required function. See [testing](./testing.md) for the
+full `check` contract.
 
-Dual-verb hooks are first-class. A validate/fix pair can share parsing logic in
-one module under one public name:
+### Signatures
+
+Transform hooks receive the current file content and return replacement content:
 
 ```python
 from pathlib import Path
@@ -42,18 +48,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from untaped_recipe.hook_api import HookHelpers
-
-
-def validate(
-    *,
-    inputs: dict[str, object],
-    target: Path,
-    args: dict[str, object],
-    helpers: "HookHelpers",
-) -> object:
-    if not (target / "pyproject.toml").is_file():
-        return helpers.fail("missing pyproject.toml")
-    return helpers.pass_()
 
 
 def transform(
@@ -68,146 +62,7 @@ def transform(
     return content.replace("OWNER", str(args["owner"]))
 ```
 
-Hooks receive resolved recipe inputs as `dict[str, object]`; structured
-`list` and `dict` inputs arrive as native Python values. Recipe `args` are
-passed verbatim and are not templated by the engine. If a hook accepts
-templated string args, call `helpers.render_template()` inside the hook and use
-the helper's unknown-token policy explicitly.
-
-For `hook run`, if the module exports one function, that function runs. If it
-exports both, `--file` implies transform; otherwise pass `--kind transform` or
-`--kind validate`.
-
-## Pack Layout
-
-Create a pack and add a hook:
-
-```bash
-untaped-recipe new pack ansible
-untaped-recipe new hook ansible/add_play_collections
-```
-
-The pack layout is a normal uv project:
-
-```text
-ansible/
-├── pyproject.toml
-├── uv.lock
-└── src/
-    └── ansible_hooks/
-        └── hooks/
-            └── add_play_collections.py
-```
-
-The manifest pins the hook API floor and exposes hook modules:
-
-```toml
-[project]
-name = "untaped-recipe-ansible"
-version = "0.1.0"
-requires-python = ">=3.14"
-dependencies = []
-
-[dependency-groups]
-dev = ["untaped-recipe>=0.10"]
-
-[tool.untaped_recipe]
-requires_hook_api = ">=0.9,<1"
-
-[tool.untaped_recipe.hooks]
-"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
-```
-
-`untaped_recipe.hook_api` gives editors and type checkers the `HookHelpers`
-protocol and YAML option types. Keep `untaped-recipe` in
-`[dependency-groups].dev`; do not add it to `[project].dependencies`. The
-installed CLI owns the worker and helper implementation, and workers run with
-`uv run --locked --no-dev`.
-
-Add packages imported by hook code at runtime to `[project].dependencies`, then
-run `uv lock`.
-
-## Resolution
-
-For `hook: add_play_collections`, resolution checks:
-
-1. the recipe's own pack project,
-2. installed packs,
-3. packaged built-ins such as `yaml_edit`
-
-Bare hook names are accepted only when they resolve uniquely. Use qualified
-`pack/name` refs when multiple packs expose the same hook name:
-
-```bash
-untaped-recipe hook run ansible/add_play_collections --target ./repo --file site.yml --diff
-```
-
-For `hook run`, `--project PATH` points at an explicit local pack project and
-does not fall through to installed packs or built-ins when invalid.
-
-## Execution Model
-
-External pack hooks are launched with locked uv execution:
-`uv run --project <pack-project> --locked --no-dev python <worker>`. During one
-`apply`, the engine keeps a small worker pool per hook project. The pool can
-start up to the clamped `--parallel` value for that project, and each worker
-serializes its own requests. Put packages imported by hook code at runtime in
-`[project].dependencies`; dev-only dependencies are intentionally not installed
-into workers.
-Each hook request has a timeout controlled by `recipe.hook_timeout_seconds`
-or `apply --hook-timeout`; the default is 60 seconds and `0` disables the
-timeout. Timed-out workers are killed, retired from the pool, and reported as
-planning failures for the affected targets.
-
-The worker protocol is newline-delimited JSON over stdin/stdout. Worker stdout
-is protocol-only. Hook `print()` output is redirected to stderr, and stderr is
-used as bounded diagnostics when a worker request fails. Successful request
-diagnostics are discarded during `apply` so chatty hooks do not grow memory
-during bulk runs. `hook run` captures successful hook diagnostics and prints
-them to stderr for debugging, capped at 10 MiB per hook invocation.
-Engine-side Pydantic models validate worker responses before any file changes
-are accepted into a plan.
-
-Hooks are trusted code, but hook behavior must still be pure at planning time:
-they may read the target tree and their own pack directory, but must not write
-files, reach the network, or read outside those roots. Normal file mutation
-must go through returned transform content so preview, backups, and
-transactional writes stay truthful.
-
-## Transform Hooks
-
-Transform hooks receive the current file content and return replacement
-content. They should not write files directly.
-
-```python
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers
-
-
-def transform(
-    content: str,
-    *,
-    inputs: dict[str, object],
-    target: Path,
-    file: Path,
-    args: dict[str, object],
-    helpers: "HookHelpers",
-) -> str:
-    owner = args["owner"]
-    return content.replace("OWNER", str(owner))
-```
-
-`target` and `file` are rebuilt as `Path` objects in the worker. `helpers` is a
-small worker helper object. The `TYPE_CHECKING` import gives editors the helper
-API without importing anything at hook runtime; type checkers resolve it from
-the `untaped-recipe` dev dependency.
-
-## Validate Hooks
-
-Validate hooks inspect a target and return a verdict.
+Validate hooks inspect a target and return a verdict:
 
 ```python
 from pathlib import Path
@@ -229,39 +84,192 @@ def validate(
     return helpers.pass_()
 ```
 
-Accepted return values:
+`target` (and, for transforms, `file`) are rebuilt as `Path` objects inside the
+worker. The `TYPE_CHECKING` import gives editors and type checkers the
+`HookHelpers` protocol without importing anything at hook runtime.
 
-- compatible verdict dict, such as `{"status": "warn", "message": "..."}`
+### Verdict return values
+
+A validate hook may return any of:
+
+- a compatible verdict dict, such as `{"status": "warn", "message": "..."}`
 - `None` for pass
-- string for fail
-- a local verdict-like object with `model_dump()`
+- a string for fail
+- a local verdict-like object exposing `model_dump()`
 
-Warnings are recorded on the target plan. Failures abort that target before
-any writes.
+Prefer the explicit `helpers.pass_()`, `helpers.warn()`, and `helpers.fail()`
+helpers over hand-rolled dicts. Warnings are recorded on the target plan;
+failures abort that target before any writes.
+
+### Dual-verb hooks
+
+A validate/fix pair can share parsing logic in one module under one public name.
+The recipe step `type` picks the verb at run time:
+
+```python
+def validate(*, inputs, target, args, helpers) -> object:
+    if not (target / "pyproject.toml").is_file():
+        return helpers.fail("missing pyproject.toml")
+    return helpers.pass_()
+
+
+def transform(content, *, inputs, target, file, args, helpers) -> str:
+    return content.replace("OWNER", str(args["owner"]))
+```
+
+### Inputs and args
+
+Hooks receive resolved recipe inputs as `dict[str, object]`. Structured `list`
+and `dict` inputs arrive as native Python values, not templated strings — read
+them directly from `inputs` (see [inputs](./inputs.md) for input types and
+[templating](./templating.md) for the `{{ name }}` token language). Because
+[recipes](./recipes.md) pass hook `args` verbatim, the engine never templates
+them: if a hook accepts templated string args, call `helpers.render_template()`
+inside the hook and choose the unknown-token policy explicitly.
+
+## Authoring a pack hook
+
+Hook code lives in a normal uv pack project. Scaffolding a hook writes a typed
+stub, the `TYPE_CHECKING` import, and a direct-call pytest for you; see
+[packs](./packs.md) for the `new pack` / `new hook` commands and the lock
+mechanics. The generated tree is a standard uv project:
+
+```text
+ansible/
+├── pyproject.toml
+├── uv.lock
+└── src/
+    └── ansible_hooks/
+        └── hooks/
+            └── add_play_collections.py
+```
+
+The stub already exports a working function (a transform returns its content
+unchanged; a validate returns `helpers.pass_()`) so the pack passes `check`
+before you fill it in. The paired `tests/test_hook_<name>.py` calls the exported
+function directly — hooks are pure functions, so no worker is needed in unit
+tests (see [testing](./testing.md) for the hook test harness).
+
+### `hook_api`, the dev dependency, and `requires_hook_api`
+
+The manifest pins the hook API floor and exposes hook modules:
+
+```toml
+[project]
+name = "untaped-recipe-ansible"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = ["untaped-recipe>=0.9"]
+
+[tool.untaped_recipe]
+requires_hook_api = ">=0.9,<1"
+
+[tool.untaped_recipe.hooks]
+"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
+```
+
+`untaped_recipe.hook_api` gives editors and type checkers the `HookHelpers`
+protocol and the YAML option types. Keep `untaped-recipe` in
+`[dependency-groups].dev`; do **not** add it to `[project].dependencies`. The
+installed CLI owns the worker and helper implementation, and workers run with
+`uv run --locked --no-dev`, so the dev group is never installed into a worker.
+
+`requires_hook_api` is a compatibility floor: the engine fails fast when the
+installed helper API is older than the pack requires, before running any hook.
+It tracks the **hook API contract**, not the CLI release cadence — the helper
+API changes rarely, so this floor moves independently of `untaped-recipe`
+version bumps. The scaffolded floor derives from the engine's
+`HOOK_API_VERSION` (currently `0.9.0`), which is why both the manifest floor and
+the dev dependency read `0.9` rather than the current CLI version.
+
+Add packages that hook code imports at runtime to `[project].dependencies`, then
+run `uv lock`. Dev-only dependencies are intentionally not available to hook
+code at run time.
+
+## Resolution
+
+For `hook: add_play_collections`, resolution checks, in order:
+
+1. the recipe's own pack project,
+2. installed packs in the library,
+3. packaged built-ins such as `yaml_edit`.
+
+Bare hook names resolve only when they are unique across those sources. Use a
+qualified `pack/name` reference when more than one pack exposes the same hook
+name; a qualified name resolves against the library only. See [packs](./packs.md)
+for the full reference grammar.
+
+For `hook run`, `--project PATH` points at an explicit local pack project and is
+searched before installed packs. It must point at a pack that actually declares
+hook metadata; it never falls through to installed packs or built-ins when the
+path is missing or is not a hook project.
+
+## Execution model
+
+External pack hooks are launched with locked uv execution:
+
+```text
+uv run --project <pack-project> --locked --no-dev python <worker>
+```
+
+During one `apply`, the engine keeps a small worker pool **per hook project**.
+The pool may start up to the clamped `--parallel` value for that project, and
+each worker serializes its own requests. Because workers run `--no-dev`, only
+`[project].dependencies` are importable at hook run time.
+
+Each hook request has a timeout controlled by the `hook_timeout_seconds` setting
+or `apply --hook-timeout`; the default is 60 seconds and `0` disables it. A
+timed-out worker is killed, retired from the pool, and reported as a planning
+failure for the affected targets rather than hanging the whole batch. Worker
+environment startup — uv creating or syncing the pack env on first use, plus
+module imports — runs under its own `hook_startup_timeout_seconds` bound
+(default 300, `0` = unbounded) and emits a `preparing hook environment for ...`
+notice on stderr, so a cold cache or a lagging package index does not count
+against the per-hook timeout. See [reference](./reference.md) for these settings
+and [apply](./apply.md) for `--hook-timeout` and `--parallel` on the command
+line.
+
+The worker protocol is newline-delimited JSON over stdin/stdout, after a
+one-line ready handshake that marks the end of environment startup. Worker
+stdout is protocol-only: hook `print()` output is redirected to stderr, and
+stderr is captured as bounded diagnostics when a request fails. Successful
+request diagnostics are discarded during `apply` so chatty hooks do not grow
+memory during bulk runs; `hook run` instead surfaces successful diagnostics for
+debugging (capped at 10 MiB per invocation). Engine-side Pydantic models
+validate every worker response before any file change is accepted into a plan.
+
+Hooks are trusted code, but hook behavior must stay **pure at planning time**.
+A hook may read the target tree and its own pack directory, but must not write
+files, reach the network, or read outside those roots. All file mutation must
+flow through returned transform content so preview, backups, and transactional
+writes stay truthful.
 
 ## Helpers
 
-Worker helpers provide:
+The `helpers` argument is a small worker helper object. It provides:
 
-- `pass_`, `warn`, and `fail` verdict helpers, returning dict-shaped verdicts
-  such as `{"status": "warn", "message": "..."}`.
+- `pass_(message="")`, `warn(message)`, and `fail(message)` verdict helpers,
+  each returning a dict such as `{"status": "warn", "message": "..."}`.
 - `render_template(template, inputs, unknown_tokens="error")` for simple
   `{{ name }}` placeholders.
 - `load_yaml(content)` and `dump_yaml(data, options=None)`, which require
-  `ruamel.yaml` in the hook project's dependencies.
+  `ruamel.yaml` in the pack's `[project].dependencies`.
 
-Add hook-specific dependencies to the hook project's `pyproject.toml`, then run
-`uv lock`. The engine always runs hook projects with `--locked --no-dev`, so
-only `[project].dependencies` are available to hook code at runtime.
+### `render_template`
 
 `render_template` replaces known bare input names. By default, unknown bare
-names and non-bare `{{ ... }}` tokens raise. Pass `unknown_tokens="keep"` to
-preserve unknown tokens such as GitHub Actions `${{ github.ref }}` or Helm
-`{{ .Values.x }}` while still rendering known inputs.
-Structured input values are not valid render targets; custom hooks should read
-lists and mappings directly from the `inputs` mapping.
+names and any non-bare `{{ ... }}` token raise. Pass `unknown_tokens="keep"` to
+preserve tokens you do not own — GitHub Actions `${{ github.ref }}` or Helm
+`{{ .Values.x }}` — while still rendering known inputs. Structured input values
+are not valid render targets; read lists and mappings directly from `inputs`
+instead. The token language itself is described in [templating](./templating.md).
 
-`dump_yaml` accepts ordinary dict options so hook projects do not need runtime
+### `load_yaml` / `dump_yaml`
+
+`dump_yaml` accepts ordinary dict options, so hook projects never need runtime
 imports from the engine:
 
 ```python
@@ -279,56 +287,59 @@ return helpers.dump_yaml(
 )
 ```
 
-Defaults are `preserve_quotes=True` and `width=4096` for both in-process
-built-ins and external workers. Omitted options use ruamel's defaults for that
-setting. Unsupported option keys and unsupported nested `indent` keys are
-rejected. `load_yaml` has no formatting options.
+Defaults are `preserve_quotes=True` and `width=4096`, for both in-process
+built-ins and external workers. Omitted options fall back to ruamel's own
+defaults for that setting. Unsupported option keys and unsupported nested
+`indent` keys are rejected. `load_yaml` has no formatting options.
 
-## Hook Run Debugging
+## Debugging with `hook run`
 
 `hook run` invokes exactly one resolved hook without writing target files. It
-uses the same `HookExecutor`, resolver, helpers, built-in in-process calls, and
-external uv worker protocol as `apply`. An explicit `--project PATH` must point
-at a pack project with hook metadata; it never falls through to installed packs
-or built-ins when the path is missing or not a hook project.
+uses the same resolver, executor, helpers, in-process built-in calls, and
+external uv worker protocol as `apply`, so what you see here is what `apply`
+does. If the module exports one function, that function runs; if it exports
+both, `--file` implies transform, otherwise pass `--kind transform` or
+`--kind validate`. An explicit `--project PATH` must point at a pack project
+with hook metadata and never falls through to installed packs or built-ins.
 
 Transform hooks require `--target DIR --file TARGET_RELATIVE_PATH`. Without a
-content override, `hook run` reads the target file and writes exact transformed
-content to stdout with no added newline:
+content override, `hook run` reads the target file and writes the exact
+transformed content to stdout with no added newline:
 
 ```bash
 untaped-recipe hook run ansible/set_owner --target ./repo --file pyproject.toml
 ```
 
-Use `--content TEXT`, `--content -`, or `--content-file PATH` to pass fixture
-content while still giving the hook the requested target-relative `file` path.
-With a content override, the target file does not need to exist. Use `--diff`
-to write a unified input-to-output diff to stdout instead of raw content.
+Use `--content TEXT`, `--content -` (stdin), or `--content-file PATH` to pass
+fixture content while still giving the hook the requested target-relative `file`
+path; with a content override the target file need not exist. Add `--diff` to
+write a unified input-to-output diff to stdout instead of raw content.
 
-Validate hooks require `--target DIR` and reject `--file`, content options, and
-`--diff`. They emit one `recipe.hook_run` verdict record by default and exit
-non-zero when the verdict status is `fail`.
+Validate hooks require `--target DIR` and reject `--file`, the content options,
+and `--diff`. They emit one `recipe.hook_run` verdict record and exit non-zero
+when the verdict status is `fail`.
 
-Both hook kinds accept `--inputs file.yml` and `--args file.yml` YAML mapping
-files. Repeated `--input KEY=VALUE` and `--arg KEY=VALUE` overrides are
-YAML-parsed and take precedence over file values, so `--input enabled=yes`
-passes a boolean and `--arg count=3` passes an integer. Quote values that should
-stay strings when YAML would coerce them.
+Both kinds accept `--inputs file.yml` and `--args file.yml` YAML mapping files.
+Repeated `--input KEY=VALUE` and `--arg KEY=VALUE` overrides are YAML-parsed and
+take precedence over file values, so `--input enabled=yes` passes a boolean and
+`--arg count=3` passes an integer. Quote values that should stay strings when
+YAML would coerce them.
 
-By default, `hook run` prints resolved target, file, inputs, args, and hook
-diagnostics to stderr. The SDK `--quiet` flag suppresses the resolved context
-messages but not hook diagnostics or errors. This context echo includes the
-ad-hoc fixture values passed on the command line or loaded from fixture files,
-so use `--quiet` in shared terminals when those values are sensitive. Structured
-`--format json|yaml|table|pipe` emits `recipe.hook_run` on stdout. Transform
-records include `content` and include `diff` when `--diff` is passed; structured
-records omit raw input and arg values.
+By default `hook run` prints the resolved target, file, inputs, args, and hook
+diagnostics to stderr. The SDK `--quiet` flag suppresses the resolved-context
+messages but not hook diagnostics or errors. That context echo includes the
+fixture values passed on the command line or loaded from files, so prefer
+`--quiet` in shared terminals when those values are sensitive.
+`--format json|yaml|table|pipe` emits the `recipe.hook_run` record on stdout;
+transform records include `content`, and include `diff` when `--diff` is passed,
+while structured records omit raw input and arg values. See [pipes](./pipes.md)
+for the envelope and record schema.
 
-## Built-In YAML Hook
+## Built-in `yaml_edit`
 
 `yaml_edit` applies mapping and list-item edits while preserving comments,
-quotes, and order where `ruamel.yaml` can round-trip them. It is a built-in and
-does not start a uv worker.
+quotes, and order wherever `ruamel.yaml` can round-trip them. It is a built-in
+and runs in-process, so it never starts a uv worker.
 
 ```yaml
 steps:
@@ -352,11 +363,23 @@ steps:
           path: [legacy]
 ```
 
-Each edit uses `op: set|merge|delete`. Path segments are mapping keys, list
-indexes (`{index: 0}`), or first-match list selectors
-(`{where: {name: api}}`). String values use the same `{{ input }}` renderer as
-template steps and can opt into `unknown_tokens: keep` at the hook args level.
+Each edit names one `op`:
 
-The core engine intentionally does not include a general YAML selector DSL in
-v1. `yaml_edit` is the lone built-in transform hook for common YAML edits;
-write custom uv pack hooks for behavior outside that contract.
+- `set` — assign `value` at `path`, creating intermediate containers.
+- `merge` — shallow-update the mapping at `path` with `value` (both must be
+  mappings).
+- `delete` — remove the item at `path`; the path must already exist.
+
+Path segments are one of:
+
+- a mapping key (a bare string),
+- a list index, written `{index: 0}`,
+- a first-match list selector, written `{where: {name: api}}`, which matches the
+  first list item whose fields all equal the given values.
+
+String values inside `value` use the same `{{ input }}` renderer as template
+steps and honor `unknown_tokens: keep` when it is set at the hook `args` level.
+
+The engine intentionally ships no general YAML selector DSL in v1. `yaml_edit`
+is the lone built-in transform hook, meant for common YAML edits; write a custom
+uv pack hook for anything outside that contract.

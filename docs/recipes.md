@@ -1,133 +1,15 @@
 # Recipes
 
-Recipes describe engine-mediated file changes for one or more target
-directories. The engine plans all changes in memory, renders diffs, optionally
-creates backups, and only then writes files for successful target plans.
-
-## Library Layout
-
-The default library root is `~/.untaped/untaped-recipes`:
-
-```text
-packs/
-packs.toml
-backups/
-```
-
-The library stores installed pack projects under `packs/<pack-id>/`. A pack is
-the reusable library and sharing unit. It is a uv project whose
-`pyproject.toml` exposes zero or more recipes and zero or more hooks:
-
-```toml
-[project]
-name = "untaped-recipe-ansible"
-version = "0.1.0"
-requires-python = ">=3.14"
-dependencies = []
-
-[dependency-groups]
-dev = ["untaped-recipe>=0.10"]
-
-[tool.untaped_recipe]
-requires_hook_api = ">=0.9,<1"
-
-[tool.untaped_recipe.recipes]
-"playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
-
-[tool.untaped_recipe.hooks]
-"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
-```
-
-```text
-ansible/
-├── pyproject.toml
-├── uv.lock
-├── recipes/
-│   └── playbook-migration/
-│       ├── recipe.yml
-│       └── templates/
-│           └── config.yml
-└── src/
-    └── ansible_hooks/
-        └── hooks/
-            └── add_play_collections.py
-```
-
-Nested uv projects or workspaces inside a pack are opaque. Untaped only reads
-the top-level project metadata and declared recipe paths.
-
-Single-file recipes remain supported by explicit path only, for quick local use:
-
-```bash
-untaped-recipe apply ./recipe.yml ./repo --yes
-```
-
-Single-file recipes are best when they use only templates, copy/remove steps,
-built-ins, or hooks already installed through packs. Use a pack when local hook
-code or hook-specific dependencies should ship with the recipe.
-
-Recipe YAML is behavior-only. It contains `version`, optional `description`,
-optional `inputs`, and `steps`; `name:` is rejected. The recipe file schema
-remains `version: 1`.
-
-See [packs.md](./packs.md) for pack identity, installation, and sharing.
-
-## Authoring Commands
-
-```bash
-untaped-recipe new pack ansible
-untaped-recipe new recipe ansible/playbook-migration
-untaped-recipe new hook ansible/add_play_collections
-untaped-recipe add ./ansible --yes
-untaped-recipe hook run ansible/add_play_collections --target ./repo --file site.yml --diff
-```
-
-`new pack` creates an empty uv pack project. `new recipe <pack>/<recipe>` adds a
-recipe under `recipes/<recipe>/` and updates the manifest. `new hook
-<pack>/<hook>` adds a hook module under `src/`, updates
-`[tool.untaped_recipe.hooks]`, adds the dev-only `untaped-recipe` dependency
-for typing, pins `requires_hook_api = ">=0.9,<1"`, and refreshes `uv.lock`.
-
-`new recipe` and `new hook` also accept explicit local pack paths such as
-`./some-local-pack/probe`; the final path segment is the recipe or hook name and
-the parent is the pack directory. Bare multi-segment refs must be exactly
-`<pack>/<name>`.
-
-`hook run` invokes one resolved hook against explicit fixture context without
-running a full recipe or writing target files.
-
-## Resolution
-
-```bash
-untaped-recipe apply playbook-migration ./repo
-untaped-recipe apply ansible/playbook-migration ./repo --yes
-untaped-recipe apply ./pack-project ./repo --recipe playbook-migration --yes
-untaped-recipe apply ./recipe.yml ./repo --yes
-untaped-recipe check
-untaped-recipe check ansible
-untaped-recipe check ansible/playbook-migration
-```
-
-Resolution rules:
-
-- Bare recipe names resolve against installed packs only when unique.
-- `pack/recipe` resolves an installed pack recipe.
-- `./recipe.yml` runs a path-only single-file recipe.
-- `./pack-project --recipe recipe` runs a recipe from a local pack path.
-
-For `apply`, local paths must be explicit. A path is explicit only when it
-starts with `./`, `../`, `/`, or `~`, or ends in `.yml` or `.yaml`. Anything
-else, including `a/b`, is a library ref and is never classified by checking the
-filesystem.
-
-`list`, `show`, `check`, `remove`, and `edit` operate on the unified pack
-library. `list` shows recipes by default; use `list --packs` for packs and
-`list --hooks` for hooks. `check` with no ref validates the whole library.
-
-Apply output and backup metadata use canonical refs such as
-`ansible/playbook-migration`.
+A recipe is a declarative description of engine-mediated file changes for one
+or more target directories. This page covers the recipe YAML schema and the
+five step types that make up a recipe. The engine plans every step in memory,
+previews the result, and only then writes files for successful target plans;
+see [running recipes](./apply.md) for that flow.
 
 ## Schema
+
+Recipe YAML is behavior-only. The file schema is `version: 1`, with an optional
+`description`, an optional `inputs` block, and a list of `steps`:
 
 ```yaml
 version: 1
@@ -136,18 +18,9 @@ inputs:
   service:
     type: str
     required: true
-    description: Service identifier.
-    from:
-      - "{{ record.repo }}"
-      - "{{ target.name }}"
   replicas:
     type: int
     default: 2
-  api_token:
-    type: str
-    scope: global
-    sensitive: true
-    required: true
 steps:
   - type: validate
     hook: has_pyproject
@@ -162,206 +35,105 @@ steps:
     hook: set_owner
     args:
       owner: platform
-  - type: transform
-    files:
-      - local.yml
-      - site.yml
-    optional: true
-    hook: add_play_collections
   - type: remove
-    files:
-      - legacy.yml
-      - ansible.cfg
+    file: legacy.yml
 ```
 
-Supported input types are `str`, `int`, `bool`, `float`, `list`, and `dict`.
-Structured inputs are shallow: `items` on a list and `values` on a dict name
-the scalar element type (`str`, `int`, `bool`, or `float`) and default to
-`str`.
+The `inputs:` block declares the recipe's input contract — the values that
+steps, templates, and hooks resolve at apply time. See [inputs](./inputs.md)
+for the full input spec: types, `scope`, `sensitive`, `from` derivation, and
+precedence.
 
-## Inputs
+A recipe carries no identity of its own. `name:` is not part of the schema and
+is rejected as extra metadata; public identity comes from the pack manifest or,
+for a single-file recipe, from the file path stem. Unknown top-level keys are
+rejected at load time.
 
-Input specs support:
+## Step types
 
-- `type`: one of `str`, `int`, `bool`, `float`, `list`, or `dict`.
-- `items`: scalar element type for `type: list`.
-- `values`: scalar value type for `type: dict`.
-- `default`: fallback value when no fixed value, source, or prompt resolves.
-- `required`: require a value after sources and defaults.
-- `description`: prompt/help text for humans.
-- `sensitive`: redact the value in output rows, warnings/errors, and backup
-  metadata; file-level previews and diffs are suppressed for targets with
-  sensitive inputs.
-- `scope`: `global` for one value per invocation or `target` for a value that
-  may vary per target.
-- `from`: one Jinja expression or an ordered list of candidate expressions.
+Steps run in order for each target. A step either plans file changes into the
+target's plan buffer or validates the target before later steps run.
 
-Unknown input-spec fields are rejected so typos fail at recipe load time.
-Omitted `scope` infers `target` when `from` is present and `global` otherwise.
-`scope: global` rejects recipe `from` and CLI `--input-from`; use
-`--var`/`--vars` for fixed global values.
+### validate
 
-Per-target `from` values are sandboxed strict native Jinja strings. They are
-used only to derive declared input values, not to change hook names or step
-types. Structured derivation is allowed only for inputs declared as `list` or
-`dict`; scalar-declared inputs still reject derived containers. Expressions may
-combine literal text, string/number/boolean/null constants that Jinja parses
-without operators, and field access on `target` or optional `record`. Control
-blocks, filters, tests, calls, operators, and collection literals are rejected,
-and no ambient Jinja globals are available. Negative numeric expressions like
-`{{ -1 }}` are not valid V1 sources. The context contains:
-
-- `target.path`: target path as a string.
-- `target.name`: target basename.
-- `target.parent_path`: target parent path as a string.
-- `target.parent_name`: target parent basename.
-- `record`: the incoming untaped pipe record, only for targets read from pipe
-  records.
-
-Missing, undefined, or null candidate values fall through to the next
-candidate. `false`, `0`, `""`, `[]`, and `{}` are real values. Derived values
-are bounded to small results, and nested containers are rejected by the shallow
-input shape.
-
-Input precedence for each declared input is:
-
-1. fixed value from `--var`/`--vars` or source override from `--input-from`
-2. recipe `from`
-3. `--interactive` prompt
-4. recipe `default`
-5. required-input error
-
-A fixed value and source override for the same input is a usage error. Unknown
-input names in `--var`, `--vars`, or `--input-from` are rejected. For
-structured inputs, `--var` parses the value as YAML before coercion, while
-scalar inputs keep the exact literal-string behavior:
-
-```bash
-untaped-recipe apply add-config ./repo --var 'cols=[name, owner]' --yes
-untaped-recipe apply add-config ./repo --var 'labels={team: platform}' --yes
-```
-
-`--vars` files may contain native YAML lists and mappings. Interactive
-prompting is not supported for structured inputs; pass `--var` or `--vars`.
-When a scalar default exists, interactive prompts show it and an empty answer
-accepts it. Sensitive defaults are not displayed to the prompt backend, but an
-empty answer still accepts the default.
-
-Examples:
+`validate` calls a read-only hook before later steps. A failed verdict aborts
+that target before any writes; a warn verdict records a warning and continues.
+See [hooks](./hooks.md) for the hook contract and verdict returns.
 
 ```yaml
-inputs:
-  service:
-    type: str
-    required: true
-    from:
-      - "{{ record.repo }}"
-      - "{{ target.name }}"
-  owner:
-    type: str
-    scope: target
-    default: platform
-  collections:
-    type: list
-    items: str
-    from: "{{ record.collections }}"
-  api_token:
-    type: str
-    scope: global
-    sensitive: true
-    required: true
+- type: validate
+  hook: has_pyproject
 ```
 
-```bash
-untaped-recipe apply add-config ./services/api --var api_token=secret --yes
-untaped-recipe apply add-config --stdin --input-from owner='{{ record.team }}' --var api_token=secret --yes
-untaped-recipe apply add-config ./services/api --interactive
-```
+### template
 
-`--interactive --check` is rejected. With `--stdin --interactive`, target data
-still comes from stdin and prompts are read from the controlling terminal; the
-command fails clearly when no terminal is available. `--stdin` writes require
-`--yes` unless `--dry-run` or `--check` is used.
-
-## Step Types
-
-`validate` calls a hook before later steps. A failed verdict aborts that
-target before any writes.
-
-`template` renders a recipe-local text template using `{{ name }}` placeholders
-from resolved inputs. Template steps are strict by default:
-`unknown_tokens: error` rejects unknown bare names and non-bare `{{ ... }}`
-tokens. Set `unknown_tokens: keep` when the template intentionally emits
-another tool's template syntax, such as GitHub Actions or Helm:
+`template` renders a recipe-local text template into a target-relative
+destination, substituting `{{ name }}` placeholders from resolved inputs:
 
 ```yaml
-steps:
-  - type: template
-    template: templates/workflow.yml
-    dest: .github/workflows/ci.yml
-    unknown_tokens: keep
+- type: template
+  template: templates/config.yml
+  dest: config.yml
 ```
+
+The placeholder language and the `unknown_tokens` policy that governs
+non-input tokens are described in [templating](./templating.md).
+
+### copy
+
+`copy` copies a recipe-local text file into a target-relative destination
+without rendering it:
 
 ```yaml
-# templates/workflow.yml
-name: ci
-on: push
-jobs:
-  test:
-    if: ${{ github.ref == 'refs/heads/main' }}
-    steps:
-      - run: helm template --set owner={{ owner }} chart
-      - run: echo '{{ .Values.image.tag }}'
+- type: copy
+  source: files/README.md
+  dest: README.md
 ```
 
-Under `keep`, known inputs such as `{{ owner }}` still render and unknown
-tokens such as `${{ github.ref }}` or `{{ .Values.image.tag }}` pass through
-verbatim.
-
-Path-bearing step fields also accept bare `{{ input }}` tokens, but they are
-not Jinja expressions. The engine renders these fields per target after input
-resolution, always with strict unknown-token behavior, then rechecks the
-rendered value as a confined relative path:
-
-- `template.template` and `template.dest`
-- `copy.source` and `copy.dest`
-- `transform.file`, `transform.files`, `transform.globs`, and
-  `transform.exclude`
-- `remove.file`, `remove.files`, `remove.globs`, and `remove.exclude`
-
-`unknown_tokens: keep` only affects template file bodies, never path fields.
-Sensitive inputs cannot appear in path fields because paths are displayed and
-stored in plans. Structured inputs cannot appear in path fields because hooks
-receive lists and mappings natively. To use target or pipe-record context in a
-path, first derive a scalar input with `from`, then render that input:
-
-```yaml
-inputs:
-  service:
-    type: str
-    from: "{{ record.repo }}"
-steps:
-  - type: template
-    template: templates/service.yml
-    dest: "services/{{ service }}.yml"
-```
-
-`copy` copies a recipe-local text file into a target-relative destination.
-
-`template` and `copy` accept `if_absent: true` to create the destination only
-when it does not already exist in the planned state; an existing file is left
-untouched (and a file removed earlier in the same recipe counts as absent).
+### transform
 
 `transform` reads one target file, calls a trusted Python hook, and plans the
-returned content as the new file body. A transform may use `optional: true` to
-skip a missing target file and record a warning instead of failing that target.
-This is only for target layout variation; `optional` is not supported on
-`template` or `copy`.
+returned content as the new file body:
+
+```yaml
+- type: transform
+  file: pyproject.toml
+  hook: set_owner
+  args:
+    owner: platform
+```
+
+A transform may set `optional: true` to skip a missing target file and record a
+warning instead of failing that target. This is only for target layout
+variation; a file deleted earlier in the same plan still errors. `optional` is
+supported on `transform` only, never on `template` or `copy`.
+
+### remove
 
 `remove` plans deletion of a target-relative file if it currently exists or was
-created earlier in the same target plan.
+created earlier in the same target plan:
 
-`transform` and `remove` also accept `files` as explicit multi-file fan-out:
+```yaml
+- type: remove
+  file: legacy.yml
+```
+
+### if_absent
+
+`template` and `copy` accept `if_absent: true` to create the destination only
+when it does not already exist in the planned state. An existing file is left
+untouched, and a file removed earlier in the same recipe counts as absent:
+
+```yaml
+- type: template
+  template: templates/config.yml
+  dest: config.yml
+  if_absent: true
+```
+
+## Multi-file fan-out
+
+`transform` and `remove` accept `files` as explicit multi-file fan-out:
 
 ```yaml
 - type: transform
@@ -374,13 +146,16 @@ created earlier in the same target plan.
 
 - type: remove
   files:
+    - legacy.yml
     - ansible.cfg
 ```
 
 Multi-file syntax is only DRY sugar. The recipe model expands it into ordinary
-single-file steps before planning, and hooks are still called once per file
-with that file's path. `file`, `files`, and `globs` are mutually exclusive,
-and `files`/`globs` must not be empty.
+single-file steps before planning, so the hook is still called once per file
+with that file's path. `file`, `files`, and `globs` are mutually exclusive on a
+step, and `files` and `globs` must not be empty.
+
+## Globs
 
 `transform` and `remove` also accept `globs` for planning-time discovery:
 
@@ -395,46 +170,33 @@ and `files`/`globs` must not be empty.
 Glob patterns expand per target at planning time, match regular files only
 (directories and symlinks are skipped), and are deduplicated and sorted for
 deterministic plans. `exclude` is only valid with `globs` and uses the same
-pattern language (`*` never crosses `/`, `**` does; a literal relative path
-excludes itself). Globs have no implicit safety excludes — dotfiles and
-`.git` internals match when the pattern says so, so repo sweeps should
-usually carry `exclude: [".git/**"]`. A step whose patterns match nothing
-plans no changes and records a per-target warning. Binary (non-UTF-8) files
-are unsupported: a matched binary file fails that target's plan with an error
-naming the file; use `exclude` to skip it. `optional` is not valid with
-`globs` — zero matches is already a first-class outcome.
+pattern language: `*` never crosses `/`, `**` does, and a literal relative path
+excludes itself.
 
-All recipe-local and target-relative paths must be safe relative paths. Absolute
-paths, `..` segments, and nested symlink traversal are rejected before
-engine-mediated reads or writes. Path fields are checked again after input
-templating, so an input that renders to an absolute path or `..` escape is
-rejected before any engine-mediated read or write.
+Globs have no implicit safety excludes — dotfiles and `.git` internals match
+when the pattern says so, so repo-wide sweeps should usually carry
+`exclude: [".git/**"]`. A step whose patterns match nothing plans no changes and
+records a per-target warning. Binary (non-UTF-8) files are unsupported: a matched
+binary file fails that target's plan with an error naming the file; use
+`exclude` to skip it. `optional` is not valid with `globs`, because zero matches
+is already a first-class, non-failing outcome.
+
+Path fields — including glob patterns and `exclude` entries — may contain bare
+input tokens and are re-checked as confined relative paths after rendering; see
+[templating](./templating.md) for that behavior and [safety](./safety.md) for
+the underlying path-safety rules.
+
+## Hook arguments
 
 Hook `args` are passed verbatim from recipe YAML to the hook. The engine never
 templates `args`; hooks receive the resolved `inputs` mapping separately, with
-native list and dict values for structured inputs. Hooks that accept templated
-string args should call `helpers.render_template()` themselves. Structured
-inputs should be read directly from `inputs` by custom hooks, not threaded
-through string templates. The built-in `yaml_edit` hook follows the scalar
-string-template pattern for string `value` entries:
+native list and dict values for structured inputs. A hook that accepts a
+templated string argument renders it itself with `helpers.render_template()` —
+see [hooks](./hooks.md).
 
-```yaml
-inputs:
-  owner:
-    type: str
-steps:
-  - type: transform
-    file: service.yml
-    hook: yaml_edit
-    args:
-      edits:
-        - op: set
-          path: [metadata, owner]
-          value: "{{ owner }}"
-```
-
-YAML anchors are the recommended way to reuse structure in recipes without
-teaching the engine a structural templating language:
+Because the engine does not template `args`, YAML anchors are the recommended
+way to reuse structure across steps without teaching the engine a structural
+templating language:
 
 ```yaml
 inputs:
@@ -449,7 +211,7 @@ x-common-labels: &common_labels
 
 steps:
   - type: transform
-    file: services/{{ service }}.yml
+    file: "services/{{ service }}.yml"
     hook: yaml_edit
     args:
       edits:
@@ -460,7 +222,26 @@ steps:
             service: "{{ service }}"
 ```
 
-## Design Rationale
+The `yaml_edit` step above is a built-in hook; its `args` grammar (`edits`,
+`op`, `path`, `value`) is documented with the hook itself in
+[hooks](./hooks.md). Note that string `value` entries such as `"{{ team }}"` are
+rendered by `yaml_edit`, not by the engine.
+
+## Single-file recipes
+
+A recipe file can run directly by explicit path, for quick local use:
+
+```bash
+untaped-recipe apply ./recipe.yml ./repo --yes
+```
+
+Single-file recipes are best when they use only templates, copy or remove steps,
+built-ins, or hooks already installed through packs. Reach for a pack when local
+hook code or hook-specific dependencies should ship alongside the recipe. See
+[packs](./packs.md) for pack structure, the library layout, and how bare and
+qualified recipe refs resolve.
+
+## Design rationale
 
 Recipes stay declarative and intentionally dumb. A recipe owns the input
 contract, file paths, step ordering, and hook arguments. A hook owns decisions:
@@ -474,71 +255,7 @@ file content and safe path fields. It also keeps `args` stable: recipe authors
 can reuse YAML structure with anchors, while hooks choose when a string value is
 a template and which unknown-token policy applies.
 
-## Apply Behavior
-
-```bash
-untaped-recipe apply add-config ./repo-a ./repo-b --var service=api
-untaped-recipe apply ansible/playbook-migration ./repo-a --yes
-untaped-recipe apply ./pack-project ./repo-a --recipe playbook-migration --yes
-untaped-recipe apply add-config --stdin --yes --parallel 8 --format pipe
-untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
-untaped-recipe apply add-config ./repo-a --check
-untaped-recipe apply add-config ./repo-a --preview diff
-untaped-recipe check
-untaped-recipe check ansible
-untaped-recipe check ansible/playbook-migration
-```
-
-Important behavior:
-
-- Every target is planned before writes begin.
-- Preview output is written to stderr. Normal apply and `--dry-run` default to
-  `--preview table`, which shows changed files with absolute paths, change
-  kind, and line counts. `--check` defaults to summary-only preview output for
-  CI; pass `--preview table` when you want the same file table in check mode.
-  Use `--preview diff` for patch-compatible unified diffs or `--preview none`
-  for summary-only preview output. Table previews stay file-level at or below
-  the `preview_max_rows` setting (default 50; `0` = unlimited); above it they
-  collapse to per-target rows and, past the same threshold, truncate with an
-  explicit "showing first N of M targets" notice. Exact totals are always
-  printed and re-echoed at the confirmation prompt; collapsed previews are
-  summaries backed by exact totals, with `--preview diff` as the full-detail
-  escape.
-- File-level preview details and diffs are suppressed for targets with
-  sensitive inputs because the generated content may contain secret values.
-- Provide targets either as positional directories or with `--stdin`, not both.
-- Piped stdin requires `--yes` before planning unless `--dry-run` or `--check`
-  is used.
-- `--dry-run` previews and reports without writing.
-- `--check` previews without writing, creates no backups, prompts for nothing,
-  and exits non-zero if any target would change or fail.
-- A planning failure for one target does not block successful targets.
-- Within one target, planning and write failures leave the target unchanged;
-  write failures are reported as per-target errors.
-- Backups are created by default; pass `--no-backup` only when the target tree
-  is already protected another way.
-- `check` with no ref validates the whole installed pack library and its index.
-- `check <pack>` validates pack metadata, declared recipe files and assets,
-  recipe input source expressions, pack-local hooks, exported hook functions,
-  and lockfile state.
-- `check <recipe-ref>` validates one recipe by bare or qualified ref.
-- `hook run <hook>` executes one hook through the same built-in or external uv
-  worker path as `apply`; transform stdout is raw content or `--diff`, while
-  validate stdout is a `recipe.hook_run` verdict record.
-
-Structured output rows use kind `recipe.outcome`.
-Skipped optional transforms appear in the row's `warnings` field as a
-semicolon-delimited string.
-Check-mode output uses the same `recipe.outcome` rows with `status: check`.
-Every `recipe.outcome` row includes an `inputs` mapping containing resolved
-declared recipe inputs. Sensitive values are rendered as `***`, and sensitive
-values are also redacted from row warnings and errors.
-`--format` and `--columns` affect stdout `recipe.outcome` rows only; they do
-not change the fixed-column stderr preview table. `--quiet` mutes post-run
-success chatter but does not mute selected preview detail, warnings, errors, or
-destructive confirmation prompts.
-
-## Ansible Playbook Migration Example
+## Worked example: Ansible playbook migration
 
 For mixed-layout Ansible repos, list the known playbook names and let optional
 transforms skip whichever ones are absent:
@@ -559,28 +276,7 @@ steps:
       - ansible.cfg
 ```
 
-The `add_play_collections` hook can be in the recipe's own pack, another
-installed pack when the name is unambiguous, or a packaged built-in if the
-engine ships one.
-
-## Backups
-
-Backup bundles record target paths, touched files, before and after hashes,
-canonical recipe ref, redacted per-target inputs on each file entry, and
-creation time. Backups store text content for the engine-managed files that
-recipes edit; restores do not preserve file mode or mtime. Backup metadata
-never stores the full incoming pipe record.
-
-```bash
-untaped-recipe backup list
-untaped-recipe backup show 20260619T120000000000Z-a1b2c3d4
-untaped-recipe backup restore 20260619T120000000000Z-a1b2c3d4
-untaped-recipe backup restore latest
-```
-
-Backup ids use `YYYYMMDDTHHMMSSffffffZ-8hex`. `show` and `restore` accept full
-ids, unambiguous id prefixes, or `latest`.
-Restore refuses to overwrite files that changed after the backup was created.
-Use `--force` only after inspecting those later edits. Restore uses the same
-symlink-confined, staged, rollback-aware write path as apply, so a failed
-multi-file restore reports any incomplete rollback details.
+The `add_play_collections` hook can live in the recipe's own pack, in another
+installed pack when the name is unambiguous, or ship as a packaged built-in.
+Each named file that exists is transformed; each missing file is skipped with a
+warning because the transform is `optional`.

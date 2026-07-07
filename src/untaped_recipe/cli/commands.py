@@ -31,7 +31,7 @@ from untaped_recipe.application import RunBulkApply
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.check_pack import check_library, check_ref
 from untaped_recipe.application.inputs import PromptFunc
-from untaped_recipe.application.resolution import resolve_apply_recipe
+from untaped_recipe.application.resolution import existing_path_hint, resolve_apply_recipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, flush_changes
 from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
@@ -628,6 +628,8 @@ def _resolve_target(library: UnifiedPackLibrary, ref_text: str) -> _ResolvedTarg
         try:
             hook_pack, hook = library.find_hook(ref)
         except ValueError:
+            if str(recipe_error).startswith("recipe not found"):
+                raise ValueError(f"{recipe_error}{existing_path_hint(ref_text)}") from None
             raise recipe_error from None
         return _ResolvedTarget(pack=hook_pack, name=ref.name, hook=hook)
     return _ResolvedTarget(pack=recipe_pack, name=ref.name, recipe=recipe)

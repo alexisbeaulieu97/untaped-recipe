@@ -23,6 +23,36 @@ def is_explicit_recipe_path(value: str) -> bool:
     return value.startswith(("/", "./", "../", "~")) or value.endswith((".yml", ".yaml"))
 
 
+def existing_path_hint(ref_text: str) -> str:
+    """Suffix for a library-ref miss when the ref also names an on-disk path."""
+    if not Path(ref_text).expanduser().exists():
+        return ""
+    return (
+        f" (a path named '{ref_text}' exists — pass it as an explicit path: "
+        "prefix ./ or use its full path)"
+    )
+
+
+def _library_ref_hint(root: Path, ref_text: str, error: ValueError) -> str:
+    """Suffix for an explicit-path miss whose basename is an installed ref."""
+    if not str(error).startswith("recipe file not found"):
+        return ""
+    if ref_text.startswith(("/", "~")):
+        return ""
+    name = Path(ref_text).name
+    for suffix in (".yml", ".yaml"):
+        name = name.removesuffix(suffix)
+    if not name:
+        return ""
+    library = PackLibrary(library_root=root)
+    if library.find_pack(name) is None:
+        try:
+            library.find_recipe(parse_ref(name))
+        except ValueError:
+            return ""
+    return f" (did you mean the library ref '{name}'?)"
+
+
 def resolve_apply_recipe(root: Path, ref_text: str, *, recipe_id: str | None) -> ResolvedRecipe:
     """Resolve an apply ref: explicit path, pack path + --recipe, or library ref."""
     if recipe_id is not None:
@@ -30,9 +60,17 @@ def resolve_apply_recipe(root: Path, ref_text: str, *, recipe_id: str | None) ->
             raise ValueError("--recipe requires an explicit pack path")
         return resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=recipe_id)
     if is_explicit_recipe_path(ref_text):
-        return resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=None)
+        try:
+            return resolve_explicit_recipe(Path(ref_text).expanduser(), recipe_id=None)
+        except ValueError as exc:
+            raise ValueError(f"{exc}{_library_ref_hint(root, ref_text, exc)}") from exc
     ref = parse_ref(ref_text)
-    pack, recipe = PackLibrary(library_root=root).find_recipe(ref)
+    try:
+        pack, recipe = PackLibrary(library_root=root).find_recipe(ref)
+    except ValueError as exc:
+        if not str(exc).startswith("recipe not found"):
+            raise
+        raise ValueError(f"{exc}{existing_path_hint(ref_text)}") from exc
     return ResolvedRecipe(
         path=pack.root / recipe.path,
         ref=f"{pack.name}/{ref.name}",

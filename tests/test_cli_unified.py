@@ -259,6 +259,65 @@ def test_check_without_ref_healthy_library_exits_zero(tmp_path: Path) -> None:
     ]
 
 
+def test_library_miss_hints_at_existing_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    result = CliInvoker().invoke(app, ["show", "demo"])
+
+    assert result.exit_code == 1
+    assert "recipe not found: demo" in result.stderr
+    assert "a path named 'demo' exists" in result.stderr
+    assert "prefix ./" in result.stderr
+
+
+def test_library_miss_without_matching_path_keeps_plain_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = CliInvoker().invoke(app, ["show", "demo"])
+
+    assert result.exit_code == 1
+    assert "recipe not found: demo" in result.stderr
+    assert "a path named" not in result.stderr
+
+
+def test_explicit_path_miss_hints_at_library_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="pack", recipes={"demo": "recipes/demo.yml"})
+    _install_pack(source)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", "./demo", str(tmp_path), "--yes"])
+
+    assert result.exit_code == 1
+    assert "recipe file not found" in result.stderr
+    assert "did you mean the library ref 'demo'?" in result.stderr
+
+
+def test_explicit_path_miss_without_library_match_keeps_plain_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", "./demo", str(tmp_path), "--yes"])
+
+    assert result.exit_code == 1
+    assert "recipe file not found" in result.stderr
+    assert "did you mean" not in result.stderr
+
+
 def test_apply_bare_ref_uses_library_even_when_matching_local_directory_exists(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

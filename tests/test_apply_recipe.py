@@ -283,6 +283,347 @@ def test_apply_recipe_if_absent_template_and_copy_follow_planned_state(
     assert changes["removed.txt"].after == "recreated\n"
 
 
+def test_apply_recipe_renders_template_source_and_dest_fields_per_target(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "templates").mkdir()
+    (recipe_dir / "templates" / "api.txt").write_text("api={{ service }}\n")
+    (recipe_dir / "templates" / "web.txt").write_text("web={{ service }}\n")
+    api = tmp_path / "api"
+    web = tmp_path / "web"
+    api.mkdir()
+    web.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "from": "{{ target.name }}"},
+            },
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "templates/{{ service }}.txt",
+                    "dest": "{{ service }}.yml",
+                },
+            ],
+        }
+    )
+    runner = RunBulkApply(
+        ApplyRecipe(
+            HookExecutor(
+                HookResolver(),
+                workers=InlineWorkers(),
+                helpers=HookHelpers(),
+            )
+        )
+    )
+
+    plans = runner.plan(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        local_hook_project=recipe_dir,
+        targets=[Target(path=api), Target(path=web)],
+        inputs={},
+    )
+
+    assert [plan.status for plan in plans] == ["planned", "planned"]
+    assert [plans[0].changes[0].relative_path.as_posix()] == ["api.yml"]
+    assert plans[0].changes[0].after == "api=api\n"
+    assert [plans[1].changes[0].relative_path.as_posix()] == ["web.yml"]
+    assert plans[1].changes[0].after == "web=web\n"
+
+
+def test_apply_recipe_renders_globs_excludes_and_file_fanout_entries(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    _write_hook_project(
+        recipe_dir,
+        {
+            "stamp": (
+                "def transform(content, *, inputs, target, file, args, helpers):\n"
+                "    return content + 'seen ' + file.relative_to(target).as_posix() + '\\n'\n"
+            )
+        },
+    )
+    target = tmp_path / "target"
+    (target / "prod").mkdir(parents=True)
+    (target / "prod" / "site.yml").write_text("site\n")
+    (target / "prod" / "skip.yml").write_text("skip\n")
+    (target / "generated.yml").write_text("generated\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "env": {"type": "str", "default": "prod"},
+                "generated": {"type": "str", "default": "generated"},
+            },
+            "steps": [
+                {
+                    "type": "transform",
+                    "globs": ["{{ env }}/*.yml"],
+                    "exclude": ["{{ env }}/skip.yml"],
+                    "hook": "stamp",
+                },
+                {
+                    "type": "transform",
+                    "files": ["{{ generated }}.yml"],
+                    "hook": "stamp",
+                },
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        target=target,
+        inputs={"env": "prod", "generated": "generated"},
+    )
+
+    assert [change.relative_path.as_posix() for change in plan.changes] == [
+        "prod/site.yml",
+        "generated.yml",
+    ]
+    assert [change.after for change in plan.changes] == [
+        "site\nseen prod/site.yml\n",
+        "generated\nseen generated.yml\n",
+    ]
+
+
+def test_apply_recipe_renders_copy_source_dest_and_remove_file_fields(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "files").mkdir()
+    (recipe_dir / "files" / "api.txt").write_text("copied\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "old-api.txt").write_text("remove\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"service": {"type": "str", "default": "api"}},
+            "steps": [
+                {
+                    "type": "copy",
+                    "source": "files/{{ service }}.txt",
+                    "dest": "copied/{{ service }}.txt",
+                },
+                {"type": "remove", "file": "old-{{ service }}.txt"},
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        target=target,
+        inputs={"service": "api"},
+    )
+
+    assert [(change.relative_path.as_posix(), change.after) for change in plan.changes] == [
+        ("copied/api.txt", "copied\n"),
+        ("old-api.txt", None),
+    ]
+
+
+def test_apply_recipe_remove_glob_warning_uses_rendered_pattern(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"suffix": {"type": "str", "default": "generated"}},
+            "steps": [{"type": "remove", "globs": ["**/*.{{ suffix }}"]}],
+        }
+    )
+
+    plan = _planner(tmp_path)(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        target=target,
+        inputs={"suffix": "generated"},
+    )
+
+    assert plan.changes == ()
+    assert plan.warnings == ("globs matched no files: **/*.generated",)
+
+
+def test_apply_recipe_if_absent_uses_rendered_dest(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("new\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "api.yml").write_text("existing\n")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"service": {"type": "str", "default": "api"}},
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "template.txt",
+                    "dest": "{{ service }}.yml",
+                    "if_absent": True,
+                },
+            ],
+        }
+    )
+
+    plan = _planner(tmp_path)(
+        recipe=recipe,
+        recipe_dir=recipe_dir,
+        target=target,
+        inputs={"service": "api"},
+    )
+
+    assert plan.changes == ()
+
+
+def test_apply_recipe_rechecks_rendered_dest_for_path_escape_security(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("unsafe\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"name": {"type": "str", "required": True}},
+            "steps": [
+                {"type": "template", "template": "template.txt", "dest": "{{ name }}.yml"},
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="dest must be a safe relative path"):
+        _planner(tmp_path)(
+            recipe=recipe,
+            recipe_dir=recipe_dir,
+            target=target,
+            inputs={"name": "../escape"},
+        )
+
+
+def test_apply_recipe_rechecks_rendered_dest_for_absolute_path_injection(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("unsafe\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"name": {"type": "str", "required": True}},
+            "steps": [
+                {"type": "template", "template": "template.txt", "dest": "{{ name }}.yml"},
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="dest must be a safe relative path"):
+        _planner(tmp_path)(
+            recipe=recipe,
+            recipe_dir=recipe_dir,
+            target=target,
+            inputs={"name": "/tmp/escape"},
+        )
+
+
+def test_apply_recipe_rejects_sensitive_input_in_path_field(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("secret\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"token": {"type": "str", "sensitive": True}},
+            "steps": [
+                {"type": "template", "template": "template.txt", "dest": "{{ token }}.yml"},
+            ],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="sensitive input 'token' cannot be used in path field 'dest'",
+    ):
+        _planner(tmp_path)(
+            recipe=recipe,
+            recipe_dir=recipe_dir,
+            target=target,
+            inputs={"token": "secret"},
+        )
+
+
+def test_apply_recipe_rejects_structured_input_in_path_field(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("structured\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {"cols": {"type": "list"}},
+            "steps": [
+                {"type": "template", "template": "template.txt", "dest": "{{ cols }}.yml"},
+            ],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="structured input 'cols' cannot be rendered; hooks receive it natively",
+    ):
+        _planner(tmp_path)(
+            recipe=recipe,
+            recipe_dir=recipe_dir,
+            target=target,
+            inputs={"cols": ["a"]},
+        )
+
+
+def test_apply_recipe_path_fields_are_strict_even_when_template_body_keeps_unknown_tokens(
+    tmp_path: Path,
+) -> None:
+    recipe_dir = tmp_path / "recipe"
+    recipe_dir.mkdir()
+    (recipe_dir / "template.txt").write_text("body=${{ github.ref }}\n")
+    target = tmp_path / "target"
+    target.mkdir()
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {
+                    "type": "template",
+                    "template": "template.txt",
+                    "dest": "{{ missing }}.yml",
+                    "unknown_tokens": "keep",
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="template input 'missing' is not defined"):
+        _planner(tmp_path)(recipe=recipe, recipe_dir=recipe_dir, target=target, inputs={})
+
+
 def test_apply_recipe_if_absent_false_keeps_overwrite_behavior(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()

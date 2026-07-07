@@ -175,6 +175,25 @@ def test_scaffold_hook_writes_exporting_stub_and_manifest_row(
 
     manifest = PackManifest.from_pyproject(tmp_path / "ansible")
     assert hook_exports(module_path) == frozenset({"transform"})
+    assert module_path.read_text(encoding="utf-8") == (
+        "from pathlib import Path\n"
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from untaped_recipe.hook_api import HookHelpers\n"
+        "\n"
+        "\n"
+        "def transform(\n"
+        "    content: str,\n"
+        "    *,\n"
+        "    inputs: dict[str, object],\n"
+        "    target: Path,\n"
+        "    file: Path,\n"
+        "    args: dict[str, object],\n"
+        '    helpers: "HookHelpers",\n'
+        ") -> str:\n"
+        "    return content\n"
+    )
     assert manifest.hooks["set_owner"].module == "ansible_pack.hooks.set_owner"
     assert "kind" not in (tmp_path / "ansible" / "pyproject.toml").read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="hook already exists"):
@@ -191,6 +210,23 @@ def test_scaffold_hook_can_write_validate_stub(
     module_path = pack_scaffold.scaffold_hook(tmp_path / "ansible", "check", kind="validate")
 
     assert hook_exports(module_path) == frozenset({"validate"})
+    assert module_path.read_text(encoding="utf-8") == (
+        "from pathlib import Path\n"
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from untaped_recipe.hook_api import HookHelpers\n"
+        "\n"
+        "\n"
+        "def validate(\n"
+        "    *,\n"
+        "    inputs: dict[str, object],\n"
+        "    target: Path,\n"
+        "    args: dict[str, object],\n"
+        '    helpers: "HookHelpers",\n'
+        ") -> object:\n"
+        "    return helpers.pass_()\n"
+    )
 
 
 def test_scaffold_hook_writes_direct_pytest(
@@ -205,8 +241,11 @@ def test_scaffold_hook_writes_direct_pytest(
     test_path = tmp_path / "ansible" / "tests" / "test_hook_set_owner.py"
     content = test_path.read_text(encoding="utf-8")
     compile(content, str(test_path), "exec")
+    assert "from pathlib import Path" in content
     assert "from untaped_recipe.hook_worker import HookHelpers" in content
     assert "from ansible_pack.hooks.set_owner import transform" in content
+    assert 'target=Path(".")' in content
+    assert 'file=Path("example.txt")' in content
     assert "def test_" in content
 
 
@@ -222,7 +261,9 @@ def test_scaffold_hook_validate_kind_writes_matching_pytest(
     test_path = tmp_path / "ansible" / "tests" / "test_hook_check.py"
     content = test_path.read_text(encoding="utf-8")
     compile(content, str(test_path), "exec")
+    assert "from pathlib import Path" in content
     assert "from ansible_pack.hooks.check import validate" in content
+    assert 'target=Path(".")' in content
     assert "pass_()" in content
 
 
@@ -393,3 +434,32 @@ def test_new_hook_rejects_bare_multi_segment_ref_with_exact_message(
 
     assert result.exit_code != 0
     assert "qualified refs must use <pack>/<name>" in result.output
+
+
+def test_new_hook_pack_not_found_hints_when_matching_directory_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    result = CliInvoker().invoke(app, ["new", "hook", "demo/probe"])
+
+    assert result.exit_code != 0
+    assert (
+        "pack not found: demo (a directory named 'demo' exists — use ./demo/probe, "
+        "or install it with add ./demo)"
+    ) in result.output
+
+
+def test_new_hook_pack_not_found_omits_hint_when_no_matching_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = CliInvoker().invoke(app, ["new", "hook", "missing/probe"])
+
+    assert result.exit_code != 0
+    assert "pack not found: missing" in result.output
+    assert "directory named" not in result.output

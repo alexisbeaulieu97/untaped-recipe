@@ -56,6 +56,17 @@ def test_template_renderers_handle_unknown_bare_names(
     assert renderer("owner={{ owner }}", {}, unknown_tokens="keep") == "owner={{ owner }}"
 
 
+@pytest.mark.parametrize("renderer", [_domain_render, _worker_render])
+def test_template_renderers_reject_structured_values(
+    renderer: Callable[..., str],
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="structured input 'cols' cannot be rendered; hooks receive it natively",
+    ):
+        renderer("cols={{ cols }}", {"cols": ["a", "b"]})
+
+
 @pytest.mark.parametrize(
     "template",
     [

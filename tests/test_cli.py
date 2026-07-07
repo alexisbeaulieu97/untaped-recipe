@@ -1286,6 +1286,184 @@ def test_apply_var_values_keep_equals_and_unknown_vars_are_rejected(tmp_path: Pa
     assert "unknown input" in rejected.output
 
 
+@pytest.mark.parametrize("value", ["[a, b]", "a: b", "{x: y}", "true"])
+def test_apply_scalar_var_values_that_look_like_yaml_stay_literal_strings(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service: {type: str, required: true}\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("service={{ service }}\n")
+    target = tmp_path / value.replace("/", "_")
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--var", f"service={value}", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (target / "out.txt").read_text() == f"service={value}\n"
+
+
+def test_apply_scalar_var_coercion_error_text_is_unchanged_for_yaml_like_values(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: 1\ninputs:\n  replicas: {type: int, required: true}\nsteps: []\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--var", "replicas=[a, b]", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "cannot coerce value to int" in result.output
+    assert "expects YAML" not in result.output
+
+
+def test_apply_structured_var_yaml_list_resolves_to_native_outcome_value(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  cols: {type: list, items: str, required: true}\nsteps: []\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "cols=[a, b]",
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)[0]["inputs"] == {"cols": ["a", "b"]}
+
+
+def test_apply_structured_var_malformed_yaml_reports_pinned_error(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  cols: {type: list, items: str, required: true}\nsteps: []\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--var", "cols=[", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "input 'cols' expects YAML list:" in result.output
+
+
+def test_apply_structured_var_scalar_yaml_result_reports_pinned_error(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  cols: {type: list, items: str, required: true}\nsteps: []\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--var", "cols=enabled", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "input 'cols' expects YAML list: parsed value is not a list" in result.output
+
+
+def test_apply_vars_file_native_list_skips_string_parsing(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\ninputs:\n  cols: {type: list, items: str, required: true}\nsteps: []\n"
+    )
+    vars_file = tmp_path / "vars.yml"
+    vars_file.write_text("cols:\n  - a\n  - b\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--vars",
+            str(vars_file),
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)[0]["inputs"] == {"cols": ["a", "b"]}
+
+
+def test_apply_sensitive_structured_inputs_are_redacted_as_whole_values(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  tokens:\n"
+        "    type: list\n"
+        "    sensitive: true\n"
+        "    required: true\n"
+        "steps: []\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--var",
+            "tokens=[alpha, beta]",
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)[0]["inputs"] == {"tokens": "***"}
+    assert "alpha" not in result.stdout
+    assert "beta" not in result.stdout
+
+
 def test_apply_derives_target_inputs_and_redacts_outcome_rows(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(
@@ -1707,6 +1885,46 @@ def test_apply_derives_inputs_from_pipe_record_and_input_from_override(
     row = json.loads(result.stdout)
     assert row["kind"] == "recipe.outcome"
     assert row["record"]["inputs"] == {"service": "api", "owner": "workspace"}
+
+
+def test_apply_derives_structured_input_from_pipe_record(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  collections:\n"
+        "    type: list\n"
+        "    items: str\n"
+        "    from: '{{ record.collections }}'\n"
+        "steps: []\n"
+    )
+    workspace = tmp_path / "workspace"
+    target = workspace / "api"
+    target.mkdir(parents=True)
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "workspace.repo",
+            "record": {
+                "path": str(workspace),
+                "target_path": str(target),
+                "collections": ["ansible.builtin", "community.general"],
+            },
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--yes", "--format", "pipe"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(result.stdout)
+    assert row["kind"] == "recipe.outcome"
+    assert row["record"]["inputs"] == {"collections": ["ansible.builtin", "community.general"]}
 
 
 def test_apply_rejects_input_from_conflicts_global_scope_and_interactive_check(
@@ -3359,6 +3577,32 @@ def test_apply_table_inputs_cell_is_not_a_dict_repr(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "service=api" in result.stdout
     assert "{'service'" not in result.stdout
+
+
+def test_apply_table_inputs_cell_renders_structured_values_with_python_repr(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: 1\ninputs:\n  cols:\n    type: list\nsteps: []\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--yes",
+            "--var",
+            "cols=[a, b]",
+            "--columns",
+            "inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "cols=['a', 'b']" in result.stdout
 
 
 def test_backup_show_renders_files_as_lines(tmp_path: Path) -> None:

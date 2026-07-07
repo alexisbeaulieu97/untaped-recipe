@@ -299,6 +299,64 @@ def test_input_spec_coerces_supported_types() -> None:
     assert InputSpec(type="float").coerce("2.25") == 2.25
 
 
+def test_input_spec_accepts_structured_shapes_and_coerces_elements() -> None:
+    list_spec = InputSpec.model_validate({"type": "list", "items": "int"})
+    dict_spec = InputSpec.model_validate({"type": "dict", "values": "bool"})
+
+    assert list_spec.items == "int"
+    assert list_spec.values is None
+    assert list_spec.coerce(["1", 2]) == [1, 2]
+    assert list_spec.coerce(()) == []
+    assert dict_spec.values == "bool"
+    assert dict_spec.items is None
+    assert dict_spec.coerce({"enabled": "true", "disabled": False}) == {
+        "enabled": True,
+        "disabled": False,
+    }
+    assert dict_spec.coerce({}) == {}
+
+
+def test_input_spec_structured_shapes_default_to_string_elements() -> None:
+    list_spec = InputSpec.model_validate({"type": "list"})
+    dict_spec = InputSpec.model_validate({"type": "dict"})
+
+    assert list_spec.items is None
+    assert list_spec.coerce([1, "api"]) == ["1", "api"]
+    assert dict_spec.values is None
+    assert dict_spec.coerce({"replicas": 3}) == {"replicas": "3"}
+
+
+def test_input_spec_rejects_invalid_structured_shape_metadata() -> None:
+    with pytest.raises(ValidationError, match="items is only valid with type list"):
+        InputSpec.model_validate({"type": "str", "items": "int"})
+
+    with pytest.raises(ValidationError, match="values is only valid with type dict"):
+        InputSpec.model_validate({"type": "str", "values": "int"})
+
+
+def test_input_spec_structured_coercion_errors_use_pinned_messages() -> None:
+    list_spec = InputSpec.model_validate({"type": "list", "items": "int"})
+    dict_spec = InputSpec.model_validate({"type": "dict", "values": "int"})
+
+    with pytest.raises(ValueError, match="cannot coerce value to list"):
+        list_spec.coerce("not-a-list")
+
+    with pytest.raises(ValueError, match="cannot coerce value to list"):
+        list_spec.coerce(["not-an-int"])
+
+    with pytest.raises(ValueError, match="cannot coerce value to list"):
+        list_spec.coerce([["nested"]])
+
+    with pytest.raises(ValueError, match="cannot coerce value to dict"):
+        dict_spec.coerce("not-a-dict")
+
+    with pytest.raises(ValueError, match="dict input keys must be strings"):
+        dict_spec.coerce({1: "2"})
+
+    with pytest.raises(ValueError, match="cannot coerce value to dict"):
+        dict_spec.coerce({"replicas": "not-an-int"})
+
+
 @pytest.mark.parametrize("input_type", ["int", "float", "bool"])
 def test_input_spec_coercion_errors_do_not_echo_values(input_type: str) -> None:
     secret = "TOP-SECRET-9000"

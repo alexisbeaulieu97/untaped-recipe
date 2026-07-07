@@ -68,7 +68,7 @@ def derive_input_value(
             raise InputSourceError(f"invalid input source expression: {message}") from exc
         if value is None or isinstance(value, Undefined):
             continue
-        ensure_derived_value_within_bound(value)
+        ensure_derived_value_within_bound(value, structured=True)
         return value
     return UNRESOLVED
 
@@ -195,9 +195,11 @@ def _ensure_power_within_bound(
         )
 
 
-def ensure_derived_value_within_bound(value: object) -> None:
+def ensure_derived_value_within_bound(value: object, *, structured: bool = False) -> None:
     """Reject non-scalar or oversized derived input values."""
-    if not isinstance(value, str | int | float | bool):
+    if not isinstance(value, str | int | float | bool) and not (
+        structured and isinstance(value, Mapping | list | tuple)
+    ):
         raise InputSourceError("derived input value must be a scalar")
     if _value_size(value, seen=set(), depth=0) > MAX_DERIVED_VALUE_LENGTH:
         raise InputSourceError(

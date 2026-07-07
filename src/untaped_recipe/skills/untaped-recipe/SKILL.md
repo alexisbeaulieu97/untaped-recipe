@@ -97,26 +97,33 @@ plain directories.
   `inputs`, and `steps`. `name:` is rejected. The recipe file schema remains
   `version: 1` in 0.9.
 - Input specs support `type`, `default`, `required`, `description`,
-  `sensitive`, `scope`, and `from`; unknown input-spec fields are rejected.
-  Omitted `scope` infers `target` when `from` is present and `global`
-  otherwise. `scope: global` rejects recipe `from` and CLI `--input-from`, but
-  accepts fixed values from `--var` and `--vars`.
+  `sensitive`, `scope`, `items`, `values`, and `from`; unknown input-spec
+  fields are rejected. Types are `str`, `int`, `bool`, `float`, `list`, and
+  `dict`. `list.items` and `dict.values` are shallow scalar element types and
+  default to `str`. Omitted `scope` infers `target` when `from` is present and
+  `global` otherwise. `scope: global` rejects recipe `from` and CLI
+  `--input-from`, but accepts fixed values from `--var` and `--vars`.
 - Per-target `from` values are sandboxed strict native Jinja strings used only
-  to derive scalar input values. They can combine literal text,
+  to derive declared input values. Structured derivation is allowed only for
+  inputs declared as `list` or `dict`; scalar-declared inputs still reject
+  derived containers. They can combine literal text,
   string/number/boolean/null constants that Jinja parses without operators,
   and field access on `target.path`, `target.name`, `target.parent_path`,
   `target.parent_name`, and optional incoming pipe `record`. They cannot change
-  recipe structure, paths, hook names, or template rendering. There are no
-  ambient globals; control blocks, filters, tests, calls, operators, and
-  collection literals are rejected, so negative numeric expressions like
-  `{{ -1 }}` are not valid V1 sources. Missing, undefined, or null candidates
-  fall through; `false`, `0`, and `""` are real values. Oversized or non-scalar
-  derived values are rejected.
+  recipe structure, hook names, or step types. There are no ambient globals;
+  control blocks, filters, tests, calls, operators, and collection literals are
+  rejected, so negative numeric expressions like `{{ -1 }}` are not valid V1
+  sources. Missing, undefined, or null candidates fall through; `false`, `0`,
+  `""`, `[]`, and `{}` are real values. Oversized derived values and nested
+  containers are rejected.
 - Input precedence is fixed value/source override, recipe `from`,
   `--interactive` prompt, recipe `default`, then required-input error. A fixed
   value and `--input-from` source override for the same input is a usage error.
   Empty interactive answers accept the default when one exists; sensitive
-  defaults are not displayed to the prompt backend.
+  defaults are not displayed to the prompt backend. `--var name=value` parses
+  `value` as YAML only for inputs declared `list` or `dict`; scalar-declared
+  inputs keep literal string semantics before existing scalar coercion.
+  Interactive prompting is not supported for structured inputs.
 - `apply foo` resolves an installed pack recipe only when unique.
 - `apply pack/recipe` resolves an installed pack recipe from `packs/pack/`.
 - `apply ./recipe.yml` runs a path-only single-file recipe.
@@ -172,6 +179,15 @@ plain directories.
   rendering known inputs. Template and copy steps may set `if_absent: true` to
   create only when the destination does not already exist or have an earlier
   planned write.
+- Path-bearing fields accept bare `{{ input }}` tokens and are rendered per
+  target after input resolution, always with strict unknown-token behavior:
+  `template.template`, `template.dest`, `copy.source`, `copy.dest`,
+  `transform.file`, `transform.files`, `transform.globs`, `transform.exclude`,
+  `remove.file`, `remove.files`, `remove.globs`, and `remove.exclude`. Rendered
+  values are rechecked as safe relative paths and confined against the recipe
+  directory for `source`/`template`, or the target root for
+  `dest`/`file`/`files`/glob-expanded results. Sensitive and structured inputs
+  are forbidden in path fields.
 - `transform` accepts exactly one of `file`, explicit `files`, or `globs`;
   `files` expands to one step per listed file at load time, while `globs`
   expands per target at planning time. Missing transform targets fail unless
@@ -186,6 +202,12 @@ plain directories.
   `where` list-item selectors.
 - The engine does not provide a general YAML selector DSL; `yaml_edit` is the
   lone built-in hook and custom behavior belongs in trusted Python pack hooks.
+- Recipe hook `args` are passed verbatim and are never templated by the engine.
+  Hooks receive resolved `inputs` separately with native structured values.
+  Hooks that support templated string args should call
+  `helpers.render_template()` themselves; structured inputs should be read from
+  the `inputs` mapping directly. Use YAML anchors for recipe-side structural
+  reuse instead of adding engine structural templating.
 - External hooks live in uv-managed packs with `pyproject.toml`, `uv.lock`, and
   `[tool.untaped_recipe.hooks]` metadata. Hookless packs can be checked without
   `uv.lock`, but hook-declaring packs need it before hooks can run.

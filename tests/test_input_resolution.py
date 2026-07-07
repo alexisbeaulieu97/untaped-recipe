@@ -370,6 +370,76 @@ def test_interactive_prompts_optional_inputs_and_empty_optional_stays_unset() ->
     ]
 
 
+def test_interactive_prompting_rejects_structured_inputs() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "cols": {"type": "list", "required": True},
+            },
+        }
+    )
+    prompt = PromptRecorder({"cols": "[]"})
+
+    with pytest.raises(
+        ConfigError,
+        match=r"interactive prompting is not supported for structured input 'cols'; "
+        r"pass --var or --vars",
+    ):
+        _resolve(
+            recipe,
+            Target(path=Path("/work/acme/api")),
+            interactive=True,
+            prompt=prompt,
+        )
+
+    assert prompt.messages == []
+
+
+def test_interactive_resolution_uses_structured_default_without_prompting() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "cols": {"type": "list", "default": ["name", "path"]},
+            },
+        }
+    )
+    prompt = PromptRecorder({})
+
+    result = _resolve(
+        recipe,
+        Target(path=Path("/work/acme/api")),
+        interactive=True,
+        prompt=prompt,
+    )
+
+    assert result.values == {"cols": ["name", "path"]}
+    assert prompt.messages == []
+
+
+def test_interactive_resolution_skips_optional_structured_input() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "cols": {"type": "list", "required": False},
+            },
+        }
+    )
+    prompt = PromptRecorder({})
+
+    result = _resolve(
+        recipe,
+        Target(path=Path("/work/acme/api")),
+        interactive=True,
+        prompt=prompt,
+    )
+
+    assert "cols" not in result.values
+    assert prompt.messages == []
+
+
 def test_sensitive_default_is_not_shown_or_passed_to_prompt_backend() -> None:
     recipe = Recipe.model_validate(
         {
@@ -572,6 +642,80 @@ def test_derived_container_values_are_rejected_without_copying_contents() -> Non
         _resolve(recipe, target)
 
     assert "TOP-SECRET-9000" not in str(exc_info.value)
+
+
+def test_derived_list_values_feed_structured_inputs() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "collections": {
+                    "type": "list",
+                    "items": "str",
+                    "from": "{{ record.collections }}",
+                },
+            },
+        }
+    )
+    target = Target(
+        path=Path("/work/acme/api"),
+        record={"collections": ["ansible.builtin", "community.general"]},
+    )
+
+    result = _resolve(recipe, target)
+
+    assert result.values == {"collections": ["ansible.builtin", "community.general"]}
+
+
+def test_scalar_declared_input_still_rejects_derived_list_values() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "service": {"type": "str", "from": "{{ record.services }}"},
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="derived input value must be a scalar"):
+        _resolve(
+            recipe,
+            Target(path=Path("/work/acme/api"), record={"services": ["api"]}),
+        )
+
+
+def test_derived_structured_values_still_obey_size_bound() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "collections": {"type": "list", "from": "{{ record.collections }}"},
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="maximum length"):
+        _resolve(
+            recipe,
+            Target(path=Path("/work/acme/api"), record={"collections": ["x" * 9000]}),
+        )
+
+
+def test_derived_structured_values_reject_nested_containers_during_coercion() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "inputs": {
+                "collections": {"type": "list", "from": "{{ record.collections }}"},
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="cannot coerce value to list"):
+        _resolve(
+            recipe,
+            Target(path=Path("/work/acme/api"), record={"collections": [["nested"]]}),
+        )
 
 
 def test_fixed_values_are_coerced_once_during_input_preparation() -> None:

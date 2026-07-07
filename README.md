@@ -198,28 +198,46 @@ provide `target_path`; older saved streams that only contain `path` plus `repo`
 are rejected instead of writing to the wrong directory.
 
 Recipe inputs may be invocation-global or per-target. Input specs support
-`description`, `sensitive`, `scope`, and `from` in addition to `type`,
-`default`, and `required`. Omitted scope infers `target` when `from` is present
-and `global` otherwise. Per-target `from` values are sandboxed strict native
-Jinja strings evaluated only for scalar input derivation. They may combine
+`description`, `sensitive`, `scope`, `items`, `values`, and `from` in addition
+to `type`, `default`, and `required`. Types are `str`, `int`, `bool`, `float`,
+`list`, and `dict`; list `items` and dict `values` are shallow scalar element
+types and default to `str`. Omitted scope infers `target` when `from` is
+present and `global` otherwise. Per-target `from` values are sandboxed strict
+native Jinja strings evaluated only for input derivation. They may combine
 literal text, string/number/boolean/null constants that Jinja parses without
 operators, and field access on `target.path`, `target.name`,
 `target.parent_path`, `target.parent_name`, or optional incoming pipe `record`.
 There are no ambient Jinja globals; control blocks, filters, tests, calls,
 operators, and collection literals are rejected, so negative numeric
 expressions like `{{ -1 }}` are not valid V1 sources. Missing, undefined, or
-null candidates fall through; `false`, `0`, and empty strings are real values.
-Oversized or non-scalar derived values are rejected.
+null candidates fall through; `false`, `0`, empty strings, and empty
+containers are real values. Oversized derived values are rejected; structured
+derivation is allowed only for inputs declared as `list` or `dict`.
 
 Use `--input-from NAME=JINJA` to override a per-target source, `--var` or
 `--vars` to provide fixed values, and `--interactive` to prompt for unresolved
-inputs. A fixed value and source override for the same input is rejected.
-`scope: global` rejects recipe `from` and `--input-from`, but accepts
-`--var`/`--vars`. Interactive prompts run before recipe defaults; an empty
+inputs. For inputs declared `list` or `dict`, `--var name=value` parses the
+value as YAML first, so use forms such as `--var 'cols=[name, owner]'` or
+`--var 'labels={team: platform}'`; scalar-declared inputs keep the literal
+string behavior. `--vars` files may contain native YAML lists and mappings. A
+fixed value and source override for the same input is rejected. `scope: global`
+rejects recipe `from` and `--input-from`, but accepts `--var`/`--vars`.
+Interactive prompting is not supported for structured inputs; pass `--var` or
+`--vars` instead. Interactive prompts run before recipe defaults; an empty
 answer accepts the default when one exists. `--interactive --check` is
 rejected. With `--stdin --interactive`, target records still come from stdin
 and prompts use the controlling terminal. `--stdin` writes still require
 `--yes` unless `--dry-run` or `--check` is used.
+
+Path-bearing fields can use bare input tokens: template `template`/`dest`,
+copy `source`/`dest`, transform/remove `file` and `files`, plus `globs` and
+`exclude` entries. Fields render once per target after inputs resolve, are
+always strict (`unknown_tokens` only affects template file bodies), and are
+rechecked as confined relative paths after rendering. Sensitive inputs and
+structured inputs cannot be used in path fields; hooks receive structured
+inputs natively. Hook `args` are passed verbatim and are never templated by the
+engine. Use recipe inputs plus YAML anchors for structural reuse, and let hooks
+interpret args such as `yaml_edit` template strings.
 
 Every `recipe.outcome` row includes resolved declared inputs. Inputs marked
 `sensitive: true` are redacted in rows, warnings/errors, and backup metadata;

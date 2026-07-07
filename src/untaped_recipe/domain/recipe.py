@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from untaped_recipe.domain.paths import safe_relative_path
 
-InputType = Literal["str", "int", "bool", "float"]
+ScalarInputType = Literal["str", "int", "bool", "float"]
+InputType = Literal["str", "int", "bool", "float", "list", "dict"]
 InputScope = Literal["target", "global"]
 
 
@@ -26,6 +27,8 @@ class InputSpec(BaseModel):
     sensitive: bool = False
     scope: InputScope = "global"
     from_: tuple[str, ...] = Field(default=(), alias="from")
+    items: ScalarInputType | None = None
+    values: ScalarInputType | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -49,39 +52,76 @@ class InputSpec(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _validate_scope(self) -> InputSpec:
+    def _validate_input_spec(self) -> InputSpec:
         if self.scope == "global" and self.from_:
             raise ValueError("input with scope global cannot declare from")
+        if self.items is not None and self.type != "list":
+            raise ValueError("items is only valid with type list")
+        if self.values is not None and self.type != "dict":
+            raise ValueError("values is only valid with type dict")
         return self
 
     def coerce(self, value: object) -> object:
         """Coerce a CLI/YAML-supplied value to this input's declared type."""
-        if self.type == "str":
-            return str(value)
-        if self.type == "int":
+        if self.type == "list":
+            if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+                raise ValueError("cannot coerce value to list")
+            item_type = self.items or "str"
             try:
-                if isinstance(value, int) and not isinstance(value, bool):
-                    return value
-                if isinstance(value, float):
-                    return int(value)
-                return int(str(value))
-            except TypeError, ValueError, OverflowError:
-                raise ValueError("cannot coerce value to int") from None
-        if self.type == "float":
-            try:
-                if isinstance(value, int | float) and not isinstance(value, bool):
-                    return float(value)
-                return float(str(value))
-            except TypeError, ValueError, OverflowError:
-                raise ValueError("cannot coerce value to float") from None
-        if isinstance(value, bool):
-            return value
-        normalized = str(value).strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-        raise ValueError("cannot coerce value to bool")
+                return [_coerce_scalar_element(item, item_type) for item in value]
+            except ValueError:
+                raise ValueError("cannot coerce value to list") from None
+        if self.type == "dict":
+            if not isinstance(value, Mapping):
+                raise ValueError("cannot coerce value to dict")
+            value_type = self.values or "str"
+            coerced: dict[str, object] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise ValueError("dict input keys must be strings")
+                try:
+                    coerced[key] = _coerce_scalar_element(item, value_type)
+                except ValueError:
+                    raise ValueError("cannot coerce value to dict") from None
+            return coerced
+        return _coerce_scalar(value, self.type)
+
+
+def _coerce_scalar_element(value: object, input_type: ScalarInputType) -> object:
+    if isinstance(value, Mapping) or (
+        isinstance(value, Sequence) and not isinstance(value, str | bytes)
+    ):
+        raise ValueError(f"cannot coerce value to {input_type}")
+    return _coerce_scalar(value, input_type)
+
+
+def _coerce_scalar(value: object, input_type: ScalarInputType) -> object:
+    if input_type == "str":
+        return str(value)
+    if input_type == "int":
+        try:
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            return int(str(value))
+        except TypeError, ValueError, OverflowError:
+            raise ValueError("cannot coerce value to int") from None
+    if input_type == "float":
+        try:
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                return float(value)
+            return float(str(value))
+        except TypeError, ValueError, OverflowError:
+            raise ValueError("cannot coerce value to float") from None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("cannot coerce value to bool")
 
 
 class BaseStep(BaseModel):

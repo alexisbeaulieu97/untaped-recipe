@@ -268,3 +268,11 @@ deferral):
 | Structured-render error / prompting error / whole-value redaction (ruling 10) | Tasks D / B / B |
 | 0.9-spec invariant: no control flow in schema | Task D (expressions unrepresentable in bare tokens) |
 | Parking-lot disposition (8 items) | list inputs → A–C; typed stubs + hint → E; args/inputs doc + anchors doc + rationale → F; args-schema deferred; --register + vars:+Jinja-in-files remain rejected/deferred (DECISIONS) |
+
+## Implementation-plan review (pre-implementation, adjudicated)
+
+- No STOP-level technical contradiction found against `origin/main` at `77dae3351942e3c14af3646a3a6a604babd9b10c`.
+- Task B: structured `--var` parsing uses `yaml.safe_load` — the same loader family as recipe/`--vars` intake. No loader change is approved.
+- Task B: add explicit scalar byte-identical regression tests — scalar-declared inputs given `--var` values that look like YAML (`[a, b]`, `a: b`, `{x: y}`, `true`) must stay literal strings / follow existing scalar coercion, with unchanged error text.
+- Task D: rendered field values become `Path` only after `render_field`, then immediately re-pass `safe_relative_path` with the ORIGINAL field name in the error text, then confinement against the correct base: `recipe_dir` for `source`/`template`, target root for `dest`/`file`/`files`/glob-expansion results.
+- Task G: update every intentional `0.14.0` version/parity assertion found by grep (currently: `pyproject.toml`, `_version.py`, both `verify_versions` calls in `test_hook_api_contract.py`, wheel glob in `test_infrastructure.py`), not an enumerated subset. Re-grep before committing.

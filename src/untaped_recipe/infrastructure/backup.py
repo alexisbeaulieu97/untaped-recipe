@@ -9,7 +9,7 @@ import shutil
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -233,6 +233,13 @@ class BackupStore:
             )
         return planned
 
+    def delete(self, backup_id: str) -> None:
+        """Delete one backup bundle by exact id."""
+        bundle_dir = self._root / backup_id
+        if not (bundle_dir / "metadata.json").is_file():
+            raise ValueError(f"backup not found: {backup_id}")
+        shutil.rmtree(bundle_dir)
+
     def metadata(self, backup_id: str) -> dict[str, object]:
         """Read raw metadata for a backup bundle."""
         bundle = self._resolve(backup_id)
@@ -256,6 +263,46 @@ class BackupStore:
         if len(matches) > 1:
             raise ValueError(f"backup id prefix is ambiguous: {backup_id}")
         return matches[0]
+
+
+def bundle_bytes(bundle: BackupBundle) -> int:
+    """Total on-disk bytes of one bundle's files."""
+    return sum(path.stat().st_size for path in bundle.path.rglob("*") if path.is_file())
+
+
+def bundle_created_at(bundle: BackupBundle) -> datetime | None:
+    """Creation time parsed from the bundle id; None when unparsable."""
+    stamp = bundle.id.split("-", 1)[0]
+    try:
+        return datetime.strptime(stamp, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def prune_selection(
+    bundles: Sequence[BackupBundle],
+    *,
+    keep: int | None,
+    max_age_days: int | None,
+    now: datetime,
+) -> builtins.list[BackupBundle]:
+    """Bundles to prune: outside the newest ``keep`` OR older than the age bound.
+
+    Bundles whose id carries no parseable timestamp cannot be ordered or aged,
+    so they are never pruned and do not consume ``keep`` slots.
+    """
+    datable = [bundle for bundle in bundles if bundle_created_at(bundle) is not None]
+    newest_first = sorted(datable, key=lambda bundle: bundle.id, reverse=True)
+    pruned: set[str] = set()
+    if keep is not None:
+        pruned.update(bundle.id for bundle in newest_first[keep:])
+    if max_age_days is not None:
+        cutoff = now - timedelta(days=max_age_days)
+        for bundle in newest_first:
+            created = bundle_created_at(bundle)
+            if created is not None and created < cutoff:
+                pruned.add(bundle.id)
+    return [bundle for bundle in sorted(bundles, key=lambda b: b.id) if bundle.id in pruned]
 
 
 def _hash_text(content: str | None) -> str | None:

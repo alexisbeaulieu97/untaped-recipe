@@ -10,7 +10,7 @@ from types import ModuleType
 
 import pytest
 from untaped.api import build_tool_app, invalidate_settings_cache
-from untaped.testing import CliInvoker
+from untaped.testing import CliInvoker, assert_destructive_contract
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe import app
@@ -2892,3 +2892,145 @@ def test_backup_restore_failing_item_exits_nonzero(
 
     assert result.exit_code == 1, result.output
     assert "disk full" in result.output
+    # The restore is one staged transaction: a mid-write failure rolls back
+    # already-restored files, so both keep their pre-restore content.
+    assert first.read_text() == "one-after\n"
+    assert second.read_text() == "two-after\n"
+
+
+def test_backup_restore_flushes_bundle_in_one_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    changes = []
+    for name in ("one.txt", "two.txt", "three.txt"):
+        (target / name).write_text(f"{name}-before\n")
+        changes.append(
+            FileChange(
+                target=target,
+                relative_path=Path(name),
+                before=f"{name}-before\n",
+                after=f"{name}-after\n",
+            )
+        )
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(recipe_name="demo", inputs={}, changes=changes)
+    for name in ("one.txt", "two.txt", "three.txt"):
+        (target / name).write_text(f"{name}-after\n")
+
+    import untaped_recipe.infrastructure.backup as backup_module
+
+    calls: list[int] = []
+    original_flush = backup_module.flush_changes
+
+    def counting_flush(changes: tuple[FileChange, ...]) -> None:
+        calls.append(len(changes))
+        original_flush(changes)
+
+    monkeypatch.setattr(backup_module, "flush_changes", counting_flush)
+
+    result = CliInvoker().invoke(app, ["backup", "restore", bundle.id, "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [3]
+    for name in ("one.txt", "two.txt", "three.txt"):
+        assert (target / name).read_text() == f"{name}-before\n"
+
+
+def _seed_bundle(backups_root: Path, bundle_id: str, *, payload_bytes: int = 10) -> Path:
+    bundle_dir = backups_root / bundle_id
+    (bundle_dir / "files").mkdir(parents=True)
+    (bundle_dir / "files" / "0").write_text("x" * payload_bytes)
+    (bundle_dir / "metadata.json").write_text(
+        json.dumps({"id": bundle_id, "recipe": "demo", "inputs": {}, "files": []})
+    )
+    return bundle_dir
+
+
+def test_backup_prune_keep_prunes_oldest(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    mid = _seed_bundle(backups, "20250201T000000000000Z-bbbbbbbb")
+    new = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--keep", "2", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not old.exists()
+    assert mid.exists()
+    assert new.exists()
+    assert "20250101T000000000000Z-aaaaaaaa" in result.stdout
+    assert "pruned 1 of 3 backup(s)" in result.stderr
+    assert "reclaimed" in result.stderr
+
+
+def test_backup_prune_older_than_days(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20200101T000000000000Z-aaaaaaaa")
+    fresh = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--older-than", "30", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not old.exists()
+    assert fresh.exists()
+
+
+def test_backup_prune_union_of_keep_and_age(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    aged = _seed_bundle(backups, "20200101T000000000000Z-aaaaaaaa")
+    mid = _seed_bundle(backups, "20990201T000000000000Z-bbbbbbbb")
+    newest = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    result = CliInvoker().invoke(
+        app, ["backup", "prune", "--keep", "1", "--older-than", "30", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not aged.exists()
+    assert not mid.exists()
+    assert newest.exists()
+
+
+def test_backup_prune_uses_settings_when_flags_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    new = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+    monkeypatch.setenv("UNTAPED_RECIPE__BACKUP_KEEP", "1")
+    invalidate_settings_cache()
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not old.exists()
+    assert new.exists()
+
+
+def test_backup_prune_requires_a_policy(tmp_path: Path) -> None:
+    _seed_bundle(library_root() / "backups", "20250101T000000000000Z-aaaaaaaa")
+
+    result = CliInvoker().invoke(app, ["backup", "prune", "--yes"])
+
+    assert result.exit_code != 0
+    assert "backup prune needs --keep/--older-than" in result.output
+
+
+def test_backup_prune_conforms_to_destructive_contract(tmp_path: Path) -> None:
+    backups = library_root() / "backups"
+    old = _seed_bundle(backups, "20250101T000000000000Z-aaaaaaaa")
+    new = _seed_bundle(backups, "20990301T000000000000Z-cccccccc")
+
+    def assert_unchanged() -> None:
+        assert old.exists()
+        assert new.exists()
+
+    assert_destructive_contract(
+        app,
+        ["backup", "prune", "--keep", "1"],
+        assert_unchanged=assert_unchanged,
+    )

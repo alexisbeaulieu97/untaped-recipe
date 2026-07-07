@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from cyclopts import Parameter
 from untaped.api import (
     ColumnsOption,
+    ConfigError,
     FormatOption,
     batch_apply,
     create_app,
@@ -17,8 +19,13 @@ from untaped.api import (
     ui_context,
 )
 
-from untaped_recipe.cli.common import library_root, report_config_errors
-from untaped_recipe.infrastructure.backup import BackupStore, RestoreItem
+from untaped_recipe.cli.common import library_root, report_config_errors, settings
+from untaped_recipe.infrastructure.backup import (
+    BackupBundle,
+    BackupStore,
+    bundle_bytes,
+    prune_selection,
+)
 
 app = create_app(name="backup", help="Manage recipe backups.")
 
@@ -69,22 +76,103 @@ def restore_command(
         store = BackupStore(library_root() / "backups")
         items = store.plan_restore(backup_id, force=force)
         ui = ui_context(strict=False)
+        file_rows = [{"path": str(item.path), "action": item.action} for item in items]
 
-        def _restore(item: RestoreItem) -> RestoreItem:
-            store.restore(backup_id, items=[item], force=force)
-            return item
+        def _preview(rows: object) -> None:
+            del rows
+            echo(f"About to restore {len(file_rows)} file(s):", err=True)
+            for row in file_rows:
+                echo("  - " + "\t".join(str(value) for value in row.values()), err=True)
+
+        def _restore(bundle_id: str) -> str:
+            # One store.restore call: the bundle resolves once and all files
+            # flush in a single staged transaction (full set or rolled back).
+            store.restore(bundle_id, force=force)
+            return bundle_id
 
         outcome = batch_apply(
-            items,
+            [backup_id],
             _restore,
             verb="restore",
-            noun="file",
-            label=lambda item: str(item.path),
-            describe=lambda item: {"path": str(item.path), "action": item.action},
+            noun="backup",
+            label=lambda bundle_id: bundle_id,
+            describe=lambda bundle_id: {"id": bundle_id, "files": len(items)},
+            ui=ui,
+            destructive=True,
+            assume_yes=yes,
+            preview=_preview,
+        )
+        if not outcome.any_failed:
+            ui.message("success", f"restored {backup_id}")
+        finish(outcome)
+
+
+@app.command(name="prune")
+def prune_command(
+    *,
+    keep: Annotated[
+        int | None,
+        Parameter(name="--keep", help="Keep only the newest N bundles."),
+    ] = None,
+    older_than: Annotated[
+        int | None,
+        Parameter(name="--older-than", help="Prune bundles older than DAYS days."),
+    ] = None,
+    yes: Annotated[
+        bool,
+        Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
+    ] = False,
+    fmt: FormatOption = "table",
+    columns: ColumnsOption = None,
+) -> None:
+    """Prune old backup bundles."""
+    with report_config_errors():
+        if keep is not None and keep < 1:
+            raise ConfigError("--keep must be at least 1")
+        if older_than is not None and older_than < 1:
+            raise ConfigError("--older-than must be at least 1")
+        resolved_keep = settings().backup_keep if keep is None else keep
+        resolved_age = settings().backup_max_age_days if older_than is None else older_than
+        if resolved_keep is None and resolved_age is None:
+            raise ConfigError(
+                "backup prune needs --keep/--older-than or backup_keep/backup_max_age_days settings"
+            )
+        store = BackupStore(library_root() / "backups")
+        bundles = store.list()
+        pruned = prune_selection(
+            bundles,
+            keep=resolved_keep,
+            max_age_days=resolved_age,
+            now=datetime.now(tz=UTC),
+        )
+        sizes = {bundle.id: bundle_bytes(bundle) for bundle in pruned}
+        ui = ui_context(strict=False)
+
+        def _delete(bundle: BackupBundle) -> BackupBundle:
+            store.delete(bundle.id)
+            return bundle
+
+        outcome = batch_apply(
+            pruned,
+            _delete,
+            verb="prune",
+            noun="backup",
+            label=lambda bundle: bundle.id,
+            describe=lambda bundle: {"id": bundle.id, "size_bytes": sizes[bundle.id]},
             ui=ui,
             destructive=True,
             assume_yes=yes,
         )
-        if not outcome.any_failed:
-            ui.message("success", f"restored {backup_id}")
+        rows = [{"id": bundle.id, "size_bytes": sizes[bundle.id]} for bundle, _ in outcome.results]
+        rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.backup")
+        if rendered:
+            echo(rendered)
+        if not outcome.any_failed and (outcome.results or not pruned):
+            reclaimed = sum(sizes[bundle.id] for bundle, _ in outcome.results)
+            kept = len(bundles) - len(outcome.results)
+            ui.message(
+                "success",
+                f"pruned {len(outcome.results)} of {len(bundles)} backup(s), "
+                f"kept {kept}, reclaimed {reclaimed} bytes",
+            )
         finish(outcome)

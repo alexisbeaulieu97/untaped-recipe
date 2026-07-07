@@ -10,7 +10,12 @@ import untaped_recipe.infrastructure.file_writer as file_writer_module
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.domain.plan import FileChange
 from untaped_recipe.domain.recipe import Recipe
-from untaped_recipe.infrastructure.backup import BackupStore, RestoreItem
+from untaped_recipe.infrastructure.backup import (
+    BackupBundle,
+    BackupStore,
+    RestoreItem,
+    prune_selection,
+)
 from untaped_recipe.infrastructure.file_writer import flush_changes
 from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
 from untaped_recipe.infrastructure.pack_store import PackLibrary
@@ -272,3 +277,49 @@ def test_backup_restore_rolls_back_prior_files_on_write_failure(
 
     assert first.read_text() == "one-after\n"
     assert second.read_text() == "two-after\n"
+
+
+def test_prune_selection_never_age_prunes_unparsable_ids(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    bundles = [
+        BackupBundle(id="custom-name", path=tmp_path / "custom-name"),
+        BackupBundle(
+            id="20200101T000000000000Z-aaaaaaaa",
+            path=tmp_path / "20200101T000000000000Z-aaaaaaaa",
+        ),
+    ]
+
+    pruned = prune_selection(
+        bundles,
+        keep=None,
+        max_age_days=30,
+        now=datetime(2026, 7, 7, tzinfo=UTC),
+    )
+
+    assert [bundle.id for bundle in pruned] == ["20200101T000000000000Z-aaaaaaaa"]
+
+
+def test_prune_selection_unparsable_ids_do_not_consume_keep_slots(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    bundles = [
+        BackupBundle(id="aaa-custom", path=tmp_path / "aaa-custom"),
+        BackupBundle(
+            id="20990101T000000000000Z-bbbbbbbb",
+            path=tmp_path / "20990101T000000000000Z-bbbbbbbb",
+        ),
+        BackupBundle(
+            id="20200101T000000000000Z-cccccccc",
+            path=tmp_path / "20200101T000000000000Z-cccccccc",
+        ),
+    ]
+
+    pruned = prune_selection(
+        bundles,
+        keep=1,
+        max_age_days=None,
+        now=datetime(2026, 7, 7, tzinfo=UTC),
+    )
+
+    assert [bundle.id for bundle in pruned] == ["20200101T000000000000Z-cccccccc"]

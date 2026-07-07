@@ -29,10 +29,18 @@ plain directories.
   creates no backups, prompts for nothing, and exits non-zero when changes
   would be made or a target fails.
 - Use `--hook-timeout SECONDS` to override the configured hook request timeout;
-  `0` disables timeout for trusted long-running hooks.
+  `0` disables timeout for trusted long-running hooks. Worker environment
+  startup (uv env creation/sync on first use) runs under the separate
+  `recipe.hook_startup_timeout_seconds` setting (default 300, `0` =
+  unbounded) with a stderr `preparing hook environment...` notice, so a cold
+  cache never fires the hook timeout.
 - Backups are created by default; use `--no-backup` only when the target tree is already protected.
-- `untaped-recipe backup list|show|restore` manages backup bundles; `show` and
-  `restore` accept full ids, unambiguous prefixes, or `latest`.
+- `untaped-recipe backup list|show|restore|prune` manages backup bundles;
+  `show` and `restore` accept full ids, unambiguous prefixes, or `latest`.
+  `restore` applies the whole bundle as one staged transaction. `prune
+  [--keep N] [--older-than DAYS]` deletes old bundles behind the standard
+  destructive confirmation, falling back to the `recipe.backup_keep` /
+  `recipe.backup_max_age_days` settings when flags are omitted.
 - `untaped-recipe new pack <name> [--no-lock]` scaffolds a pack.
 - `untaped-recipe new recipe <pack>/<recipe> [--no-lock]` scaffolds a recipe and starter
   golden case inside a pack.
@@ -212,7 +220,11 @@ plain directories.
 - Backup file entries include redacted per-target inputs and never store the
   full incoming pipe record.
 - `--check` emits `recipe.outcome` rows with `status` set to `check`.
-- `apply --stdin` consumes bare paths plus untaped pipe records. It resolves
+- After a real apply, `recipe.outcome` rows report `applied`, `unchanged`, or
+  `error` per target — `unchanged` means the plan produced no writes there.
+- `apply --stdin` consumes bare paths plus untaped pipe records. Bare lines
+  that parse as JSON scalars (a directory named `2024`) are still paths; only
+  JSON objects are treated as records. It resolves
   absolute `record.target_path` first, then generic `record.path`; records
   whose `kind` ends in `.summary` are skipped as non-targets. Repo-grain
   records such as `workspace.repo` must provide `target_path` and stale

@@ -111,6 +111,11 @@ url = "https://pypi.org/simple"
 explicit = true
 ```
 
+uv also provisions Python interpreters from GitHub on demand. On networks that
+block it, point `UV_PYTHON_INSTALL_MIRROR` at an approved mirror of
+python-build-standalone (or preinstall a matching interpreter) so pack
+environments can build at all.
+
 Use `--no-lock` with `new pack`, `new recipe`, or `new hook` to skip the lock
 step entirely. The command exits successfully and prints a stderr note, but
 hooks cannot run until `uv lock` succeeds because workers use

@@ -3034,3 +3034,152 @@ def test_backup_prune_conforms_to_destructive_contract(tmp_path: Path) -> None:
         ["backup", "prune", "--keep", "1"],
         assert_unchanged=assert_unchanged,
     )
+
+
+def test_new_help_placeholders_render_meaningfully(tmp_path: Path) -> None:
+    invoker = CliInvoker()
+
+    recipe_help = invoker.invoke(app, ["new", "recipe", "--help"])
+    hook_help = invoker.invoke(app, ["new", "hook", "--help"])
+    hook_run_help = invoker.invoke(app, ["hook", "run", "--help"])
+
+    assert "PACK/RECIPE reference." in recipe_help.stdout
+    assert "PACK/HOOK reference." in hook_help.stdout
+    assert "PACK/HOOK reference." in hook_run_help.stdout
+    for result in (recipe_help, hook_help, hook_run_help):
+        assert "REF  /." not in result.stdout
+
+
+def test_apply_help_uses_slash_ref_grammar(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["apply", "--help"])
+
+    assert "pack/recipe" in result.stdout
+    assert "pack:recipe" not in result.stdout
+
+
+def test_empty_library_list_and_check_print_guidance(tmp_path: Path) -> None:
+    invoker = CliInvoker()
+
+    listed = invoker.invoke(app, ["list"])
+    packs = invoker.invoke(app, ["list", "--packs"])
+    checked = invoker.invoke(app, ["check"])
+
+    for result in (listed, packs, checked):
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        assert "no packs installed" in result.stderr
+        assert "new pack" in result.stderr
+        assert "add" in result.stderr
+
+
+def test_recipe_schema_errors_are_domain_errors_with_path(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: 1\nname: nope\nsteps: []\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+
+    assert result.exit_code != 0
+    assert str(recipe) in result.output
+    assert "name is not allowed here" in result.output
+    assert "pydantic" not in result.output
+    assert "extra_forbidden" not in result.output
+
+
+def test_recipe_yaml_parse_errors_name_the_file(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: [unclosed\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", str(recipe), str(target), "--dry-run"])
+
+    assert result.exit_code != 0
+    assert str(recipe) in result.output
+    assert "invalid recipe YAML" in result.output
+
+
+def test_apply_unchanged_targets_report_unchanged_status(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    changing = tmp_path / "changing"
+    changing.mkdir()
+    unchanged = tmp_path / "unchanged"
+    unchanged.mkdir()
+    (unchanged / "out.txt").write_text("hello\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(changing), str(unchanged), "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = {row["target"]: row["status"] for row in json.loads(result.stdout)}
+    assert rows[str(changing)] == "applied"
+    assert rows[str(unchanged)] == "unchanged"
+    assert "planned" not in result.stdout
+
+
+def test_apply_table_inputs_cell_is_not_a_dict_repr(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  service:\n"
+        "    type: str\n"
+        "steps:\n"
+        "  - type: template\n"
+        "    template: template.txt\n"
+        "    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("svc={{ service }}\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe),
+            str(target),
+            "--yes",
+            "--var",
+            "service=api",
+            "--columns",
+            "inputs",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "service=api" in result.stdout
+    assert "{'service'" not in result.stdout
+
+
+def test_backup_show_renders_files_as_lines(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yml").write_text("before\n")
+    store = BackupStore(library_root() / "backups")
+    bundle = store.create(
+        recipe_name="demo",
+        inputs={},
+        changes=[
+            FileChange(
+                target=target,
+                relative_path=Path("config.yml"),
+                before="before\n",
+                after="after\n",
+            )
+        ],
+    )
+
+    result = CliInvoker().invoke(app, ["backup", "show", bundle.id])
+
+    assert result.exit_code == 0, result.output
+    assert "files:" in result.stdout
+    assert f"  - {target}/config.yml" in result.stdout
+    assert "[{" not in result.stdout

@@ -54,7 +54,25 @@ def show_command(
     """Show backup metadata."""
     with report_config_errors():
         metadata = BackupStore(library_root() / "backups").metadata(backup_id)
-        emit(metadata, fmt=fmt, columns=columns, kind="recipe.backup")
+        if fmt != "table":
+            emit(metadata, fmt=fmt, columns=columns, kind="recipe.backup")
+            return
+        # Table view: one line per file instead of a raw list repr; structured
+        # formats keep the full metadata mapping.
+        files = metadata.get("files")
+        emit(
+            {key: value for key, value in metadata.items() if key != "files"},
+            fmt=fmt,
+            columns=columns,
+            kind="recipe.backup",
+        )
+        if isinstance(files, list) and files:
+            echo("files:")
+            for entry in files:
+                if isinstance(entry, dict):
+                    echo(f"  - {entry.get('target', '')}/{entry.get('relative_path', '')}")
+                else:
+                    echo(f"  - {entry}")
 
 
 @app.command(name="restore")

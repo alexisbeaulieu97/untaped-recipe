@@ -94,7 +94,11 @@ def test_rejects_malformed_or_unusable_pipe_records() -> None:
         resolve_target_lines([(1, _env("other.kind", {"name": "api"}))])
 
 
-@pytest.mark.parametrize("line", ["42", "[1]", '"api"'])
-def test_non_object_json_stdin_line_rejected(line: str) -> None:
-    with pytest.raises(ValueError, match="stdin line 1 is not a pipe record or a path"):
-        resolve_target_lines([(1, line)])
+@pytest.mark.parametrize("line", ["2024", "true", "[1]", '"api"'])
+def test_non_object_json_stdin_lines_are_bare_paths(line: str) -> None:
+    # A directory literally named "2024" must be pipeable; only JSON objects
+    # enter record parsing (0.12 ruling supersedes the 0.8.1 rejection).
+    targets = resolve_target_lines([(1, line)])
+
+    assert [target.path for target in targets] == [Path(line)]
+    assert targets[0].record is None

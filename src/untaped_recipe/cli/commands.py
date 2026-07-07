@@ -135,7 +135,7 @@ def new_pack_command(
 
 @new_app.command(name="recipe")
 def new_recipe_command(
-    ref: Annotated[str, Parameter(help="<pack>/<recipe>.")],
+    ref: Annotated[str, Parameter(help="PACK/RECIPE reference.")],
     /,
     *,
     no_lock: Annotated[
@@ -154,7 +154,7 @@ def new_recipe_command(
 
 @new_app.command(name="hook")
 def new_hook_command(
-    ref: Annotated[str, Parameter(help="<pack>/<hook>.")],
+    ref: Annotated[str, Parameter(help="PACK/HOOK reference.")],
     /,
     *,
     kind: Annotated[
@@ -181,7 +181,7 @@ def _warn_no_lock(project_root: Path) -> None:
 
 @app.command(name="apply")
 def apply_command(
-    recipe_ref: Annotated[str, Parameter(help="Recipe id, pack:recipe ref, or path.")],
+    recipe_ref: Annotated[str, Parameter(help="Recipe id, pack/recipe ref, or path.")],
     dirs: Annotated[list[Path] | None, Parameter(help="Target directories.")] = None,
     *,
     recipe_id: Annotated[
@@ -294,6 +294,10 @@ def apply_command(
             recipe_ref=context.recipe_ref,
             preview_status=_preview_status(dry_run, check),
         )
+        if fmt == "table":
+            # Human view: key=value pairs instead of a dict repr. Structured
+            # formats keep the real mapping for pipe/json consumers.
+            rows = [{**row, "inputs": _inputs_cell(row["inputs"])} for row in rows]
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.outcome")
         if rendered:
             echo(rendered)
@@ -396,6 +400,11 @@ def list_command(
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind=kind)
         if rendered:
             echo(rendered)
+        if not installed:
+            ui_context(strict=False).message(
+                "info",
+                "no packs installed; scaffold one with `new pack` or install with `add`",
+            )
 
 
 @app.command(name="show")
@@ -462,6 +471,11 @@ def check_command(
         rendered = render_rows(rows, fmt=fmt, columns=columns, kind="recipe.check")
         if rendered:
             echo(rendered)
+        if ref_text is None and not rows:
+            ui_context(strict=False).message(
+                "info",
+                "no packs installed; scaffold one with `new pack` or install with `add`",
+            )
         finish(any(row["status"] == "error" for row in rows))
 
 
@@ -772,7 +786,9 @@ def _outcome_rows(
         elif plan_id in execution.applied:
             rendered.append({**row, "status": "applied"})
         else:
-            rendered.append(row)
+            # Nothing to write for this target — say "unchanged", matching the
+            # summary line's vocabulary, instead of leaking planner state.
+            rendered.append({**row, "status": "unchanged"})
     return rendered
 
 
@@ -893,6 +909,12 @@ def _render_result_summary(
 def _plural(count: int, noun: str) -> str:
     suffix = "" if count == 1 else "s"
     return f"{count} {noun}{suffix}"
+
+
+def _inputs_cell(inputs: object) -> str:
+    if not isinstance(inputs, dict) or not inputs:
+        return ""
+    return ", ".join(f"{key}={value}" for key, value in inputs.items())
 
 
 def _row(plan: TargetPlan) -> dict[str, object]:

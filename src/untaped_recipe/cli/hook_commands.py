@@ -49,7 +49,7 @@ HookRunFormat = Literal["json", "yaml", "table", "pipe"]
 
 @app.command(name="run")
 def run_command(
-    name: Annotated[str, Parameter(help="Hook name or <pack>/<hook> ref.")],
+    name: Annotated[str, Parameter(help="Hook name or PACK/HOOK reference.")],
     /,
     *,
     target: Annotated[Path, Parameter(name="--target", help="Target directory.")],

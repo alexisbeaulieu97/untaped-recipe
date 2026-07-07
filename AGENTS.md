@@ -1,8 +1,9 @@
 # AGENTS.md - `untaped-recipe`
 
-Single source of truth for this standalone CLI repo. If command behavior,
-settings, recipe schema, hook contracts, architecture, or development
-workflow changes, update this file and the packaged skill in the same change.
+The contract for working in this standalone CLI repo: mission, invariants,
+hard rules, architecture, the documentation contract, and the development and
+release workflows. Behavior facts — command semantics, schemas, wire contracts
+— live in the concept pages under [docs/](./docs/), not here.
 
 ## Mission
 
@@ -65,9 +66,9 @@ Two consequences are load-bearing:
 
 ## Hard Rules
 
-1. Keep `AGENTS.md`, docs, README, and
-   `src/untaped_recipe/skills/untaped-recipe/SKILL.md` current with user-facing
-   behavior.
+1. Follow the Documentation contract below: a behavior change updates its
+   owning concept page and re-derives every derived surface (README, packaged
+   SKILL.md) in the same change.
 2. Use the untaped SDK entry point in `src/untaped_recipe/__main__.py`.
    The `ToolSpec` command is `untaped-recipe`, the settings section is
    `recipe`, and the profile model is `RecipeSettings`.
@@ -108,352 +109,45 @@ src/untaped_recipe/
 ```
 
 The `application` layer plans all target changes in memory and owns hook-run
-fixture validation plus hook invocation. Pipe target parsing resolves
-absolute `record.target_path` before generic `record.path`; records whose
-`kind` ends in `.summary` are skipped as non-targets. Repo-grain records such
-as `workspace.repo` must provide `target_path` and stale `path`+`repo` streams
-fail before planning. The CLI renders stderr previews from
-`cli/preview.py`: normal apply and `--dry-run` default to a file-level table,
-while `--check` defaults to summary-only CI output unless `--preview table` or
-`--preview diff` is passed. Diff mode keeps patch-compatible `a/` and `b/`
-headers. Table mode uses `RecipeSettings.preview_max_rows` to keep small plans
-file-level and collapse larger plans to truthful per-target aggregates, with an
-exact hidden-target count once the target table itself is capped. The command
-path calls the SDK batch confirmation helper with the generic target-row
-preview suppressed because recipe owns richer file-level preview detail.
-Successful target plans are flushed only after confirmation and one backup
-bundle has been created for the invocation. Target parsing preserves optional
-untaped pipe record context for per-target input derivation; `ApplyRecipe`
-still receives only a concrete target path plus resolved plain inputs.
+fixture validation plus hook invocation; the CLI renders stderr previews from
+`cli/preview.py` and flushes successful target plans only after confirmation
+and one backup bundle has been created for the invocation. Pipe target parsing
+preserves optional untaped record context for per-target input derivation;
+`ApplyRecipe` receives only a concrete target path plus resolved plain inputs.
+The behavior contracts (preview modes, record-parsing rules, outcome rows) are
+documented in [apply](./docs/apply.md) and [pipes](./docs/pipes.md).
 
-## Settings And Library Layout
+## Documentation contract
 
-`RecipeSettings.library_root` defaults to `~/.untaped/untaped-recipes` and
-can be configured in the shared untaped profile under `recipe.library_root`.
-`RecipeSettings.hook_timeout_seconds` defaults to `60`; `0` disables per-hook
-request timeouts. `hook_startup_timeout_seconds` (default `300`, `0` =
-unbounded) separately bounds worker environment startup — the worker emits a
-ready handshake line after imports, and the per-hook timeout only starts
-after it. `preview_max_rows` defaults to `50` and caps table preview row detail;
-`0` disables the cap. `backup_keep` and `backup_max_age_days` (both optional)
-are the retention defaults `backup prune` falls back to.
-The directory layout is:
+**Every behavior fact has exactly one owning page; README and SKILL.md link or
+distill, never originate.** A behavior change updates its owning page and every
+derived surface in the same change. The fleet-wide rules live in the core
+[documentation standard](https://github.com/alexisbeaulieu97/untaped/blob/main/docs/documentation.md).
 
-```text
-packs/
-packs.toml
-backups/
-```
-
-Installed library entries are uv pack projects under `packs/<pack-id>/`.
-`packs.toml` records source path or git URL, rev, and installed version. The
-installed key is the pack identity everywhere: refs, `list`, `check`,
-`remove`, ambiguity messages, and output rows.
-
-`check` without a ref validates the installed library and `packs.toml`; with a
-ref it validates one pack, recipe, explicit path, or bare built-in hook ref
-when no library entry shadows it. Hook-declaring packs require `uv.lock` and
-run `uv lock --check`; hookless packs and recipe projects do not require a
-lockfile. Non-stale lock probe failures report
-`could not verify lockfile freshness in ...`. `remove` previews the pack being
-removed and warns before confirmation when the installed copy has local edits.
-
-Pack identity comes from top-level `[project].name`, not from `recipe.yml`.
-Project names may use the `untaped-recipe-` prefix; the public pack name drops
-that prefix. A pack may expose zero or more recipe paths and zero or more hook
-modules:
-
-```toml
-[project]
-name = "untaped-recipe-ansible"
-version = "0.1.0"
-
-[dependency-groups]
-dev = ["untaped-recipe>=0.9"]
-
-[tool.untaped_recipe]
-requires_hook_api = ">=0.9,<1"
-
-[tool.untaped_recipe.recipes]
-"playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
-
-[tool.untaped_recipe.hooks]
-"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
-```
-
-Nested uv projects or uv workspaces inside a pack are opaque to this tool. Only
-the top-level project metadata and declared recipe paths are read.
-
-`new pack`, `new recipe`, and `new hook` refresh the pack `uv.lock` by default.
-File-creation failures roll back the newly written scaffold paths, but a
-post-creation lock failure leaves the completed pack, recipe, hook module,
-tests, and manifest rows in place and reports how to repair the lock. The
-repair path is to fix the package index or add a package-specific
-`[tool.uv.sources]` override, then run `uv lock` in the pack. `--no-lock` skips
-the lock step, exits successfully, and prints a stderr note; hooks still cannot
-run until `uv lock` succeeds because workers execute with
-`uv run --locked --no-dev`.
-
-Recipes resolve as follows:
-
-1. bare `apply <recipe>` resolves an installed pack recipe only when unique
-2. `apply <pack>/<recipe>` resolves an installed pack recipe
-3. explicit `apply ./recipe.yml` runs a path-only single-file recipe
-4. explicit `apply ./pack-project --recipe <recipe>` runs a local pack recipe
-
-For `apply`, a path must be explicit: it starts with `./`, `../`, `/`, or `~`,
-or ends in `.yml`/`.yaml`. Anything else, including `a/b`, is a library ref and
-must not be classified by on-disk existence.
-
-Hooks resolve in this order:
-
-1. the recipe's own pack project
-2. installed packs
-3. packaged built-ins registered in `src/untaped_recipe/builtins/registry.py`
-
-Hook names in recipes must be safe logical names, not filesystem paths.
-Recipes never declare hook runtimes. The resolver returns either a built-in
-reference or a uv pack hook reference with exported hook verbs.
-
-`hook run <hook>` is not recipe step execution. It resolves explicit
-`--project PATH` first, then installed packs, then built-ins. Keep it a
-single-hook, no-write debug harness.
-
-## Recipe Schema
-
-V1 recipe YAML is behavior-only. Public identity comes from uv project metadata
-or from the explicit file path stem for path-only files. Recipe YAML uses
-`version: 1`, optional `description`, optional `inputs`, and `steps`. `name`
-is not part of the recipe YAML schema and must be rejected as extra behavior
-metadata. Step types are:
-
-- `validate`: call a read-only hook.
-- `transform`: read one target file, call a transform hook, and plan new
-  content. `optional: true` is supported only here; missing target files are
-  skipped with a warning, but files deleted earlier in the same plan still
-  error.
-- `template`: render a recipe-local template into a target-relative path.
-  `unknown_tokens` is `error` by default and may be `keep` only for templates
-  that intentionally emit other tools' template syntax.
-- `copy`: copy a recipe-local text file into a target-relative path.
-- `remove`: remove one target-relative file if it exists.
-
-`transform` and `remove` may accept `files` as explicit fan-out syntax. Keep
-that behavior normalized in `Recipe` model validation so `ApplyRecipe` continues
-to plan ordinary single-file steps. They may also accept `globs`, which expand
-per target at planning time and may use `exclude` to skip matches. Globs have
-no implicit excludes; repo sweeps should usually include
-`exclude: [".git/**"]`. Zero matches warn, and binary/non-UTF-8 files are
-unsupported unless excluded. `template` and `copy` may set `if_absent: true` to
-skip writes whose destination already exists in target state or planned state.
-Do not add selector discovery to the engine.
-
-Path-bearing fields may render bare input tokens per target after input
-resolution: `template.template`, `template.dest`, `copy.source`, `copy.dest`,
-`transform.file`, `transform.files`, `transform.globs`, `transform.exclude`,
-`remove.file`, `remove.files`, `remove.globs`, and `remove.exclude`. Field
-rendering always uses strict unknown-token behavior; `unknown_tokens: keep`
-only affects template file bodies. After rendering, re-run `safe_relative_path`
-with the original field name in the error and confine recipe-local
-`source`/`template` paths to `recipe_dir`, and target paths plus glob expansion
-results to the target root. Sensitive and structured inputs are forbidden in
-path fields.
-
-Do not add a general YAML selector DSL to the core engine. Common YAML edits
-belong in the shipped `yaml_edit` transform hook backed by `ruamel.yaml`.
-
-Input specs accept `type`, `default`, `required`, `description`, `sensitive`,
-`scope`, `items`, `values`, and `from`; unknown input-spec keys are validation
-errors. Types are `str`, `int`, `bool`, `float`, `list`, and `dict`; list
-`items` and dict `values` are shallow scalar element types. `scope` is
-`global` or `target`. Omitted scope infers `target` when `from` is present and
-`global` otherwise. `scope: global` may use `--var`/`--vars`, but must reject
-recipe `from` and CLI `--input-from`.
-
-Per-target input `from` values are Jinja strings used only to derive declared
-input values. Structured derivation is allowed only for inputs declared as
-`list` or `dict`; scalar-declared inputs still reject containers. They may
-combine literal text, string/number/boolean/null constants that Jinja parses
-without operators, and field access on `target` or optional incoming pipe
-`record`. They must not affect recipe structure, hook names, or step types.
-The sandboxed strict native Jinja context contains `target.path`,
-`target.name`, `target.parent_path`, `target.parent_name`, and optional
-`record`, with no ambient globals. Control blocks, filters, tests, calls,
-operators, and collection literals are rejected; negative numeric expressions
-like `{{ -1 }}` are not valid V1 sources. Missing, undefined, or null candidate
-values fall through to the next candidate; `false`, `0`, `""`, `[]`, and `{}`
-are real values. Oversized derived values and nested containers are rejected.
-
-Input precedence is fixed value/source override first, then recipe `from`,
-interactive prompt, recipe `default`, and required-input error. A fixed value
-from `--var`/`--vars` and a source override from `--input-from` for the same
-input is a usage error. `--interactive --check` is rejected.
-`--stdin --interactive` must read target data from stdin and prompt only
-through a controlling terminal. `--var` YAML-parses the value only for
-structured-declared inputs; scalar-declared inputs keep existing literal
-string semantics before scalar coercion. Structured inputs cannot be prompted
-interactively.
-
-`recipe.outcome` rows and backup file metadata include resolved declared
-inputs only. Sensitive input values are redacted in rows, warnings/errors, and
-backup metadata; file-level previews and diffs are suppressed for targets with
-sensitive inputs. Real values still reach templates and hooks. Never copy the
-full incoming pipe record into rows or backups.
-
-## Testing Packs
-
-`test [pack|path|pack/recipe]` mirrors `check`'s grammar and runs golden-fixture
-cases stored inside packs at `tests/<recipe>/<case>/`:
-
-- `given/` is the single fixture target directory; the plan runs against a temp
-  copy named after the case. Fixtures and packs are never written by a test run.
-- `expected/` is the full expected tree after the plan; extra, missing, and
-  changed files all fail. Omitting it asserts the plan makes no changes.
-- `case.yml` is optional data-only config: `inputs`, `expect: success|error`,
-  `error_contains` (required with `expect: error`), and `verdict` (`status` is
-  the expected worst produced verdict; `message_contains` matches any verdict
-  message). `verdict` is only valid with `expect: success`. No assertion
-  language beyond this exists or will exist; logic in tests is pytest's job at
-  the hook level.
-- Planning is the only execution: the harness runs the same planner as `apply`
-  with the normal hook resolution order. `--update` regenerates `expected/`,
-  deleting it when the plan is empty, requires an explicit pack or recipe
-  argument, and rejects `expect: error` cases.
-- One `recipe.test` record per case (`pack`, `recipe`, `case`, `status`,
-  `detail`) is emitted on stdout. Unified diffs per mismatched file and a
-  summary line go to stderr. Exit 1 on any fail/error, including "no test cases
-  found" for an explicitly named pack or recipe; bare `test` reports packs
-  without tests but does not fail on them.
-- `check` fails a pack whose `tests/` contains a directory naming no manifest
-  recipe; `test` also reports such directories as error rows.
-- `new recipe` scaffolds `tests/<recipe>/basic/` with an empty `given/` and a
-  fully commented `case.yml`.
-
-## Hook Contracts
-
-External hook code lives in uv-managed pack directories with `pyproject.toml`,
-`uv.lock`, package code under `src/`, and a hook metadata table. Hookless packs
-can be checked without `uv.lock`, but hook-declaring packs need it before hooks
-can run:
-
-```toml
-[tool.untaped_recipe.hooks]
-"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
-```
-
-The exported function name is the contract: a module exports `transform()`,
-`validate()`, or both. Recipe step `type` selects which function runs. `check`
-must keep its no-import guarantee by AST-scanning resolved module files for
-`def transform` and `def validate`, rejecting steps wired to a hook that does
-not export the required function.
-
-External hooks run out-of-process through NDJSON stdin/stdout workers. Worker
-stdout is protocol-only; hook `print()` output is redirected to stderr. The
-worker uses stdlib wire parsing, and the engine validates worker responses
-before using them. A bounded worker pool is created per hook project per apply
-invocation, up to the clamped `--parallel` value; each worker serializes its own
-requests. Hook request timeouts kill and retire the affected worker and must
-surface as per-target planning failures rather than hanging the full batch.
-
-`hook run` must reuse `HookResolver`, `HookExecutor`, `UvHookWorkerPool`, and
-`HookHelpers`. Transform mode requires `--target` and `--file`, writes raw
-transformed content to stdout by default, and can emit `--diff`; validate mode
-emits a `recipe.hook_run` verdict record. Fixture context and hook diagnostics
-belongs on stderr. If a hook exports both functions, `--file` implies
-transform; otherwise `--kind` is required. Successful external hook diagnostics
-stay discarded for `apply`, but are surfaced by `hook run` with a 10 MiB
-per-invocation cap.
-
-Built-ins use the direct registry and run in-process. Keep built-ins reserved
-for engine-owned code such as `yaml_edit`.
-
-External transform hooks expose:
-
-```python
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers
-
-
-def transform(
-    content: str,
-    *,
-    inputs: dict[str, object],
-    target: Path,
-    file: Path,
-    args: dict[str, object],
-    helpers: "HookHelpers",
-) -> str: ...
-```
-
-External validate hooks expose:
-
-```python
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from untaped_recipe.hook_api import HookHelpers
-
-
-def validate(
-    *,
-    inputs: dict[str, object],
-    target: Path,
-    args: dict[str, object],
-    helpers: "HookHelpers",
-) -> object: ...
-```
-
-Validate hooks may return a compatible verdict dict, `None` for pass, or a
-string for fail. Prefer explicit `helpers.pass_()`, `helpers.warn()`, and
-`helpers.fail()` in shipped examples. Built-in hooks may use the engine's
-concrete `HookHelpers` and `Verdict` types directly.
-External hook typing lives in `untaped_recipe.hook_api`. Hook projects may use
-`untaped-recipe` as a dev dependency for editor discovery, but must not depend
-on `untaped-recipe` at runtime. External uv workers run with `uv run --locked
---no-dev`, so hook runtime dependencies belong in `[project].dependencies`;
-type-only authoring dependencies belong in `[dependency-groups].dev`. Hook
-projects declare `[tool.untaped_recipe].requires_hook_api = ">=0.9,<1"` to fail
-fast when the installed CLI's helper API is incompatible. The scaffolded dev
-dependency floor tracks that hook API contract for type discovery rather than
-the CLI version. The public
-`untaped_recipe.hook_api.HookHelpers` protocol models external worker helpers,
-where verdict helpers return dict-shaped verdicts. Keep the application-layer
-`HookHelpersPort` separate for in-process built-ins, where verdict helpers
-return `Verdict`. External `helpers.render_template(template, inputs,
-unknown_tokens="error")` is strict by default; `unknown_tokens="keep"` is the
-escape hatch for GitHub Actions, Helm, and other nested template syntaxes.
-Structured inputs are native Python lists or dicts in `inputs` and are not
-valid `render_template` targets. Recipe hook `args` are passed verbatim; the
-engine never templates hook args on behalf of hooks. External hooks that expose
-templated string args must call `helpers.render_template()` explicitly and
-should read structured inputs directly from `inputs`.
-External `helpers.dump_yaml(data, options=...)` accepts plain dict options for
-width, quote preservation, indent, block sequence indent, and explicit document
-start/end; worker and in-process defaults are `preserve_quotes=True` and
-`width=4096`. Unsupported option keys must be rejected rather than ignored.
+| Concept | Owning page |
+| --- | --- |
+| Recipe YAML schema, step types, fan-out/globs, `if_absent`/`optional`, hook `args` + anchors, design rationale | [docs/recipes.md](./docs/recipes.md) |
+| Input contract: spec fields, types, scope, `sensitive`, `from` sandbox, precedence, `--var`/`--vars`/`--input-from`/`--interactive` | [docs/inputs.md](./docs/inputs.md) |
+| `{{ name }}` token language, `unknown_tokens`, path-field rendering and confinement recheck | [docs/templating.md](./docs/templating.md) |
+| Hook contract, resolution, execution model, helpers, `requires_hook_api`, `hook run`, built-in `yaml_edit` | [docs/hooks.md](./docs/hooks.md) |
+| Pack manifest and identity, library layout, reference grammar, `add`/`list`/`show`/`edit`/`remove`, scaffolding, trust stance | [docs/packs.md](./docs/packs.md) |
+| Running recipes: target sources, plan-before-write, preview, confirmation, `--dry-run`/`--check`, failure isolation, parallelism | [docs/apply.md](./docs/apply.md) |
+| Path safety, backups and restore, retention, integrity-mechanisms contrast | [docs/safety.md](./docs/safety.md) |
+| `check` preflight, golden `test` harness, `case.yml`, hook unit tests | [docs/testing.md](./docs/testing.md) |
+| Pipe ingestion rules, emit-kind table, `recipe.outcome` schema, `--format`/`--columns` | [docs/pipes.md](./docs/pipes.md) |
+| Settings table, command index, exit codes, skills install | [docs/reference.md](./docs/reference.md) |
+| Release runbook | [docs/release.md](./docs/release.md) |
 
 ## Release Workflow
 
-Use `.github/workflows/release.yml` for PyPI releases. The workflow publishes
-`untaped-recipe` to TestPyPI or PyPI through Trusted Publishing, verifies
-scaffold locking against the target index, and only creates the production
-GitHub release/tag after PyPI verification passes. The production `pypi`
-GitHub environment should be protected with required reviewers.
-The SDK package `untaped` must be published to PyPI first. The release workflow
-checks that `untaped>=3.0.0,<4` resolves from PyPI before publishing
-`untaped-recipe`.
-
-Do not manually create a GitHub release/tag for a version whose PyPI package has
-not been published and verified. PyPI versions are permanently burned once
-uploaded; if publish succeeds but post-publish verification never passes, bump
-the package patch version in root `pyproject.toml` and
-`src/untaped_recipe/_version.py` before retrying. Bump `HOOK_API_VERSION` and
-the derived `requires_hook_api` scaffold floor only when the helper contract
-changes. See `docs/release.md` for the runbook.
+Use `.github/workflows/release.yml` for PyPI releases; the runbook is
+[docs/release.md](./docs/release.md). Non-negotiables: do not manually create a
+GitHub release/tag for a version whose PyPI package has not been published and
+verified; PyPI versions are permanently burned once uploaded (bump the patch
+version in root `pyproject.toml` and `src/untaped_recipe/_version.py` rather
+than retrying); the SDK dependency `untaped>=3.0.0,<4` must resolve from PyPI
+before publishing. Bump `HOOK_API_VERSION` and the derived `requires_hook_api`
+scaffold floor only when the helper contract changes.
 
 ## Development Workflow
 

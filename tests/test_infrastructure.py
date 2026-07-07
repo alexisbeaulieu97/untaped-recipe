@@ -10,6 +10,7 @@ import pytest
 
 import untaped_recipe.infrastructure.file_writer as file_writer_module
 import untaped_recipe.infrastructure.ruamel_io as ruamel_io_module
+from untaped_recipe._version import PACKAGE_VERSION
 from untaped_recipe.application.apply_recipe import ApplyRecipe
 from untaped_recipe.application.run_bulk import ApplyWriteError, RunBulkApply, flush_changes
 from untaped_recipe.application.targets import Target
@@ -33,7 +34,7 @@ def test_build_package_wheel_writes_recipe_wheel(
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     release.build_package_wheel(dist_dir)
 
-    assert list(dist_dir.glob("untaped_recipe-0.15.0-*.whl"))
+    assert list(dist_dir.glob(f"untaped_recipe-{PACKAGE_VERSION}-*.whl"))
 
 
 def test_release_smoke_new_runs_outside_workspace_with_local_index(

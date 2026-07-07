@@ -254,10 +254,11 @@ def _derive_source_value(source: CompiledInputSource, target: Target) -> object:
 
 
 def _coerce_derived_value(spec: InputSpec, value: object) -> object:
+    structured = spec.type in {"list", "dict"}
     try:
-        ensure_derived_value_within_bound(value)
+        ensure_derived_value_within_bound(value, structured=structured)
         coerced = spec.coerce(value)
-        ensure_derived_value_within_bound(coerced)
+        ensure_derived_value_within_bound(coerced, structured=structured)
     except InputSourceError as exc:
         raise ValueError(str(exc)) from exc
     return coerced

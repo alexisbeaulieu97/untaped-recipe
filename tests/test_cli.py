@@ -1887,6 +1887,46 @@ def test_apply_derives_inputs_from_pipe_record_and_input_from_override(
     assert row["record"]["inputs"] == {"service": "api", "owner": "workspace"}
 
 
+def test_apply_derives_structured_input_from_pipe_record(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\n"
+        "inputs:\n"
+        "  collections:\n"
+        "    type: list\n"
+        "    items: str\n"
+        "    from: '{{ record.collections }}'\n"
+        "steps: []\n"
+    )
+    workspace = tmp_path / "workspace"
+    target = workspace / "api"
+    target.mkdir(parents=True)
+    payload = json.dumps(
+        {
+            "untaped": "1",
+            "kind": "workspace.repo",
+            "record": {
+                "path": str(workspace),
+                "target_path": str(target),
+                "collections": ["ansible.builtin", "community.general"],
+            },
+        }
+    )
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), "--stdin", "--yes", "--format", "pipe"],
+        input=payload + "\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(result.stdout)
+    assert row["kind"] == "recipe.outcome"
+    assert row["record"]["inputs"] == {"collections": ["ansible.builtin", "community.general"]}
+
+
 def test_apply_rejects_input_from_conflicts_global_scope_and_interactive_check(
     tmp_path: Path,
 ) -> None:

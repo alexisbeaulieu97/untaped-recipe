@@ -212,6 +212,7 @@ def scaffold_hook(
 
 
 _HOOK_STUB_PREAMBLE = (
+    "from pathlib import Path\n"
     "from typing import TYPE_CHECKING\n"
     "\n"
     "if TYPE_CHECKING:\n"
@@ -224,12 +225,25 @@ _HOOK_STUB_PREAMBLE = (
 def _hook_stub(kind: Literal["transform", "validate"]) -> str:
     if kind == "validate":
         return (
-            _HOOK_STUB_PREAMBLE + 'def validate(*, inputs, target, args, helpers: "HookHelpers"):\n'
+            _HOOK_STUB_PREAMBLE + "def validate(\n"
+            "    *,\n"
+            "    inputs: dict[str, object],\n"
+            "    target: Path,\n"
+            "    args: dict[str, object],\n"
+            '    helpers: "HookHelpers",\n'
+            ") -> object:\n"
             "    return helpers.pass_()\n"
         )
     return (
-        _HOOK_STUB_PREAMBLE
-        + 'def transform(content, *, inputs, target, file, args, helpers: "HookHelpers"):\n'
+        _HOOK_STUB_PREAMBLE + "def transform(\n"
+        "    content: str,\n"
+        "    *,\n"
+        "    inputs: dict[str, object],\n"
+        "    target: Path,\n"
+        "    file: Path,\n"
+        "    args: dict[str, object],\n"
+        '    helpers: "HookHelpers",\n'
+        ") -> str:\n"
         "    return content\n"
     )
 
@@ -237,17 +251,21 @@ def _hook_stub(kind: Literal["transform", "validate"]) -> str:
 def _hook_test_stub(kind: Literal["transform", "validate"], module: str) -> str:
     if kind == "validate":
         return (
+            "from pathlib import Path\n"
+            "\n"
             "from untaped_recipe.hook_worker import HookHelpers\n"
             "\n"
             f"from {module} import validate\n"
             "\n"
             "\n"
             "def test_validate_returns_pass_verdict() -> None:\n"
-            '    result = validate(inputs={}, target=".", args={}, helpers=HookHelpers())\n'
+            '    result = validate(inputs={}, target=Path("."), args={}, helpers=HookHelpers())\n'
             "\n"
             "    assert result == HookHelpers().pass_()\n"
         )
     return (
+        "from pathlib import Path\n"
+        "\n"
         "from untaped_recipe.hook_worker import HookHelpers\n"
         "\n"
         f"from {module} import transform\n"
@@ -257,8 +275,8 @@ def _hook_test_stub(kind: Literal["transform", "validate"], module: str) -> str:
         "    result = transform(\n"
         '        "hello\\n",\n'
         "        inputs={},\n"
-        '        target=".",\n'
-        '        file="example.txt",\n'
+        '        target=Path("."),\n'
+        '        file=Path("example.txt"),\n'
         "        args={},\n"
         "        helpers=HookHelpers(),\n"
         "    )\n"

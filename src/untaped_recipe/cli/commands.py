@@ -759,11 +759,20 @@ def _new_pack_child(ref_text: str) -> tuple[Path, str]:
     for installed in UnifiedPackLibrary(library_root=library_root()).packs():
         if installed.name == installed_name:
             return installed.root, ref.name
-    raise ValueError(f"pack not found: {ref.pack}")
+    raise ValueError(f"pack not found: {ref.pack}{_new_pack_child_hint(ref.pack, ref.name)}")
 
 
 def _is_explicit_new_path(value: str) -> bool:
     return value.startswith(("/", "./", "../", "~"))
+
+
+def _new_pack_child_hint(pack: str, name: str) -> str:
+    if Path(pack).is_dir():
+        return (
+            f" (a directory named '{pack}' exists — use ./{pack}/{name}, "
+            f"or install it with add ./{pack})"
+        )
+    return ""
 
 
 def _load_recipe(recipe_path: Path) -> Recipe:

@@ -189,16 +189,16 @@ def run_case(case: DiscoveredCase, *, executor: HookExecutorPort) -> CaseResult:
 
     recorder = RecordingHookExecutor(executor)
     trees, error = _plan_case(case, spec, given, recorder)
-    verdict_problem = (
-        _verdict_problem(spec.verdict, recorder.verdicts) if spec.verdict is not None else ""
-    )
 
     if spec.expect == "error":
-        return _error_case_result(case, spec, error, verdict_problem)
+        return _error_case_result(case, spec, error)
 
     if error is not None:
         return _result(case, "error", error)
     assert trees is not None
+    verdict_problem = (
+        _verdict_problem(spec.verdict, recorder.verdicts) if spec.verdict is not None else ""
+    )
     try:
         return _success_case_result(case, expected_dir, trees, verdict_problem)
     except FixtureDecodeError as exc:
@@ -246,15 +246,12 @@ def _error_case_result(
     case: DiscoveredCase,
     spec: CaseSpec,
     error: str | None,
-    verdict_problem: str,
 ) -> CaseResult:
     needle = spec.error_contains or ""
     if error is None:
         return _result(case, "fail", "expected planning to fail; it succeeded")
     if needle not in error:
         return _result(case, "fail", f"planning failed with different message: {error}")
-    if verdict_problem:
-        return _result(case, "fail", verdict_problem)
     return _result(case, "pass")
 
 

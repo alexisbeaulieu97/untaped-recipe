@@ -157,8 +157,25 @@ def test_test_dot_runs_pack_at_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert json.loads(result.stdout)[0]["status"] == "pass"
 
 
+def test_test_missing_explicit_recipe_path_reports_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = CliInvoker().invoke(app, ["test", "./nope.yml", "--format", "json"])
+
+    assert result.exit_code == 1
+    assert "recipe file not found: nope.yml" in result.stderr
+    assert "test requires a pack directory or ref" not in result.stderr
+    assert "Traceback" not in result.output
+
+
 def test_test_rejects_recipe_file_paths(tmp_path: Path) -> None:
-    result = CliInvoker().invoke(app, ["test", "./recipe.yml"])
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text("version: 1\nsteps: []\n", encoding="utf-8")
+
+    result = CliInvoker().invoke(app, ["test", str(recipe)])
 
     assert result.exit_code != 0
     assert "test requires a pack directory or ref, not a recipe file" in result.output

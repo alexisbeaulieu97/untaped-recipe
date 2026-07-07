@@ -38,6 +38,8 @@ class CaseSpec(BaseModel):
     def _validate_error_contract(self) -> CaseSpec:
         if self.expect == "error" and not self.error_contains:
             raise ValueError("expect: error requires error_contains")
+        if self.expect == "error" and self.verdict is not None:
+            raise ValueError("verdict is not valid with expect: error")
         if self.expect == "success" and self.error_contains is not None:
             raise ValueError("error_contains is only valid with expect: error")
         return self

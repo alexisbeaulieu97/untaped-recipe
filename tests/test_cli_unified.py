@@ -520,6 +520,24 @@ def test_explicit_path_miss_hints_at_library_ref(
     assert "did you mean the library ref 'demo'?" in result.stderr
 
 
+def test_missing_explicit_recipe_path_hints_at_library_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="pack", recipes={"demo": "recipes/demo.yml"})
+    _install_pack(source)
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = CliInvoker().invoke(app, ["apply", "./demo.yml", str(target), "--yes"])
+
+    assert result.exit_code == 1
+    assert "recipe file not found: demo.yml" in result.stderr
+    assert "did you mean the library ref 'demo'?" in result.stderr
+
+
 def test_explicit_path_miss_without_library_match_keeps_plain_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -532,6 +550,26 @@ def test_explicit_path_miss_without_library_match_keeps_plain_error(
     assert result.exit_code == 1
     assert "recipe file not found" in result.stderr
     assert "did you mean" not in result.stderr
+
+
+def test_missing_explicit_recipe_path_reports_guard_for_apply_and_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    expected = "recipe file not found: nope.yml"
+
+    apply_result = CliInvoker().invoke(app, ["apply", "./nope.yml", str(target), "--yes"])
+    check_result = CliInvoker().invoke(app, ["check", "./nope.yml", "--format", "json"])
+
+    assert apply_result.exit_code == 1
+    assert check_result.exit_code == 1
+    assert expected in apply_result.stderr
+    assert expected in check_result.stderr
+    assert "Traceback" not in apply_result.output
+    assert "Traceback" not in check_result.output
 
 
 def test_apply_bare_ref_uses_library_even_when_matching_local_directory_exists(

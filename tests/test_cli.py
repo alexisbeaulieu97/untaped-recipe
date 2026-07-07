@@ -121,6 +121,49 @@ def test_add_pack_prints_recipes_and_hooks_before_confirm(
     assert not (library_root() / "packs" / "demo").exists()
 
 
+def test_add_force_fails_fast_on_local_edits_before_confirm(
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert result.exit_code == 0, result.output
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+
+    result = CliInvoker().invoke(app, ["add", str(pack), "--force", "--yes"])
+
+    assert result.exit_code == 1
+    assert "pack 'demo' has local edits in the library" in result.stderr
+    assert "--discard-edits" in result.stderr
+    assert "Pack: demo" not in result.stderr
+    assert installed_recipe.read_text().startswith("version: 1\ndescription: 'edited'")
+
+
+def test_add_force_discard_edits_warns_in_preview_and_overwrites(
+    tmp_path: Path,
+) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    installed_recipe = library_root() / "packs" / "demo" / "recipes" / "demo" / "recipe.yml"
+    installed_recipe.write_text("version: 1\ndescription: 'edited'\nsteps: []\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["add", str(pack), "--force", "--discard-edits", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Warning: library copy has local edits; --discard-edits will overwrite them." in (
+        result.stderr
+    )
+    assert installed_recipe.read_text() == "version: 1\nsteps: []\n"
+
+    result = CliInvoker().invoke(app, ["add", str(pack), "--force", "--yes"])
+    assert result.exit_code == 0, result.output
+
+
 def test_apply_yes_writes_and_emits_json_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

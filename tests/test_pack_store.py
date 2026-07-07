@@ -15,6 +15,7 @@ from untaped_recipe.infrastructure.pack_store import (
     PackLibrary,
     fetch_pack_source,
     is_git_url,
+    pack_content_hash,
 )
 
 
@@ -173,6 +174,8 @@ def test_pack_library_index_round_trips_source_rev_and_version(tmp_path: Path) -
     assert installed.rev == "abc123"
     assert installed.installed_version == "0.3.0"
     index = tomllib.loads(library.index_path.read_text(encoding="utf-8"))
+    content_hash = index["ansible"].pop("content_hash")
+    assert content_hash == pack_content_hash(library.packs_dir / "ansible")
     assert index["ansible"] == {
         "source": "git+https://example.test/pack.git",
         "rev": "abc123",

@@ -18,7 +18,7 @@ from untaped_recipe.infrastructure.backup import (
 )
 from untaped_recipe.infrastructure.file_writer import flush_changes
 from untaped_recipe.infrastructure.hook_resolver import BuiltinHookRef, HookResolver, UvHookRef
-from untaped_recipe.infrastructure.pack_store import PackLibrary
+from untaped_recipe.infrastructure.pack_store import PackLibrary, pack_content_hash
 
 
 def test_hook_resolver_uses_recipe_local_then_installed_pack(tmp_path: Path) -> None:
@@ -114,6 +114,86 @@ def test_pack_add_ignores_dev_and_build_junk(tmp_path: Path) -> None:
     assert not (installed / "__pycache__").exists()
     assert not (installed / "dist").exists()
     assert not (installed / "pack.egg-info").exists()
+
+
+def _add_pack(library_root: Path, source: Path, *, name: str, **kwargs: object) -> None:
+    PackLibrary(library_root=library_root).add(
+        source,
+        source=str(source),
+        rev=None,
+        name=name,
+        force=bool(kwargs.get("force", False)),
+        discard_edits=bool(kwargs.get("discard_edits", False)),
+    )
+
+
+def test_pack_add_force_blocks_on_local_edits(tmp_path: Path) -> None:
+    library_root = tmp_path / "library"
+    pack_source = tmp_path / "pack-source"
+    _write_hook_project(pack_source, hook_name="pick")
+    _add_pack(library_root, pack_source, name="guarded")
+    installed = library_root / "packs" / "guarded"
+    (installed / "src" / "project_hooks" / "hooks" / "pick.py").write_text(
+        "def transform(content, *, inputs, target, file, args, helpers):\n"
+        "    return content + 'edited'\n"
+    )
+
+    library = PackLibrary(library_root=library_root)
+    assert library.local_edits("guarded") is True
+    with pytest.raises(
+        ValueError,
+        match=r"pack 'guarded' has local edits in the library",
+    ):
+        _add_pack(library_root, pack_source, name="guarded", force=True)
+
+    _add_pack(library_root, pack_source, name="guarded", force=True, discard_edits=True)
+    assert PackLibrary(library_root=library_root).local_edits("guarded") is False
+    _add_pack(library_root, pack_source, name="guarded", force=True)
+
+
+def test_pack_add_force_proceeds_without_local_edits(tmp_path: Path) -> None:
+    library_root = tmp_path / "library"
+    pack_source = tmp_path / "pack-source"
+    _write_hook_project(pack_source, hook_name="pick")
+    _add_pack(library_root, pack_source, name="clean")
+
+    _add_pack(library_root, pack_source, name="clean", force=True)
+
+
+def test_pack_add_force_treats_legacy_rows_as_unguarded(tmp_path: Path) -> None:
+    library_root = tmp_path / "library"
+    pack_source = tmp_path / "pack-source"
+    _write_hook_project(pack_source, hook_name="pick")
+    _add_pack(library_root, pack_source, name="legacy")
+    index_path = library_root / "packs.toml"
+    index_path.write_text(
+        index_path.read_text(encoding="utf-8").replace("content_hash", "ignored_field"),
+        encoding="utf-8",
+    )
+    installed = library_root / "packs" / "legacy"
+    (installed / "src" / "project_hooks" / "hooks" / "pick.py").write_text(
+        "def transform(content, *, inputs, target, file, args, helpers):\n"
+        "    return content + 'edited'\n"
+    )
+    assert PackLibrary(library_root=library_root).local_edits("legacy") is False
+
+    _add_pack(library_root, pack_source, name="legacy", force=True)
+
+    assert "content_hash" in index_path.read_text(encoding="utf-8")
+    assert PackLibrary(library_root=library_root).local_edits("legacy") is False
+
+
+def test_pack_content_hash_ignores_junk_and_sees_edits(tmp_path: Path) -> None:
+    pack_source = tmp_path / "pack-source"
+    _write_hook_project(pack_source, hook_name="pick")
+    before = pack_content_hash(pack_source)
+
+    (pack_source / "__pycache__").mkdir()
+    (pack_source / "__pycache__" / "junk.pyc").write_text("junk")
+    assert pack_content_hash(pack_source) == before
+
+    (pack_source / "uv.lock").write_text("version = 2\n")
+    assert pack_content_hash(pack_source) != before
 
 
 class _UnusedHooks:

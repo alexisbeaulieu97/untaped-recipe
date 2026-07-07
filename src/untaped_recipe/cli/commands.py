@@ -60,7 +60,12 @@ from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolve
 from untaped_recipe.infrastructure.backup import BackupDraft
 from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
-from untaped_recipe.infrastructure.pack_store import InstalledPack, fetch_pack_source, is_git_url
+from untaped_recipe.infrastructure.pack_store import (
+    InstalledPack,
+    fetch_pack_source,
+    is_git_url,
+    local_edits_message,
+)
 from untaped_recipe.infrastructure.pack_store import PackLibrary as UnifiedPackLibrary
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
@@ -321,6 +326,14 @@ def add_command(
         bool,
         Parameter(name="--force", negative="", help="Replace an existing installed pack."),
     ] = False,
+    discard_edits: Annotated[
+        bool,
+        Parameter(
+            name="--discard-edits",
+            negative="",
+            help="With --force, overwrite local edits made to the library copy.",
+        ),
+    ] = False,
     yes: Annotated[
         bool,
         Parameter(name=["--yes", "-y"], negative="", help="Skip the confirmation prompt."),
@@ -335,8 +348,11 @@ def add_command(
         )
         manifest = PackManifest.from_pyproject(source_dir)
         installed_name = name or manifest.name
-        _render_pack_add_preview(installed_name, manifest)
         library = UnifiedPackLibrary(library_root=library_root())
+        edited = force and library.local_edits(installed_name)
+        if edited and not discard_edits:
+            raise ConfigError(local_edits_message(installed_name))
+        _render_pack_add_preview(installed_name, manifest, local_edits=edited)
 
         def _install(item: str) -> PackManifest:
             del item
@@ -346,6 +362,7 @@ def add_command(
                 rev=rev,
                 name=name,
                 force=force,
+                discard_edits=discard_edits,
             )
 
         outcome = batch_apply(
@@ -655,12 +672,22 @@ def _hook_row(pack: InstalledPack, name: str, entry: HookEntry) -> dict[str, obj
     }
 
 
-def _render_pack_add_preview(installed_name: str, manifest: PackManifest) -> None:
+def _render_pack_add_preview(
+    installed_name: str,
+    manifest: PackManifest,
+    *,
+    local_edits: bool = False,
+) -> None:
     echo(f"Pack: {installed_name}", err=True)
     recipes = ", ".join(sorted(manifest.recipes)) or "(none)"
     hooks = ", ".join(sorted(manifest.hooks)) or "(none)"
     echo(f"Recipes: {recipes}", err=True)
     echo(f"Hooks: {hooks}", err=True)
+    if local_edits:
+        echo(
+            "Warning: library copy has local edits; --discard-edits will overwrite them.",
+            err=True,
+        )
 
 
 def _new_pack_child(ref_text: str) -> tuple[Path, str]:

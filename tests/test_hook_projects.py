@@ -436,6 +436,108 @@ def test_uv_hook_worker_times_out_and_closes_hung_process(
     assert fake.killed
 
 
+def test_hook_timeout_starts_after_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _DelayedReadyProcess(
+        ready_delay=0.1,
+        lines=['{"id": "1", "ok": true, "result": "after"}\n'],
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path, hook_timeout_seconds=0.05, startup_timeout_seconds=5)
+
+    result = worker.request({"kind": "transform", "module": "hooks.sample"})
+
+    assert result.result == "after"
+
+
+def test_startup_timeout_names_environment_not_hook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _SlowProcess(delay=0.2, ready=False)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path, hook_timeout_seconds=60, startup_timeout_seconds=0.01)
+
+    with pytest.raises(worker_client.FatalHookWorkerError) as exc_info:
+        worker.request({"kind": "transform", "module": "hooks.sample"})
+
+    message = str(exc_info.value)
+    assert "not ready" in message
+    assert "environment" in message
+    assert "hook worker timed out after" not in message
+    assert fake.killed
+
+
+def test_startup_notice_fires_once_per_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(
+        stdout=(
+            '{"id": "1", "ok": true, "result": "one"}\n{"id": "2", "ok": true, "result": "two"}\n'
+        )
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    notices: list[Path] = []
+    worker = UvHookWorker(tmp_path, startup_notice=notices.append)
+
+    worker.request({"kind": "transform", "module": "hooks.sample"})
+    worker.request({"kind": "transform", "module": "hooks.sample"})
+
+    assert notices == [tmp_path]
+
+
+def test_worker_exits_before_ready_reports_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(stdout="", ready=False)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
+    with pytest.raises(worker_client.FatalHookWorkerError, match="exited before ready"):
+        worker.request({"kind": "transform", "module": "hooks.sample"})
+
+
+def test_malformed_handshake_line_is_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(stdout="hello\n", ready=False)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
+    with pytest.raises(worker_client.FatalHookWorkerError, match="malformed hook worker handshake"):
+        worker.request({"kind": "transform", "module": "hooks.sample"})
+
+
+def test_worker_exits_before_request_reports_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(stdout="")
+    fake.stdin = _BrokenStdin()  # type: ignore[assignment]
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
+    with pytest.raises(worker_client.FatalHookWorkerError, match="exited before request"):
+        worker.request({"kind": "transform", "module": "hooks.sample"})
+
+
+def test_worker_exits_before_response_reports_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProcess(stdout="")
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake)
+    worker = UvHookWorker(tmp_path)
+
+    with pytest.raises(worker_client.FatalHookWorkerError, match="exited before response"):
+        worker.request({"kind": "transform", "module": "hooks.sample"})
+
+
 def test_uv_hook_worker_rejects_non_json_serializable_request_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -599,7 +701,14 @@ def test_uv_hook_worker_pool_leases_parallel_workers(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+        def __init__(
+            self,
+            project_root: Path,
+            *,
+            hook_timeout_seconds: float = 60,
+            startup_timeout_seconds: float = 300,
+            startup_notice: object = None,
+        ) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -647,7 +756,14 @@ def test_uv_hook_worker_pool_reuses_idle_workers(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+        def __init__(
+            self,
+            project_root: Path,
+            *,
+            hook_timeout_seconds: float = 60,
+            startup_timeout_seconds: float = 300,
+            startup_notice: object = None,
+        ) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -688,7 +804,14 @@ def test_uv_hook_worker_pool_passes_timeout_to_workers(
     timeouts: list[float] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path, *, hook_timeout_seconds: float) -> None:
+        def __init__(
+            self,
+            project_root: Path,
+            *,
+            hook_timeout_seconds: float,
+            startup_timeout_seconds: float = 300,
+            startup_notice: object = None,
+        ) -> None:
             self.project_root = project_root
             self.closed = False
             timeouts.append(hook_timeout_seconds)
@@ -726,7 +849,14 @@ def test_uv_hook_worker_pool_retires_workers_after_fatal_protocol_errors(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+        def __init__(
+            self,
+            project_root: Path,
+            *,
+            hook_timeout_seconds: float = 60,
+            startup_timeout_seconds: float = 300,
+            startup_notice: object = None,
+        ) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -773,7 +903,14 @@ def test_uv_hook_worker_pool_wakes_waiters_after_fatal_retirement(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+        def __init__(
+            self,
+            project_root: Path,
+            *,
+            hook_timeout_seconds: float = 60,
+            startup_timeout_seconds: float = 300,
+            startup_notice: object = None,
+        ) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -834,7 +971,14 @@ def test_uv_hook_worker_pool_reuses_workers_after_hook_failures(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+        def __init__(
+            self,
+            project_root: Path,
+            *,
+            hook_timeout_seconds: float = 60,
+            startup_timeout_seconds: float = 300,
+            startup_notice: object = None,
+        ) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -881,7 +1025,14 @@ def test_uv_hook_worker_pool_close_survives_one_failing_worker(
     workers: list[object] = []
 
     class FakeWorker:
-        def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+        def __init__(
+            self,
+            project_root: Path,
+            *,
+            hook_timeout_seconds: float = 60,
+            startup_timeout_seconds: float = 300,
+            startup_notice: object = None,
+        ) -> None:
             self.project_root = project_root
             self.closed = False
             self.worker_id = len(workers) + 1
@@ -1133,6 +1284,7 @@ def test_worker_script_executes_hooks_and_redirects_prints_to_stderr(tmp_path: P
     proc.stdin.write(json.dumps(request) + "\n")
     proc.stdin.flush()
 
+    assert json.loads(proc.stdout.readline()) == {"ready": True}
     response = json.loads(proc.stdout.readline())
     proc.stdin.close()
     stderr = proc.stderr.read()
@@ -1198,6 +1350,7 @@ def test_worker_script_prefers_cli_sibling_modules_over_hook_env_package(tmp_pat
     proc.stdin.write(json.dumps(request) + "\n")
     proc.stdin.flush()
 
+    assert json.loads(proc.stdout.readline()) == {"ready": True}
     response = json.loads(proc.stdout.readline())
     proc.stdin.close()
     stderr = proc.stderr.read()
@@ -1242,6 +1395,7 @@ def test_worker_script_rejects_invalid_validate_return_object(tmp_path: Path) ->
     proc.stdin.write(json.dumps(request) + "\n")
     proc.stdin.flush()
 
+    assert json.loads(proc.stdout.readline()) == {"ready": True}
     response = json.loads(proc.stdout.readline())
     proc.stdin.close()
     stderr = proc.stderr.read()
@@ -1293,10 +1447,13 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
     assert result.diagnostics == ""
 
 
+_READY_LINE = '{"ready": true}\n'
+
+
 class _FakeProcess:
-    def __init__(self, *, stdout: str) -> None:
+    def __init__(self, *, stdout: str, ready: bool = True) -> None:
         self.stdin = StringIO()
-        self.stdout = StringIO(stdout)
+        self.stdout = StringIO((_READY_LINE if ready else "") + stdout)
         self.stderr = StringIO()
 
     def wait(self, timeout: float | None = None) -> int:
@@ -1309,19 +1466,72 @@ class _FakeProcess:
         return None
 
 
+class _BrokenStdin:
+    def write(self, line: str) -> int:
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 class _SlowStdout:
-    def __init__(self, delay: float) -> None:
+    def __init__(self, delay: float, *, ready: bool = True) -> None:
         self._delay = delay
+        self._ready_pending = ready
 
     def readline(self) -> str:
+        if self._ready_pending:
+            self._ready_pending = False
+            return _READY_LINE
         time.sleep(self._delay)
         return ""
 
 
-class _SlowProcess:
-    def __init__(self, *, delay: float) -> None:
+class _DelayedReadyStdout:
+    """Ready arrives late (slow env sync), then responses flow instantly."""
+
+    def __init__(self, ready_delay: float, lines: list[str]) -> None:
+        self._ready_delay = ready_delay
+        self._ready_pending = True
+        self._lines = list(lines)
+
+    def readline(self) -> str:
+        if self._ready_pending:
+            self._ready_pending = False
+            time.sleep(self._ready_delay)
+            return _READY_LINE
+        if self._lines:
+            return self._lines.pop(0)
+        time.sleep(60)
+        return ""
+
+
+class _DelayedReadyProcess:
+    def __init__(self, *, ready_delay: float, lines: list[str]) -> None:
         self.stdin = StringIO()
-        self.stdout = _SlowStdout(delay)
+        self.stdout = _DelayedReadyStdout(ready_delay, lines)
+        self.stderr = StringIO()
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.killed:
+            return 0
+        raise subprocess.TimeoutExpired("delayed", timeout)
+
+    def terminate(self) -> None:
+        self.killed = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class _SlowProcess:
+    def __init__(self, *, delay: float, ready: bool = True) -> None:
+        self.stdin = StringIO()
+        self.stdout = _SlowStdout(delay, ready=ready)
         self.stderr = StringIO()
         self.killed = False
 

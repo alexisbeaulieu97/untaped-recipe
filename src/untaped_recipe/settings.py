@@ -14,3 +14,4 @@ class RecipeSettings(BaseModel):
         default_factory=lambda: Path("~/.untaped/untaped-recipes").expanduser()
     )
     hook_timeout_seconds: float = Field(default=60, ge=0)
+    hook_startup_timeout_seconds: float = Field(default=300, ge=0)

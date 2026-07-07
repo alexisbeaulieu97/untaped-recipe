@@ -569,6 +569,34 @@ def test_apply_decline_renders_cancelled_summary_without_writing(
     assert "1 changing target not applied" in result.stderr
 
 
+def test_confirm_accept_applies_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipe = tmp_path / "recipe.yml"
+    recipe.write_text(
+        "version: 1\nsteps:\n  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (tmp_path / "template.txt").write_text("hello\n")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    class _AcceptUi(_DeclineUi):
+        def confirm(self, message: str, *, default: bool = False) -> bool:
+            return True
+
+    monkeypatch.setattr("untaped.batch.stream_is_tty", lambda stream: True)
+    monkeypatch.setattr("untaped_recipe.cli.commands.ui_context", lambda **kwargs: _AcceptUi())
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe), str(target), "--preview", "none"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (target / "out.txt").read_text(encoding="utf-8") == "hello\n"
+    assert "Recipe apply cancelled:" not in result.stderr
+
+
 def test_apply_preview_only_modes_do_not_render_cancelled_summary(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.yml"
     recipe.write_text(

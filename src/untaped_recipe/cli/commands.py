@@ -37,10 +37,12 @@ from untaped_recipe.application.targets import Target, resolve_target_lines
 from untaped_recipe.cli.backup_commands import app as backup_app
 from untaped_recipe.cli.common import (
     edit_path,
+    hook_startup_notice,
     hook_timeout_seconds,
     library_root,
     load_yaml_mapping_file,
     report_config_errors,
+    settings,
 )
 from untaped_recipe.cli.detail import hook_detail, pack_detail, recipe_detail
 from untaped_recipe.cli.hook_commands import app as hook_app
@@ -540,9 +542,12 @@ def _apply_context(
     inputs = _input_values(raw_vars, vars_file)
     input_from = _input_sources(raw_input_from)
     workers = clamp_parallel(max(parallel, 1), cap=32, policy="recipe planning cap")
+    ui = ui_context(strict=False)
     with UvHookWorkerPool(
         max_workers_per_project=workers,
         hook_timeout_seconds=hook_timeout_seconds,
+        startup_timeout_seconds=settings().hook_startup_timeout_seconds,
+        startup_notice=hook_startup_notice(ui),
     ) as hook_workers:
         runner = RunBulkApply(
             ApplyRecipe(
@@ -553,7 +558,6 @@ def _apply_context(
                 )
             )
         )
-        ui = ui_context(strict=False)
         with ui.progress("Planning targets") as progress:
             try:
                 plans = runner.plan(

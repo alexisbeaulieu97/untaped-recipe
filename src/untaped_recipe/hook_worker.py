@@ -140,6 +140,11 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 def main() -> int:
     """Run the NDJSON worker loop."""
     _configure_standard_streams()
+    # The ready line ends the client's startup wait: everything before it
+    # (uv env creation on first use, module imports) is environment setup,
+    # charged against the startup bound rather than the per-hook timeout.
+    sys.stdout.write(json.dumps({protocol.READY: True}) + "\n")
+    sys.stdout.flush()
     for line in sys.stdin:
         line = line.strip()
         if not line:

@@ -28,10 +28,12 @@ from untaped_recipe.application.run_hook import (
     select_verb,
 )
 from untaped_recipe.cli.common import (
+    hook_startup_notice,
     hook_timeout_seconds,
     library_root,
     load_yaml_mapping_file,
     report_config_errors,
+    settings,
 )
 from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata
 from untaped_recipe.domain.plan import FileChange, Verdict
@@ -134,7 +136,11 @@ def run_command(
         )
         args = _fixture_mapping(args_file, raw_args or [], file_flag="--args", kv_flag="--arg")
         prepared_content = _content_value(content)
-        with UvHookWorkerPool(hook_timeout_seconds=hook_timeout_seconds(hook_timeout)) as workers:
+        with UvHookWorkerPool(
+            hook_timeout_seconds=hook_timeout_seconds(hook_timeout),
+            startup_timeout_seconds=settings().hook_startup_timeout_seconds,
+            startup_notice=hook_startup_notice(ui_context(strict=False)),
+        ) as workers:
             executor = HookExecutor(
                 resolver,
                 workers=workers,

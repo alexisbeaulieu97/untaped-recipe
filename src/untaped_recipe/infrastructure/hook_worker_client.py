@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,11 +81,17 @@ class UvHookWorkerPool:
         *,
         max_workers_per_project: int = 1,
         hook_timeout_seconds: float = 60,
+        startup_timeout_seconds: float = 300,
+        startup_notice: Callable[[Path], None] | None = None,
     ) -> None:
         self._max_workers_per_project = max(max_workers_per_project, 1)
         if hook_timeout_seconds < 0:
             raise ValueError("hook timeout must be greater than or equal to 0")
+        if startup_timeout_seconds < 0:
+            raise ValueError("startup timeout must be greater than or equal to 0")
         self._hook_timeout_seconds = hook_timeout_seconds
+        self._startup_timeout_seconds = startup_timeout_seconds
+        self._startup_notice = startup_notice
         self._groups: dict[Path, _UvHookWorkerGroup] = {}
         self._lock = Lock()
 
@@ -134,6 +141,8 @@ class UvHookWorkerPool:
                     resolved,
                     self._max_workers_per_project,
                     self._hook_timeout_seconds,
+                    startup_timeout_seconds=self._startup_timeout_seconds,
+                    startup_notice=self._startup_notice,
                 )
                 self._groups[resolved] = group
             return group
@@ -142,10 +151,20 @@ class UvHookWorkerPool:
 class _UvHookWorkerGroup:
     """Lazy bounded worker group for one hook project."""
 
-    def __init__(self, project_root: Path, max_workers: int, hook_timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        max_workers: int,
+        hook_timeout_seconds: float,
+        *,
+        startup_timeout_seconds: float = 300,
+        startup_notice: Callable[[Path], None] | None = None,
+    ) -> None:
         self._project_root = project_root
         self._max_workers = max(max_workers, 1)
         self._hook_timeout_seconds = hook_timeout_seconds
+        self._startup_timeout_seconds = startup_timeout_seconds
+        self._startup_notice = startup_notice
         self._workers: list[UvHookWorker] = []
         self._idle: list[UvHookWorker] = []
         self._condition = Condition()
@@ -226,6 +245,8 @@ class _UvHookWorkerGroup:
                 worker = UvHookWorker(
                     self._project_root,
                     hook_timeout_seconds=self._hook_timeout_seconds,
+                    startup_timeout_seconds=self._startup_timeout_seconds,
+                    startup_notice=self._startup_notice,
                 )
             except Exception:
                 self._condition.notify_all()
@@ -243,11 +264,23 @@ class _UvHookWorkerGroup:
 class UvHookWorker:
     """Long-lived worker process for one uv hook project."""
 
-    def __init__(self, project_root: Path, *, hook_timeout_seconds: float = 60) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        hook_timeout_seconds: float = 60,
+        startup_timeout_seconds: float = 300,
+        startup_notice: Callable[[Path], None] | None = None,
+    ) -> None:
         if hook_timeout_seconds < 0:
             raise ValueError("hook timeout must be greater than or equal to 0")
+        if startup_timeout_seconds < 0:
+            raise ValueError("startup timeout must be greater than or equal to 0")
         self._project_root = project_root
         self._hook_timeout_seconds = hook_timeout_seconds
+        self._startup_timeout_seconds = startup_timeout_seconds
+        self._startup_notice = startup_notice
+        self._ready = False
         self._lock = Lock()
         self._next_id = 0
         self._stderr: Queue[str] = Queue()
@@ -277,6 +310,10 @@ class UvHookWorker:
     ) -> HookWorkerCallResult:
         """Send one request over NDJSON and return its result plus diagnostics."""
         with self._lock:
+            self._ensure_ready(
+                diagnostic_limit=diagnostic_limit,
+                settle_seconds=settle_seconds,
+            )
             self._next_id += 1
             request_id = str(self._next_id)
             request = {protocol.ID: request_id, **payload}
@@ -348,6 +385,60 @@ class UvHookWorker:
                 result=response.result,
                 diagnostics=diagnostics,
             )
+
+    def _ensure_ready(
+        self,
+        *,
+        diagnostic_limit: int | None,
+        settle_seconds: float,
+    ) -> None:
+        """Wait for the worker's ready handshake before the first request.
+
+        Everything before the ready line — uv creating/syncing the pack env on
+        first use, worker imports — is environment startup and runs under the
+        startup bound, not the per-hook timeout.
+        """
+        if self._ready:
+            return
+        if self._startup_notice is not None:
+            self._startup_notice(self._project_root)
+        try:
+            if self._startup_timeout_seconds == 0:
+                line = self._stdout.get()
+            else:
+                line = self._stdout.get(timeout=self._startup_timeout_seconds)
+        except Empty as exc:
+            message = self._failure_message(
+                f"hook environment for {self._project_root} not ready after "
+                f"{self._startup_timeout_seconds:g}s (uv creates the pack environment "
+                "on first use; a cold cache or lagging package index makes this slow — "
+                "raise hook_startup_timeout_seconds or pre-run 'uv sync' in the pack)",
+                diagnostic_limit=diagnostic_limit,
+                settle_seconds=settle_seconds,
+            )
+            self.close()
+            raise FatalHookWorkerError(message) from exc
+        if line is None:
+            raise FatalHookWorkerError(
+                self._failure_message(
+                    "hook worker exited before ready",
+                    diagnostic_limit=diagnostic_limit,
+                    settle_seconds=settle_seconds,
+                )
+            )
+        try:
+            decoded = json.loads(line)
+        except ValueError:
+            decoded = None
+        if not (isinstance(decoded, dict) and decoded.get(protocol.READY) is True):
+            raise FatalHookWorkerError(
+                self._failure_message(
+                    f"malformed hook worker handshake: {line!r}",
+                    diagnostic_limit=diagnostic_limit,
+                    settle_seconds=settle_seconds,
+                )
+            )
+        self._ready = True
 
     def _read_response_line(
         self,

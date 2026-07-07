@@ -3,315 +3,70 @@
 `untaped-recipe` is a standalone CLI for applying trusted local recipes across
 plain directories. It is built on the
 [`untaped`](https://github.com/alexisbeaulieu97/untaped) SDK and deliberately
-does not clone repos, create branches, commit, push, or open PRs.
+does not clone repos, create branches, commit, push, or open PRs. Recipes plan
+every change in memory, preview it, and only write after confirmation — see
+[docs/](./docs/) for the full documentation.
 
 ## Install
 
 ```bash
-uv tool install git+https://github.com/alexisbeaulieu97/untaped-recipe.git
+uv tool install untaped-recipe
 ```
 
 ## Configure
 
-Installed packs and backup bundles live under `~/.untaped/untaped-recipes` by
-default.
+Settings live in the shared untaped config under the `recipe` section:
 
 ```bash
 untaped-recipe config set library_root ~/.untaped/untaped-recipes
 ```
 
-The setting is stored in the shared untaped config under the `recipe` section.
-External hook requests time out after `hook_timeout_seconds` seconds, default
-`60`; set it to `0` to disable the timeout for long-running trusted hooks.
-Hook environment startup (uv creating/syncing the pack env on first use) runs
-under its own `hook_startup_timeout_seconds` bound, default `300` (`0` =
-unbounded), with a `preparing hook environment for ...` notice on stderr — a
-cold cache or lagging package index no longer counts against the hook timeout.
-Backup retention can be configured with `backup_keep` (newest N bundles) and
-`backup_max_age_days`; `backup prune` uses them when its flags are omitted.
-`preview_max_rows` controls table preview scale, default `50`; set it to `0`
-to keep full per-file table previews.
+The recipe-specific keys are `library_root`, `hook_timeout_seconds`,
+`hook_startup_timeout_seconds`, `preview_max_rows`, `backup_keep`, and
+`backup_max_age_days` — see [docs/reference.md](./docs/reference.md) for the
+settings table. For the config file format, profiles, and environment-variable
+overrides, see the core
+[configuration docs](https://github.com/alexisbeaulieu97/untaped/blob/main/docs/configuration.md).
 
-## Library Model
-
-The library has one installable item type: packs.
-
-- installed pack projects under `<library_root>/packs/<pack-id>/`
-- install-source bookkeeping in `<library_root>/packs.toml`
-- backup bundles under `<library_root>/backups/`
-
-Packs are uv projects. Public pack identity comes from `[project].name` in the
-top-level `pyproject.toml`; `untaped-recipe-ansible` installs as pack
-`ansible`:
-
-```toml
-[project]
-name = "untaped-recipe-ansible"
-version = "0.1.0"
-
-[dependency-groups]
-dev = ["untaped-recipe>=0.9"]
-
-[tool.untaped_recipe]
-requires_hook_api = ">=0.9,<1"
-
-[tool.untaped_recipe.recipes]
-"playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
-
-[tool.untaped_recipe.hooks]
-"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
-```
-
-Recipe YAML is behavior-only. It contains `version`, optional `description`,
-optional `inputs`, and `steps`; `name:` is rejected.
-
-Single-file recipes are still supported by explicit path, for quick local use:
+## Quickstart
 
 ```bash
-untaped-recipe apply ./recipe.yml ./service-a --yes
-```
+# Install a recipe pack, preview what it ships, confirm
+untaped-recipe add ./ansible
 
-They are not installed as loose `recipes/<name>.yml` library items.
+# Apply a recipe to targets (plans, previews, confirms, backs up, writes)
+untaped-recipe apply ansible/playbook-migration ./service-a ./service-b
 
-## Authoring
+# Drive targets from another untaped tool
+untaped-workspace list --format pipe | untaped-recipe apply add-config --stdin --yes
 
-Hooks are referenced from recipes by name. Recipes do not declare hook runtimes,
-and hook manifest rows do not declare `kind`; the exported function name is the
-contract. A hook module exports `transform()`, `validate()`, or both, and the
-recipe step `type` selects which function runs.
-
-```toml
-[tool.untaped_recipe.hooks]
-"add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
-```
-
-Supported hook sources are:
-
-- the recipe's own pack
-- installed packs
-- built-ins such as `yaml_edit`, which are engine-owned and run in-process
-
-Generated hooks use `TYPE_CHECKING` imports from `untaped_recipe.hook_api` for
-editor discovery through the dev-only `untaped-recipe` dependency. Pack projects
-must not depend on `untaped-recipe` at runtime; the installed CLI provides the
-worker and helper implementation. Runtime hook dependencies belong in
-`[project].dependencies`, and type-only authoring dependencies belong in
-`[dependency-groups].dev` because workers execute with
-`uv run --locked --no-dev`. Hook scaffolding refreshes `uv.lock`, so it needs
-access to PyPI or a configured uv source for `untaped-recipe`. The scaffolded
-dev dependency tracks the hook API floor for editor type discovery, not every
-CLI release.
-
-If `uv lock` fails after scaffold files are written, `new pack`, `new recipe`,
-and `new hook` leave the pack, recipe, hook module, tests, and manifest rows in
-place and print a repairable error. Fix the package index or add a
-package-specific `[tool.uv.sources]` override, then run `uv lock` in the pack.
-For example, a lagging corporate mirror can route only `untaped-recipe` to an
-approved fallback index:
-
-```toml
-[tool.uv.sources]
-untaped-recipe = { index = "approved-pypi" }
-
-[[tool.uv.index]]
-name = "approved-pypi"
-url = "https://pypi.org/simple"
-explicit = true
-```
-
-uv also provisions Python interpreters from GitHub on demand. On networks that
-block it, point `UV_PYTHON_INSTALL_MIRROR` at an approved mirror of
-python-build-standalone (or preinstall a matching interpreter) so pack
-environments can build at all.
-
-Use `--no-lock` with `new pack`, `new recipe`, or `new hook` to skip the lock
-step entirely. The command exits successfully and prints a stderr note, but
-hooks cannot run until `uv lock` succeeds because workers use
-`uv run --locked --no-dev`.
-
-`new hook` also scaffolds `tests/test_hook_<name>.py`, a pytest that calls the
-exported hook function directly (hooks are pure functions; no worker needed at
-unit level). New packs get `pytest` in their dev group and a pytest
-`pythonpath = ["src"]` setting, so `uv run --project <pack> pytest` works out
-of the box. Packs scaffolded before 0.13.0 don't gain these automatically —
-add them to the pack's `pyproject.toml` if you want hook tests there.
-
-```bash
-untaped-recipe new pack ansible
-untaped-recipe new recipe ansible/playbook-migration
-untaped-recipe new hook ansible/add_play_collections
-untaped-recipe add ./ansible --yes
-untaped-recipe hook run ansible/add_play_collections --target ./service-a --file site.yml --diff
-```
-
-## Apply
-
-```bash
-untaped-recipe apply add-config ./service-a ./service-b --var service=api
-untaped-recipe apply ansible/playbook-migration ./service-a --yes
-untaped-recipe apply ./pack-project ./service-a --recipe playbook-migration --yes
-untaped-recipe apply ./recipe.yml ./service-a --yes
-untaped-recipe apply add-config --stdin --yes --format json
-untaped-recipe apply add-config --stdin --input-from service='{{ record.repo }}' --yes
-untaped-recipe apply add-config ./service-a --dry-run
+# Drift check for CI: writes nothing, exits non-zero on pending changes
 untaped-recipe apply add-config ./service-a --check
-untaped-recipe apply add-config ./service-a --preview diff
+
+# Scaffold a new pack with a recipe and a hook
+untaped-recipe new pack mypack
+untaped-recipe new recipe mypack/add-config
+untaped-recipe new hook mypack/set_owner
+
+# Undo the last apply
+untaped-recipe backup restore latest
 ```
 
-`apply` plans every target first, prints a stderr preview, then asks for
-confirmation unless `--yes` is passed. Normal apply and `--dry-run` default to
-`--preview table`, which shows a file-level table with absolute paths, change
-kind, and line counts. `--check` defaults to summary-only preview output for
-CI; pass `--preview table` when you want the same file table in check mode.
-Use `--preview diff` for patch-compatible unified diffs with `a/` and `b/`
-relative paths, or `--preview none` for summary-only runs. `--preview` controls
-safety review detail; `--quiet` only mutes success chatter after the run.
-Table previews stay file-level at or below `preview_max_rows`; above that they
-collapse to per-target file/change aggregates, and very large target sets show
-the first configured rows plus an exact hidden-target count. Collapsed previews
-are summaries, not partial success claims; use `--preview diff` when every file
-hunk must be visible.
-Backups are created by default before writing and can be restored later. Target
-writes are transactional: if a target cannot be written safely, that target is
-rolled back and reported as failed. Use `--check` for CI or compliance checks:
-it writes nothing, creates no backups, prompts for nothing, and exits non-zero
-when any target would change.
+## Documentation
 
-Recipes can list known candidate files explicitly for `transform` and
-`remove` steps. `transform.files` and `remove.files` are expanded into ordinary
-per-file steps at recipe load time, and `transform` can use `optional: true`
-to skip playbooks or config files that are absent in some targets. Missing
-optional transforms are reported as warnings in `recipe.outcome` rows.
-`transform.globs` and `remove.globs` expand per target at planning time; use
-`exclude` with globs to skip matched paths. Globs have no implicit safety
-excludes, so repo-wide sweeps should usually include `exclude: [".git/**"]`.
-Zero-match globs warn, and binary or non-UTF-8 files are unsupported; exclude
-those paths when sweeping broad trees. `template` and `copy` steps can set
-`if_absent: true` to create only when the destination does not already exist
-or have an earlier planned write.
+Concept pages under [docs/](./docs/):
 
-Piped stdin accepts bare paths and untaped pipe records. Recipe resolves
-absolute `record.target_path` first, then falls back to `record.path` for
-generic path records. Records whose `kind` ends in `.summary` are informational
-and skipped as non-targets. Repo-grain records such as `workspace.repo` must
-provide `target_path`; older saved streams that only contain `path` plus `repo`
-are rejected instead of writing to the wrong directory.
-
-Recipe inputs may be invocation-global or per-target. Input specs support
-`description`, `sensitive`, `scope`, `items`, `values`, and `from` in addition
-to `type`, `default`, and `required`. Types are `str`, `int`, `bool`, `float`,
-`list`, and `dict`; list `items` and dict `values` are shallow scalar element
-types and default to `str`. Omitted scope infers `target` when `from` is
-present and `global` otherwise. Per-target `from` values are sandboxed strict
-native Jinja strings evaluated only for input derivation. They may combine
-literal text, string/number/boolean/null constants that Jinja parses without
-operators, and field access on `target.path`, `target.name`,
-`target.parent_path`, `target.parent_name`, or optional incoming pipe `record`.
-There are no ambient Jinja globals; control blocks, filters, tests, calls,
-operators, and collection literals are rejected, so negative numeric
-expressions like `{{ -1 }}` are not valid V1 sources. Missing, undefined, or
-null candidates fall through; `false`, `0`, empty strings, and empty
-containers are real values. Oversized derived values are rejected; structured
-derivation is allowed only for inputs declared as `list` or `dict`.
-
-Use `--input-from NAME=JINJA` to override a per-target source, `--var` or
-`--vars` to provide fixed values, and `--interactive` to prompt for unresolved
-inputs. For inputs declared `list` or `dict`, `--var name=value` parses the
-value as YAML first, so use forms such as `--var 'cols=[name, owner]'` or
-`--var 'labels={team: platform}'`; scalar-declared inputs keep the literal
-string behavior. `--vars` files may contain native YAML lists and mappings. A
-fixed value and source override for the same input is rejected. `scope: global`
-rejects recipe `from` and `--input-from`, but accepts `--var`/`--vars`.
-Interactive prompting is not supported for structured inputs; pass `--var` or
-`--vars` instead. Interactive prompts run before recipe defaults; an empty
-answer accepts the default when one exists. `--interactive --check` is
-rejected. With `--stdin --interactive`, target records still come from stdin
-and prompts use the controlling terminal. `--stdin` writes still require
-`--yes` unless `--dry-run` or `--check` is used.
-
-Path-bearing fields can use bare input tokens: template `template`/`dest`,
-copy `source`/`dest`, transform/remove `file` and `files`, plus `globs` and
-`exclude` entries. Fields render once per target after inputs resolve, are
-always strict (`unknown_tokens` only affects template file bodies), and are
-rechecked as confined relative paths after rendering. Sensitive inputs and
-structured inputs cannot be used in path fields; hooks receive structured
-inputs natively. Hook `args` are passed verbatim and are never templated by the
-engine. Use recipe inputs plus YAML anchors for structural reuse, and let hooks
-interpret args such as `yaml_edit` template strings.
-
-Every `recipe.outcome` row includes resolved declared inputs. Inputs marked
-`sensitive: true` are redacted in rows, warnings/errors, and backup metadata;
-file-level previews and diffs are suppressed for targets with sensitive inputs.
-Real values still reach templates and hooks. Backup file entries record
-redacted per-target inputs and never store the full incoming pipe record.
-
-## Library Commands
-
-```text
-untaped-recipe new pack <name> [--no-lock]
-untaped-recipe new recipe <pack>/<name> [--no-lock]
-untaped-recipe new hook <pack>/<name> [--no-lock]
-untaped-recipe add <path|git-url> [--rev REV] [--name NAME] [--force] [--discard-edits]
-untaped-recipe list [--packs|--hooks]
-untaped-recipe show <pack|recipe-ref|hook-ref>
-untaped-recipe check [pack|recipe-ref|path]
-untaped-recipe test [pack|path|pack/recipe] [--update]
-untaped-recipe remove <pack>
-untaped-recipe edit <pack|recipe-ref|hook-ref>
-untaped-recipe hook run <hook-ref>
-untaped-recipe backup list|show|restore
-untaped-recipe backup prune [--keep N] [--older-than DAYS]
-```
-
-`add` installs a pack from a local path or git URL and asks for confirmation
-after listing the recipes and hooks being installed. `--name` overrides the
-installed pack key; that key is the identity used by refs, output rows,
-ambiguity errors, `check`, and `remove`. Installs copy the pack tree minus
-dev/build junk (`.git`, `.venv`, `__pycache__`, `dist`, caches, egg-info) and
-record a content hash in `packs.toml`. Because library packs are editable in
-place (`edit`, `new recipe`/`new hook` into an installed pack), `add --force`
-refuses to overwrite a library copy that diverged from its install hash;
-re-run with `--discard-edits` to overwrite deliberately.
-
-`list` shows recipes by default. `list --packs` shows installed packs and
-`list --hooks` shows hook refs, including built-in hooks such as `yaml_edit`
-(marked `(builtin)`). `show` renders structured pack, recipe, or hook detail
-and resolves bare built-in hook names when no library entry shadows them;
-built-ins are engine-owned, so `edit` rejects them. `check` is static
-preflight; without a ref it validates the whole library and `packs.toml`, and
-with a ref it validates one pack, recipe, path, or bare built-in hook name.
-Built-in check rows use the same `recipe.check` columns. For hook-declaring
-projects, `check` requires `uv.lock` and verifies freshness with
-`uv lock --check`, so stale locks fail at check time instead of at hook run
-time. Hookless packs and recipe projects do not need `uv.lock`. If freshness
-cannot be verified for a non-stale reason, `check` reports
-`could not verify lockfile freshness in ...` with uv's detail when available.
-`test` runs golden-fixture cases packs ship under `tests/`; `--update`
-regenerates goldens for an explicit pack or recipe.
-`remove <pack>` is destructive because library packs are editable in place; it
-requires confirmation or `--yes` and warns before confirmation when the
-installed copy has local edits. `backup show` and `backup restore` accept full
-ids, unambiguous prefixes, or `latest`; restore previews and confirms like
-apply, uses the same transactional write path and symlink confinement, and
-preserves the changed-since-backup hash guard unless `--force` is passed.
-Backups store text content and do not preserve file mode or mtime.
-
-`hook run` is a no-write debug harness. Transform hooks require `--file`; by
-default the command reads `--target/--file` and writes exact transformed content
-to stdout with no added newline. Use `--content TEXT`, `--content -`, or
-`--content-file PATH` to supply fixture content without requiring the target
-file to exist. Use `--diff` to emit a unified diff instead of raw content.
-Validate hooks reject file/content options and emit a `recipe.hook_run` verdict
-record. Repeated `--input KEY=VALUE` and `--arg KEY=VALUE` values are
-YAML-parsed and override `--inputs`/`--args` YAML mapping files. Fixture context
-and hook diagnostics go to stderr; structured `--format json|yaml|table|pipe`
-output omits raw input and arg values. Use SDK `--quiet` when ad-hoc fixture
-values should not be echoed in a shared terminal.
-
-See [docs/packs.md](./docs/packs.md), [docs/recipes.md](./docs/recipes.md),
-and [docs/hooks.md](./docs/hooks.md) for pack, schema, and hook authoring
-details. See [docs/migration-0.9.md](./docs/migration-0.9.md) for the 0.9.0
-breaking changes.
+- [recipes](./docs/recipes.md) — recipe YAML schema, step types, design rationale
+- [inputs](./docs/inputs.md) — the input contract: types, scope, `from` derivation, precedence
+- [templating](./docs/templating.md) — the `{{ name }}` token language and path-field rendering
+- [hooks](./docs/hooks.md) — hook contract, execution model, helpers, `hook run`, `yaml_edit`
+- [packs](./docs/packs.md) — pack manifest, library, references, scaffolding, trust
+- [apply](./docs/apply.md) — running recipes: preview, confirmation, check mode, transactional writes
+- [safety](./docs/safety.md) — path confinement, backups and restore, integrity mechanisms
+- [testing](./docs/testing.md) — `check` preflight and the golden-fixture `test` harness
+- [pipes](./docs/pipes.md) — stdin target ingestion and structured output
+- [reference](./docs/reference.md) — settings, command index, exit codes, skills
+- [release](./docs/release.md) — maintainer release runbook
 
 ## Development
 
@@ -325,7 +80,8 @@ uv run pytest
 uv build
 ```
 
-See [AGENTS.md](./AGENTS.md) for architecture rules and product contracts.
+See [AGENTS.md](./AGENTS.md) for architecture rules, product invariants, and
+the documentation contract.
 
 ## Security
 
@@ -334,8 +90,7 @@ Please report suspected vulnerabilities privately. See
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) and [AGENTS.md](./AGENTS.md) for the
-local workflow, architecture rules, product contracts, and
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local workflow and
 [docs/release.md](./docs/release.md) for the release workflow.
 
 ## License

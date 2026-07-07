@@ -16,10 +16,12 @@ uv build
 
 ## Documentation
 
-Update `README.md`, `AGENTS.md`, and
-`src/untaped_recipe/skills/untaped-recipe/SKILL.md` when a change affects
-command behavior, settings, recipe schema, hook contracts, workflows, output
-contracts, or agent-facing usage.
+Every behavior fact has exactly one owning concept page under `docs/`; the
+concept → owning-page table lives in [AGENTS.md](./AGENTS.md#documentation-contract).
+When a change affects behavior, update the owning page and re-derive the
+derived surfaces (`README.md` and
+`src/untaped_recipe/skills/untaped-recipe/SKILL.md`) in the same change.
+GitHub release notes are the change record; there is no changelog file.
 
 ## Sensitive Data
 

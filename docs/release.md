@@ -40,9 +40,10 @@ long-lived token.
 
 ## Release Notes
 
-The 0.9.0 migration note lives in [migration-0.9.md](./migration-0.9.md). Keep
-breaking-change summaries in the release PR body as well; this repo does not
-maintain a separate changelog.
+This repo does not maintain a separate changelog. Breaking-change summaries live
+in the GitHub release notes for the version, and the affected concept pages
+under `docs/` are updated in the same change. Keep the same summary in the
+release PR body.
 
 ## Version Burn Recovery
 

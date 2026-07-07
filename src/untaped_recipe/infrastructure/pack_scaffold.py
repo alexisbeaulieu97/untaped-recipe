@@ -255,7 +255,7 @@ def _hook_test_stub(kind: Literal["transform", "validate"], module: str) -> str:
         "\n"
         "def test_transform_returns_content_unchanged() -> None:\n"
         "    result = transform(\n"
-        '        "example\\n",\n'
+        '        "hello\\n",\n'
         "        inputs={},\n"
         '        target=".",\n'
         '        file="example.txt",\n'
@@ -263,7 +263,7 @@ def _hook_test_stub(kind: Literal["transform", "validate"], module: str) -> str:
         "        helpers=HookHelpers(),\n"
         "    )\n"
         "\n"
-        '    assert result == "example\\n"\n'
+        '    assert result == "hello\\n"\n'
     )
 
 

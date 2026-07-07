@@ -183,6 +183,22 @@ def test_pack_add_force_treats_legacy_rows_as_unguarded(tmp_path: Path) -> None:
     assert PackLibrary(library_root=library_root).local_edits("legacy") is False
 
 
+def test_pack_content_hash_reports_unreadable_files_cleanly(tmp_path: Path) -> None:
+    import os
+
+    pack_source = tmp_path / "pack-source"
+    _write_hook_project(pack_source, hook_name="pick")
+    locked = pack_source / "uv.lock"
+    locked.chmod(0o000)
+    if os.access(locked, os.R_OK):  # running as root; permission bits are advisory
+        pytest.skip("cannot make files unreadable as root")
+    try:
+        with pytest.raises(ValueError, match=r"cannot hash pack file uv\.lock"):
+            pack_content_hash(pack_source)
+    finally:
+        locked.chmod(0o644)
+
+
 def test_pack_content_hash_ignores_junk_and_sees_edits(tmp_path: Path) -> None:
     pack_source = tmp_path / "pack-source"
     _write_hook_project(pack_source, hook_name="pick")

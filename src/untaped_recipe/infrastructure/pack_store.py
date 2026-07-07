@@ -88,7 +88,10 @@ def pack_content_hash(root: Path) -> str:
             continue
         digest.update(relative.as_posix().encode("utf-8"))
         digest.update(b"\x00")
-        digest.update(path.read_bytes())
+        try:
+            digest.update(path.read_bytes())
+        except OSError as exc:
+            raise ValueError(f"cannot hash pack file {relative.as_posix()}: {exc}") from exc
         digest.update(b"\x00")
     return digest.hexdigest()
 

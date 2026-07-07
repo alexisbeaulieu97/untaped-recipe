@@ -300,6 +300,7 @@ def test_scaffold_hook_lock_failure_keeps_module_and_manifest_row(
         created_label="hook module",
     )
     assert module_path.is_file()
+    assert (tmp_path / "ansible" / "tests" / "test_hook_set_owner.py").is_file()
     manifest = PackManifest.from_pyproject(tmp_path / "ansible")
     assert manifest.hooks["set_owner"].module == "ansible_pack.hooks.set_owner"
 

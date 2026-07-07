@@ -142,6 +142,13 @@ def test_list_recipes_keeps_empty_library_message(tmp_path: Path) -> None:
     assert "no packs installed" in result.stderr
 
 
+def test_list_packs_keeps_empty_library_message(tmp_path: Path) -> None:
+    result = CliInvoker().invoke(app, ["list", "--packs"])
+
+    assert result.exit_code == 0, result.output
+    assert "no packs installed" in result.stderr
+
+
 def test_show_builtin_hook_renders_detail(tmp_path: Path) -> None:
     result = CliInvoker().invoke(app, ["show", "yaml_edit", "--format", "json"])
 

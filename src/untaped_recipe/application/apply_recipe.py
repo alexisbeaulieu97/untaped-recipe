@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 from untaped_recipe.application.files import read_existing_text_file
 from untaped_recipe.application.ports import HookExecutorPort
-from untaped_recipe.domain.paths import confined_path
+from untaped_recipe.domain.paths import confined_path, safe_relative_path
 from untaped_recipe.domain.plan import FileChange, TargetPlan
 from untaped_recipe.domain.recipe import (
     CopyStep,
+    InputSpec,
     Recipe,
     RemoveStep,
     TemplateStep,
     TransformStep,
     ValidateStep,
 )
-from untaped_recipe.domain.templates import render_template
+from untaped_recipe.domain.templates import render_field, render_template
 
 
 class ApplyRecipe:
@@ -41,14 +43,15 @@ class ApplyRecipe:
         warnings: list[str] = []
         for step in recipe.steps:
             if isinstance(step, TemplateStep):
-                self._plan_template(step, recipe_dir, target, inputs, buffer)
+                self._plan_template(step, recipe, recipe_dir, target, inputs, buffer)
             elif isinstance(step, CopyStep):
-                self._plan_copy(step, recipe_dir, target, buffer)
+                self._plan_copy(step, recipe, recipe_dir, target, inputs, buffer)
             elif isinstance(step, RemoveStep):
-                self._plan_remove(step, target, buffer, warnings)
+                self._plan_remove(step, recipe, target, inputs, buffer, warnings)
             elif isinstance(step, TransformStep):
                 self._plan_transform(
                     step,
+                    recipe,
                     local_hook_project,
                     target,
                     inputs,
@@ -99,17 +102,20 @@ class ApplyRecipe:
     def _plan_template(
         self,
         step: TemplateStep,
+        recipe: Recipe,
         recipe_dir: Path,
         target: Path,
         inputs: dict[str, object],
         buffer: dict[Path, str | None],
     ) -> None:
-        source = confined_path(recipe_dir, step.template, field="template")
+        template = _render_path(step.template, specs=recipe.inputs, values=inputs, field="template")
+        dest = _render_path(step.dest, specs=recipe.inputs, values=inputs, field="dest")
+        source = confined_path(recipe_dir, template, field="template")
         if not source.is_file():
-            raise ValueError(f"template not found: {step.template}")
-        if step.if_absent and _destination_exists(step.dest, target, buffer):
+            raise ValueError(f"template not found: {template}")
+        if step.if_absent and _destination_exists(dest, target, buffer):
             return
-        buffer[step.dest] = render_template(
+        buffer[dest] = render_template(
             source.read_text(encoding="utf-8", newline=""),
             inputs,
             unknown_tokens=step.unknown_tokens,
@@ -118,33 +124,48 @@ class ApplyRecipe:
     def _plan_copy(
         self,
         step: CopyStep,
+        recipe: Recipe,
         recipe_dir: Path,
         target: Path,
+        inputs: dict[str, object],
         buffer: dict[Path, str | None],
     ) -> None:
-        source = confined_path(recipe_dir, step.source, field="source")
+        source_relative = _render_path(
+            step.source, specs=recipe.inputs, values=inputs, field="source"
+        )
+        dest = _render_path(step.dest, specs=recipe.inputs, values=inputs, field="dest")
+        source = confined_path(recipe_dir, source_relative, field="source")
         if not source.is_file():
-            raise ValueError(f"copy source not found: {step.source}")
-        if step.if_absent and _destination_exists(step.dest, target, buffer):
+            raise ValueError(f"copy source not found: {source_relative}")
+        if step.if_absent and _destination_exists(dest, target, buffer):
             return
-        buffer[step.dest] = source.read_text(encoding="utf-8", newline="")
+        buffer[dest] = source.read_text(encoding="utf-8", newline="")
 
     def _plan_remove(
         self,
         step: RemoveStep,
+        recipe: Recipe,
         target: Path,
+        inputs: dict[str, object],
         buffer: dict[Path, str | None],
         warnings: list[str],
     ) -> None:
         if step.globs:
-            matches = _expand_glob_files(target, step.globs, step.exclude)
+            globs = _render_path_patterns(
+                step.globs, specs=recipe.inputs, values=inputs, field="globs"
+            )
+            exclude = _render_path_patterns(
+                step.exclude, specs=recipe.inputs, values=inputs, field="exclude"
+            )
+            matches = _expand_glob_files(target, globs, exclude)
             if not matches:
-                warnings.append(f"globs matched no files: {', '.join(step.globs)}")
+                warnings.append(f"globs matched no files: {', '.join(globs)}")
             for relative in matches:
                 self._plan_remove_file(relative, target, buffer)
             return
         assert step.file is not None
-        self._plan_remove_file(step.file, target, buffer)
+        relative = _render_path(step.file, specs=recipe.inputs, values=inputs, field="file")
+        self._plan_remove_file(relative, target, buffer)
 
     def _plan_remove_file(
         self,
@@ -159,6 +180,7 @@ class ApplyRecipe:
     def _plan_transform(
         self,
         step: TransformStep,
+        recipe: Recipe,
         local_hook_project: Path | None,
         target: Path,
         inputs: dict[str, object],
@@ -166,9 +188,15 @@ class ApplyRecipe:
         warnings: list[str],
     ) -> None:
         if step.globs:
-            matches = _expand_glob_files(target, step.globs, step.exclude)
+            globs = _render_path_patterns(
+                step.globs, specs=recipe.inputs, values=inputs, field="globs"
+            )
+            exclude = _render_path_patterns(
+                step.exclude, specs=recipe.inputs, values=inputs, field="exclude"
+            )
+            matches = _expand_glob_files(target, globs, exclude)
             if not matches:
-                warnings.append(f"globs matched no files: {', '.join(step.globs)}")
+                warnings.append(f"globs matched no files: {', '.join(globs)}")
             for relative in matches:
                 self._plan_transform_file(
                     step,
@@ -181,9 +209,10 @@ class ApplyRecipe:
                 )
             return
         assert step.file is not None
+        relative = _render_path(step.file, specs=recipe.inputs, values=inputs, field="file")
         self._plan_transform_file(
             step,
-            step.file,
+            relative,
             local_hook_project,
             target,
             inputs,
@@ -247,6 +276,30 @@ def _destination_exists(
     if relative in buffer:
         return buffer[relative] is not None
     return confined_path(target, relative, field="dest").is_file()
+
+
+def _render_path(
+    value: Path,
+    *,
+    specs: Mapping[str, InputSpec],
+    values: Mapping[str, object],
+    field: str,
+) -> Path:
+    rendered = render_field(value.as_posix(), specs=specs, values=values, field=field)
+    return safe_relative_path(Path(rendered), field=field)
+
+
+def _render_path_patterns(
+    patterns: tuple[str, ...],
+    *,
+    specs: Mapping[str, InputSpec],
+    values: Mapping[str, object],
+    field: str,
+) -> tuple[str, ...]:
+    return tuple(
+        _render_path(Path(pattern), specs=specs, values=values, field=field).as_posix()
+        for pattern in patterns
+    )
 
 
 def _expand_glob_files(

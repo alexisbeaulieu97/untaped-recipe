@@ -60,7 +60,13 @@ class HookHelpers:
             if bare_token is not None:
                 key = bare_token.group(1)
                 if key in inputs:
-                    return str(inputs[key])
+                    value = inputs[key]
+                    if isinstance(value, Mapping | list | tuple):
+                        raise ValueError(
+                            f"structured input {key!r} cannot be rendered; "
+                            "hooks receive it natively"
+                        )
+                    return str(value)
                 if unknown_tokens == "keep":
                     return token
                 raise ValueError(f"template input {key!r} is not defined")

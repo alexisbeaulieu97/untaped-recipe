@@ -2390,6 +2390,54 @@ def test_external_hook_args_with_yaml_dates_are_rejected_before_worker(
     assert (target / "local.yml").read_text() == "---\n"
 
 
+def test_hook_run_accepts_path_ref_form_like_new_hook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise S1: `hook run ./pack/hook` must resolve like `new hook` does.
+    project = tmp_path / "collections-ensure"
+    project.mkdir()
+    _write_hook_project(
+        project,
+        public_name="has_playbooks",
+        module_name="has_playbooks",
+        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+    )
+    target = tmp_path / "app"
+    target.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    ok = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "./collections-ensure/has_playbooks",
+            "--target",
+            str(target),
+            "--format",
+            "json",
+        ],
+    )
+    assert ok.exit_code == 0, ok.output
+    assert json.loads(ok.stdout)["status"] == "pass"
+
+    conflict = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "./collections-ensure/has_playbooks",
+            "--project",
+            str(project),
+            "--target",
+            str(target),
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "not both" in conflict.output
+
+
 def test_hook_run_transform_reads_disk_and_emits_exact_content(tmp_path: Path) -> None:
     hook_project = tmp_path / "hooks"
     _write_hook_project(

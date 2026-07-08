@@ -169,6 +169,14 @@ def new_hook_command(
         Literal["transform", "validate"],
         Parameter(name="--kind", help="Hook callable stub kind."),
     ] = "transform",
+    force: Annotated[
+        bool,
+        Parameter(
+            name="--force",
+            negative="",
+            help="Replace an existing hook's stub and paired test (e.g. wrong --kind).",
+        ),
+    ] = False,
     no_lock: Annotated[
         bool,
         Parameter(name="--no-lock", negative="", help="Skip refreshing uv.lock."),
@@ -177,9 +185,14 @@ def new_hook_command(
     """Scaffold a hook inside a pack."""
     with report_config_errors():
         pack_dir, name = _new_pack_child(ref)
-        path = pack_scaffold.scaffold_hook(pack_dir, name, kind=kind, lock=not no_lock)
+        path = pack_scaffold.scaffold_hook(pack_dir, name, kind=kind, lock=not no_lock, force=force)
         if no_lock:
             _warn_no_lock(pack_dir)
+        echo(
+            f"scaffolded {kind} hook (choose with --kind transform|validate; "
+            "replace an existing hook with --force)",
+            err=True,
+        )
         echo(str(path))
 
 

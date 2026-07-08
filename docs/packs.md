@@ -212,8 +212,10 @@ hooks and asks for confirmation; `--yes` skips the prompt. Non-tty stdin without
 `--yes` is refused by the SDK destructive-confirmation path.
 
 `add` validates the pack before copying: its declared recipe files must load,
-each hook module must export the required function, and the pack must contain a
-`uv.lock`. The install copies the pack tree minus dev and build junk — `.git`,
+each hook module must export the required function, and a hook-declaring pack
+must contain a `uv.lock` — hookless packs are exempt, the same rule
+[check](./testing.md) applies. The install copies the pack tree minus dev and
+build junk — `.git`,
 `.venv`, `__pycache__`, `dist`, `build`, `.pytest_cache`, `.mypy_cache`,
 `.ruff_cache`, `.uv-cache`, and `*.egg-info` — and records a `content_hash` of
 the copied tree in `packs.toml`.

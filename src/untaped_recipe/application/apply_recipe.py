@@ -21,6 +21,10 @@ from untaped_recipe.domain.recipe import (
 from untaped_recipe.domain.templates import render_field, render_template
 
 
+class _TargetSkipped(Exception):
+    """Internal signal that a validate hook marked the target not applicable."""
+
+
 class ApplyRecipe:
     """Build an in-memory target plan."""
 
@@ -37,38 +41,57 @@ class ApplyRecipe:
         local_hook_project: Path | None = None,
     ) -> TargetPlan:
         """Plan every step for one target."""
+        # Absolutize before any hook sees the target: a relative CLI path is
+        # valid from the engine's cwd, but external hooks run in a pooled
+        # worker with a different cwd, so a relative ``target`` (and the
+        # per-step ``file`` derived from it) would resolve against the worker's
+        # directory and silently read the wrong tree. Prepend cwd for relative
+        # paths only; absolute paths (and their symlinks) are left untouched.
+        if not target.is_absolute():
+            target = Path.cwd() / target
         if not target.is_dir():
             raise ValueError(f"target is not a directory: {target}")
         buffer: dict[Path, str | None] = {}
         warnings: list[str] = []
-        for step in recipe.steps:
-            if isinstance(step, TemplateStep):
-                self._plan_template(step, recipe, recipe_dir, target, inputs, buffer)
-            elif isinstance(step, CopyStep):
-                self._plan_copy(step, recipe, recipe_dir, target, inputs, buffer)
-            elif isinstance(step, RemoveStep):
-                self._plan_remove(step, recipe, target, inputs, buffer, warnings)
-            elif isinstance(step, TransformStep):
-                self._plan_transform(
-                    step,
-                    recipe,
-                    local_hook_project,
-                    target,
-                    inputs,
-                    buffer,
-                    warnings,
-                )
-            elif isinstance(step, ValidateStep):
-                self._plan_validate(
-                    step.hook,
-                    step.args,
-                    local_hook_project,
-                    target,
-                    inputs,
-                    warnings,
-                )
-            else:
-                raise ValueError(f"unsupported recipe step: {step!r}")
+        try:
+            for step in recipe.steps:
+                if isinstance(step, TemplateStep):
+                    self._plan_template(step, recipe, recipe_dir, target, inputs, buffer)
+                elif isinstance(step, CopyStep):
+                    self._plan_copy(step, recipe, recipe_dir, target, inputs, buffer)
+                elif isinstance(step, RemoveStep):
+                    self._plan_remove(step, recipe, target, inputs, buffer, warnings)
+                elif isinstance(step, TransformStep):
+                    self._plan_transform(
+                        step,
+                        recipe,
+                        local_hook_project,
+                        target,
+                        inputs,
+                        buffer,
+                        warnings,
+                    )
+                elif isinstance(step, ValidateStep):
+                    self._plan_validate(
+                        step.hook,
+                        step.args,
+                        local_hook_project,
+                        target,
+                        inputs,
+                        warnings,
+                    )
+                else:
+                    raise ValueError(f"unsupported recipe step: {step!r}")
+        except _TargetSkipped:
+            # A validate hook reported the target not applicable: planning
+            # stops, no changes are flushed, and the target is never counted
+            # as a failure. Any warnings accumulated so far are retained.
+            return TargetPlan(
+                target=target,
+                status="skipped",
+                changes=(),
+                warnings=tuple(warnings),
+            )
         changes = tuple(self._changes(target, buffer))
         return TargetPlan(
             target=target,
@@ -93,9 +116,12 @@ class ApplyRecipe:
             inputs=inputs,
             args=args,
         )
+        warnings.extend(execution.warnings)
         verdict = execution.result
-        if verdict.status == "warn":
-            warnings.append(verdict.message)
+        if verdict.skipped:
+            if verdict.message:
+                warnings.append(verdict.message)
+            raise _TargetSkipped
         if verdict.failed:
             raise ValueError(verdict.message or f"validate hook {hook!r} failed")
 
@@ -253,6 +279,7 @@ class ApplyRecipe:
             file=path,
             args=step.args,
         )
+        warnings.extend(execution.warnings)
         buffer[relative] = execution.result
 
     def _changes(self, target: Path, buffer: dict[Path, str | None]) -> list[FileChange]:

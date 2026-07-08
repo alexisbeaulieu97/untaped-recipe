@@ -66,7 +66,8 @@ Recipe preview: 1 target, 1 changing, 0 unchanged, 0 failed, 2 files changed
 
 Every preview opens with that exact aggregate summary line — targets, changing,
 unchanged, failed, and files changed — and that summary is re-echoed at the
-confirmation prompt.
+confirmation prompt. When any target is [skipped](#target-statuses-and-exit-codes),
+a `N skipped` count joins the line and the run summary.
 
 ### Preview modes
 
@@ -133,7 +134,26 @@ untaped-recipe apply add-config ./service-a --check
 `--check` is the CI/compliance mode: it previews without writing, creates no
 backups, prompts for nothing, and exits non-zero when any target would change or
 fail. Check-mode outcome rows carry `status: check`. `--check` cannot be combined
-with `--interactive`.
+with `--interactive`. A skipped target is **not** drift: it stays `skipped` and
+does not, on its own, make `--check` exit non-zero.
+
+## Target statuses and exit codes
+
+Each target ends in one status, reported in its outcome row and counted in the
+run summary (for example `8 targets: 5 applied, 2 unchanged, 1 skipped`):
+
+| Status | Meaning | Counts as failure? |
+| --- | --- | --- |
+| `applied` | changes were written | no |
+| `unchanged` | the target was already conformant | no |
+| `skipped` | a validate hook returned `helpers.skip(...)` — not applicable; no changes, no backup | no |
+| `error` | planning or writing failed for that target | yes |
+| `check` / `dry-run` | preview-only status for a target that *would* change | see below |
+
+`apply` exits **non-zero** when any target is `error` (or a write fails). Under
+`--check` it also exits non-zero when any target *would* change. Skips are always
+success. An all-skip run exits 0 and creates no backup bundle. Statuses and the
+`recipe.outcome` schema are owned by [pipes](./pipes.md).
 
 ## Failure isolation and transactional writes
 

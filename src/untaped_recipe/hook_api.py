@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
-HOOK_API_VERSION = "0.9.0"
+HOOK_API_VERSION = "0.10.0"
 
 
 class YamlIndentOptions(TypedDict, total=False):
@@ -33,11 +33,14 @@ class HookHelpers(Protocol):
     def pass_(self, message: str = "") -> dict[str, str]:
         """Return a passing validation verdict."""
 
-    def warn(self, message: str) -> dict[str, str]:
-        """Return a warning validation verdict."""
-
     def fail(self, message: str) -> dict[str, str]:
         """Return a failing validation verdict."""
+
+    def skip(self, message: str = "") -> dict[str, str]:
+        """Return a skip verdict marking the target not applicable."""
+
+    def warn(self, message: str) -> None:
+        """Accumulate a non-fatal warning for the current target."""
 
     def render_template(
         self,

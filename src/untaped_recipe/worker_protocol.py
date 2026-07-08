@@ -11,6 +11,7 @@ FILE = "file"
 ARGS = "args"
 OK = "ok"
 RESULT = "result"
+WARNINGS = "warnings"
 ERROR = "error"
 
 TRANSFORM = "transform"

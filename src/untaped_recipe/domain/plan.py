@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from untaped_recipe.domain.paths import safe_relative_path
 
-ApplyStatus = Literal["planned", "applied", "dry-run", "error"]
+ApplyStatus = Literal["planned", "applied", "dry-run", "skipped", "error"]
 
 
 class Verdict(BaseModel):
@@ -17,13 +17,18 @@ class Verdict(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    status: Literal["pass", "warn", "fail"]
+    status: Literal["pass", "fail", "skip"]
     message: str = ""
 
     @property
     def failed(self) -> bool:
         """Whether this verdict must abort the target plan."""
         return self.status == "fail"
+
+    @property
+    def skipped(self) -> bool:
+        """Whether this verdict marks the target not applicable."""
+        return self.status == "skip"
 
 
 class FileChange(BaseModel):

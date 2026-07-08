@@ -345,12 +345,12 @@ def test_run_case_verdict_worst_of_and_message(tmp_path: Path) -> None:
     _write_case(
         pack.root,
         "lint",
-        "warns",
-        case_yml="verdict:\n  status: warn\n  message_contains: tabs\n",
+        "skips",
+        case_yml="verdict:\n  status: skip\n  message_contains: scope\n",
     )
-    executor = _FakeExecutor(verdicts=(Verdict(status="warn", message="uses tabs"),))
+    executor = _FakeExecutor(verdicts=(Verdict(status="skip", message="out of scope"),))
 
-    result = run_case(_case(pack, "lint", "warns"), executor=executor)
+    result = run_case(_case(pack, "lint", "skips"), executor=executor)
 
     assert result.status == "pass"
 
@@ -361,12 +361,12 @@ def test_run_case_verdict_mismatch_fails(tmp_path: Path) -> None:
         recipes={"lint": "recipes/lint.yml"},
         recipe_bodies={"lint": _VALIDATE_RECIPE},
     )
-    _write_case(pack.root, "lint", "warns", case_yml="verdict:\n  status: warn\n")
+    _write_case(pack.root, "lint", "skips", case_yml="verdict:\n  status: skip\n")
 
-    result = run_case(_case(pack, "lint", "warns"), executor=_FakeExecutor())
+    result = run_case(_case(pack, "lint", "skips"), executor=_FakeExecutor())
 
     assert result.status == "fail"
-    assert result.detail == "expected worst verdict status warn, got pass"
+    assert result.detail == "expected worst verdict status skip, got pass"
 
 
 def test_run_case_verdict_with_no_verdicts_fails(tmp_path: Path) -> None:
@@ -418,7 +418,7 @@ def test_run_case_non_utf8_fixture_is_a_per_case_error(tmp_path: Path) -> None:
 
 
 def test_recording_executor_records_validate_verdicts_only(tmp_path: Path) -> None:
-    recorder = RecordingHookExecutor(_FakeExecutor(verdicts=(Verdict(status="warn"),)))
+    recorder = RecordingHookExecutor(_FakeExecutor(verdicts=(Verdict(status="skip"),)))
 
     recorder.transform(
         "shout",
@@ -431,7 +431,7 @@ def test_recording_executor_records_validate_verdicts_only(tmp_path: Path) -> No
     )
     recorder.validate("probe", local_hook_project=None, target=tmp_path, inputs={}, args={})
 
-    assert [verdict.status for verdict in recorder.verdicts] == ["warn"]
+    assert [verdict.status for verdict in recorder.verdicts] == ["skip"]
 
 
 def test_update_case_writes_expected_tree_from_plan(tmp_path: Path) -> None:

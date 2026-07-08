@@ -1,4 +1,4 @@
-"""Scaffold 0.9 recipe packs, recipes, and hooks."""
+"""Scaffold recipe packs, recipes, and hooks."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ _CASE_YML_TEMPLATE = """\
 # expect: success             # success (default) | error
 # error_contains: "..."       # required with expect: error; forbidden otherwise
 # verdict:                    # assertions on validate-hook verdicts
-#   status: warn              # expected worst status: pass | warn | fail
+#   status: skip              # expected worst status: pass | fail | skip
 #   message_contains: "..."   # substring of at least one verdict message
 """
 
@@ -166,22 +166,30 @@ def scaffold_hook(
     *,
     kind: HookKind = "transform",
     lock: bool = True,
+    force: bool = False,
 ) -> Path:
-    """Add a hook module stub to an existing pack manifest."""
+    """Add a hook module stub to an existing pack manifest.
+
+    ``force`` re-scaffolds an existing hook, replacing both the module stub and
+    the paired pytest for the requested ``kind`` (e.g. to fix a wrong default
+    kind). Without ``force`` an existing hook, module, or test is refused.
+    """
     hook_name = normalize_hook_name(name)
     manifest = PackManifest.from_pyproject(pack_dir)
-    if hook_name in manifest.hooks:
+    already_registered = hook_name in manifest.hooks
+    if already_registered and not force:
         raise ValueError(f"hook already exists: {hook_name}")
     package = _package_name(manifest.name)
     module_leaf = hook_name.rsplit(".", maxsplit=1)[-1]
     module = f"{package}.hooks.{module_leaf}"
     module_path = pack_dir / "src" / package / "hooks" / f"{module_leaf}.py"
-    if module_path.exists():
-        raise ValueError(f"hook already exists: {hook_name}")
     tests_dir = pack_dir / "tests"
     test_path = tests_dir / f"test_hook_{module_leaf}.py"
-    if test_path.exists():
-        raise ValueError(f"hook test already exists: {test_path}")
+    if not force:
+        if module_path.exists():
+            raise ValueError(f"hook already exists: {hook_name}")
+        if test_path.exists():
+            raise ValueError(f"hook test already exists: {test_path}")
     created_tests_dir = not tests_dir.exists()
     try:
         module_path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,13 +198,17 @@ def scaffold_hook(
         module_path.write_text(_hook_stub(kind), encoding="utf-8")
         tests_dir.mkdir(exist_ok=True)
         test_path.write_text(_hook_test_stub(kind, module), encoding="utf-8")
-        _append_hook_row(pack_dir / "pyproject.toml", hook_name, module)
+        if not already_registered:
+            _append_hook_row(pack_dir / "pyproject.toml", hook_name, module)
     except Exception:
-        _remove_manifest_row(pack_dir / "pyproject.toml", "hooks", hook_name)
-        module_path.unlink(missing_ok=True)
-        test_path.unlink(missing_ok=True)
-        if created_tests_dir:
-            shutil.rmtree(tests_dir, ignore_errors=True)
+        # Only clean up a fresh scaffold; a forced re-scaffold must not delete
+        # the pre-existing hook it is replacing.
+        if not already_registered:
+            _remove_manifest_row(pack_dir / "pyproject.toml", "hooks", hook_name)
+            module_path.unlink(missing_ok=True)
+            test_path.unlink(missing_ok=True)
+            if created_tests_dir:
+                shutil.rmtree(tests_dir, ignore_errors=True)
         raise
     if lock:
         try:

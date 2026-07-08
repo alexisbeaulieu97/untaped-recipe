@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from untaped_recipe.hook_worker import HookHelpers
-
 from collections_ensure_pack.hooks.ensure_collections import transform
+
+from untaped_recipe.hook_worker import HookHelpers
 
 
 def _run(content: str, wanted: list[str]) -> str:

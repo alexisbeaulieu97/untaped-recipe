@@ -243,12 +243,17 @@ steps:
           value:
             <<: *common_labels
             service: "{{ service }}"
+        - op: ensure
+          path: [collections]
+          value: {name: acme.required}
+          match: [name]
 ```
 
 The `yaml_edit` step above is a built-in hook; its `args` grammar (`edits`,
-`op`, `path`, `value`) is documented with the hook itself in
-[hooks](./hooks.md). Note that string `value` entries such as `"{{ team }}"` are
-rendered by `yaml_edit`, not by the engine.
+`op`, `path`, `value`, and `ensure`'s `match`) is documented with the hook
+itself in [hooks](./hooks.md). The `ensure` edit is idempotent — re-running the
+recipe never duplicates `acme.required` — and string `value` entries such as
+`"{{ team }}"` are rendered by `yaml_edit`, not by the engine.
 
 ## Single-file recipes
 

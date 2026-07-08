@@ -92,6 +92,31 @@ def test_pack_library_adds_and_finds_recipes_and_hooks(tmp_path: Path) -> None:
     assert not (library.packs_dir / "ansible" / ".git").exists()
 
 
+def test_add_hookless_pack_without_lock_installs(tmp_path: Path) -> None:
+    # A hookless pack needs no uv.lock — same exemption `check` already grants.
+    source = tmp_path / "source"
+    _write_pack(source, manifest_name="hygiene", recipes={"seed": "recipes/seed/recipe.yml"})
+    (source / "uv.lock").unlink()
+    library = PackLibrary(library_root=tmp_path / "library")
+
+    manifest = library.add(source, source=str(source), rev=None, name=None, force=False)
+
+    assert manifest.name == "hygiene"
+    assert library.find_pack("hygiene") is not None
+
+
+def test_add_hooked_pack_without_lock_refuses(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pack(
+        source, manifest_name="ansible", hooks={"set_owner": "ansible_hooks.hooks.set_owner"}
+    )
+    (source / "uv.lock").unlink()
+    library = PackLibrary(library_root=tmp_path / "library")
+
+    with pytest.raises(ValueError, match=r"pack project is missing uv\.lock"):
+        library.add(source, source=str(source), rev=None, name=None, force=False)
+
+
 def test_pack_library_ambiguity_lists_installed_candidates(tmp_path: Path) -> None:
     source_a = tmp_path / "source-a"
     source_b = tmp_path / "source-b"

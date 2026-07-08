@@ -60,13 +60,13 @@ def test_scaffold_pack_writes_parseable_manifest_with_hook_api_floors(
         "dependencies = []\n"
         "\n"
         "[dependency-groups]\n"
-        'dev = ["untaped-recipe>=0.9", "pytest"]\n'
+        'dev = ["untaped-recipe>=0.10", "pytest"]\n'
         "\n"
         "[tool.pytest.ini_options]\n"
         'pythonpath = ["src"]\n'
         "\n"
         "[tool.untaped_recipe]\n"
-        'requires_hook_api = ">=0.9,<1"\n'
+        'requires_hook_api = ">=0.10,<1"\n'
     )
     assert (pack_dir / "src" / "ansible_pack" / "hooks" / "__init__.py").is_file()
 
@@ -267,6 +267,38 @@ def test_scaffold_hook_validate_kind_writes_matching_pytest(
     assert "pass_()" in content
 
 
+def test_scaffold_hook_force_replaces_stub_and_paired_test(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+    pack_scaffold.scaffold_hook(tmp_path / "ansible", "probe", kind="transform")
+
+    module_path = tmp_path / "ansible" / "src" / "ansible_pack" / "hooks" / "probe.py"
+    test_path = tmp_path / "ansible" / "tests" / "test_hook_probe.py"
+    assert "def transform" in module_path.read_text(encoding="utf-8")
+    assert "import transform" in test_path.read_text(encoding="utf-8")
+
+    # Without --force a re-scaffold of the same hook is refused.
+    with pytest.raises(ValueError, match="hook already exists"):
+        pack_scaffold.scaffold_hook(tmp_path / "ansible", "probe", kind="validate")
+
+    module_path = pack_scaffold.scaffold_hook(
+        tmp_path / "ansible", "probe", kind="validate", force=True
+    )
+
+    module_content = module_path.read_text(encoding="utf-8")
+    assert "def validate" in module_content
+    assert "def transform" not in module_content
+    test_content = test_path.read_text(encoding="utf-8")
+    assert "import validate" in test_content
+    assert "transform" not in test_content
+    # The manifest still names the hook exactly once.
+    manifest = PackManifest.from_pyproject(tmp_path / "ansible")
+    assert manifest.hooks["probe"].module == "ansible_pack.hooks.probe"
+
+
 def test_scaffold_hook_rejects_existing_test_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -423,6 +455,36 @@ def test_new_hook_explicit_local_path_splits_on_last_segment(
     ).is_file()
     manifest = PackManifest.from_pyproject(tmp_path / "some-local-pack")
     assert manifest.hooks["probe"].module == "some_local_pack_pack.hooks.probe"
+
+
+def test_new_hook_names_kind_and_force_replaces_wrong_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pack_scaffold, "lock_project", lambda project_root: None)
+    pack_scaffold.scaffold_pack(tmp_path / "ansible", "ansible")
+
+    made = CliInvoker().invoke(app, ["new", "hook", "./ansible/probe"])
+    assert made.exit_code == 0, made.output
+    assert "scaffolded transform hook" in made.stderr
+    assert "--kind" in made.stderr
+
+    test_path = tmp_path / "ansible" / "tests" / "test_hook_probe.py"
+    assert "transform" in test_path.read_text(encoding="utf-8")
+
+    refused = CliInvoker().invoke(app, ["new", "hook", "./ansible/probe", "--kind", "validate"])
+    assert refused.exit_code != 0
+    assert "hook already exists" in refused.output
+
+    forced = CliInvoker().invoke(
+        app, ["new", "hook", "./ansible/probe", "--kind", "validate", "--force"]
+    )
+    assert forced.exit_code == 0, forced.output
+    assert "scaffolded validate hook" in forced.stderr
+    content = test_path.read_text(encoding="utf-8")
+    assert "import validate" in content
+    assert "transform" not in content
 
 
 def test_new_hook_rejects_bare_multi_segment_ref_with_exact_message(

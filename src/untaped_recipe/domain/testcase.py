@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-VerdictStatus = Literal["pass", "warn", "fail"]
+VerdictStatus = Literal["pass", "fail", "skip"]
 
 
 class VerdictExpectation(BaseModel):

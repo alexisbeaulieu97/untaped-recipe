@@ -85,7 +85,9 @@ collections:
 
 
 def run(cmd: list[str], cwd: Path) -> None:
-    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, env={**GIT_ENV, "PATH": "/usr/bin:/bin"})
+    subprocess.run(
+        cmd, cwd=cwd, check=True, capture_output=True, env={**GIT_ENV, "PATH": "/usr/bin:/bin"}
+    )
 
 
 def write(root: Path, rel: str, content: str) -> None:

@@ -15,7 +15,7 @@ from queue import Empty, Queue
 from threading import Condition, Lock, Thread
 from typing import Protocol, TextIO
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
 
 from untaped_recipe import hook_worker
 from untaped_recipe import worker_protocol as protocol
@@ -34,6 +34,7 @@ class HookWorkerResponse(BaseModel):
     id: StrictStr
     ok: StrictBool
     result: object | None = None
+    warnings: list[StrictStr] = Field(default_factory=list)
     error: StrictStr | None = None
 
     @model_validator(mode="after")
@@ -44,6 +45,8 @@ class HookWorkerResponse(BaseModel):
             raise ValueError("failed hook response must include error")
         if not self.ok and self.result is not None:
             raise ValueError("failed hook response cannot include result")
+        if not self.ok and self.warnings:
+            raise ValueError("failed hook response cannot include warnings")
         return self
 
 
@@ -53,10 +56,11 @@ class FatalHookWorkerError(ValueError):
 
 @dataclass(frozen=True)
 class HookWorkerCallResult:
-    """Result plus diagnostics captured from one worker request."""
+    """Result plus diagnostics and warnings captured from one worker request."""
 
     result: object
     diagnostics: str
+    warnings: tuple[str, ...] = ()
 
 
 class HookWorkerClient(Protocol):
@@ -384,6 +388,7 @@ class UvHookWorker:
             return HookWorkerCallResult(
                 result=response.result,
                 diagnostics=diagnostics,
+                warnings=tuple(response.warnings),
             )
 
     def _ensure_ready(

@@ -39,7 +39,6 @@ from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata
 from untaped_recipe.domain.plan import FileChange, Verdict
 from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_executor import HookExecutionError, HookExecutor
-from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 
@@ -110,6 +109,7 @@ def run_command(
     """Run one hook once against explicit fixture context without writing files."""
     with report_config_errors():
         root = library_root()
+        project, name = _split_project_hook_ref(name, project)
         local_hook_project = _local_hook_project(project)
         resolver = HookResolver(library_root=root)
         ref = resolver.resolve(name, local_hook_project)
@@ -144,7 +144,6 @@ def run_command(
             executor = HookExecutor(
                 resolver,
                 workers=workers,
-                helpers=HookHelpers(),
             )
             try:
                 execution = RunHook(executor).run(
@@ -200,6 +199,7 @@ def _run_transform(
     columns: list[str] | None,
 ) -> None:
     _print_hook_diagnostics(execution.diagnostics)
+    _print_hook_warnings(execution.warnings)
     diff_text = (
         unified_diff(
             FileChange(
@@ -235,9 +235,27 @@ def _run_validate(
     columns: list[str] | None,
 ) -> None:
     _print_hook_diagnostics(execution.diagnostics)
+    _print_hook_warnings(execution.warnings)
     record = _validate_record(execution.hook, target=execution.target, verdict=execution.verdict)
     emit(record, fmt=fmt or "table", columns=columns, kind="recipe.hook_run")
     finish(execution.verdict.failed)
+
+
+def _split_project_hook_ref(name: str, project: Path | None) -> tuple[Path | None, str]:
+    """Accept the ``./pack/hook`` form ``new hook`` accepts for ``hook run``.
+
+    A path-shaped ref resolves as ``--project <parent>`` plus the trailing hook
+    name; an explicit ``--project`` keeps precedence and the two forms may not
+    be combined.
+    """
+    if not name.startswith(("/", "./", "../", "~")):
+        return project, name
+    if project is not None:
+        raise ConfigError("pass the hook as a ./pack/hook path or with --project, not both")
+    path = Path(name)
+    if not path.name or path.parent in (Path("."), Path("")):
+        raise ConfigError("path hook refs must use <project>/<hook>")
+    return path.parent, path.name
 
 
 def _local_hook_project(project: Path | None) -> Path | None:
@@ -326,6 +344,12 @@ def _json_context(value: dict[str, object]) -> str:
 def _print_hook_diagnostics(diagnostics: str) -> None:
     if diagnostics:
         echo(diagnostics.rstrip(), err=True)
+
+
+def _print_hook_warnings(warnings: tuple[str, ...]) -> None:
+    ui = ui_context(strict=False)
+    for warning in warnings:
+        ui.message("warning", warning)
 
 
 def _print_hook_failure(message: str) -> None:

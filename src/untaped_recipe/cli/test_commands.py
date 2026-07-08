@@ -36,7 +36,6 @@ from untaped_recipe.cli.common import (
 from untaped_recipe.domain.pack import PackManifest, parse_ref
 from untaped_recipe.infrastructure import HookExecutor, HookResolver
 from untaped_recipe.infrastructure.diff import unified_diff
-from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 from untaped_recipe.infrastructure.pack_store import InstalledPack, PackLibrary
 
@@ -169,7 +168,6 @@ def _execute(root: Path, selection: _Selection, *, update: bool) -> list[CaseRes
         executor = HookExecutor(
             HookResolver(library_root=root),
             workers=workers,
-            helpers=HookHelpers(),
         )
         with ui.progress("Running test cases") as progress:
             total = len(selection.cases)

@@ -11,8 +11,7 @@ def _is_playbook(doc: object) -> bool:
     if not isinstance(doc, list):
         return False
     return any(
-        isinstance(play, dict) and ("hosts" in play or "import_playbook" in play)
-        for play in doc
+        isinstance(play, dict) and ("hosts" in play or "import_playbook" in play) for play in doc
     )
 
 
@@ -21,7 +20,7 @@ def validate(
     inputs: dict[str, object],
     target: Path,
     args: dict[str, object],
-    helpers: "HookHelpers",
+    helpers: HookHelpers,
 ) -> object:
     for path in sorted(target.rglob("*.yml")):
         rel = path.relative_to(target)

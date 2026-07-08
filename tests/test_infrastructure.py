@@ -356,7 +356,7 @@ def test_public_hook_api_exposes_yaml_option_types() -> None:
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
-    assert HOOK_API_VERSION == "0.9.0"
+    assert HOOK_API_VERSION == "0.10.0"
     assert options["indent"]["sequence"] == 4
     assert ExternalHookHelpers.__name__ == "HookHelpers"
 
@@ -470,8 +470,10 @@ def test_hook_helpers_and_builtin_yaml_edit_preserve_round_trip_yaml(tmp_path: P
     helpers = HookHelpers()
 
     assert helpers.pass_("ok").status == "pass"
-    assert helpers.warn("check").status == "warn"
+    assert helpers.skip("n/a").skipped
     assert helpers.fail("bad").failed
+    assert helpers.warn("check") is None
+    assert helpers.drain_warnings() == ("check",)
     assert helpers.render_template("{{ name }}", {"name": "api"}) == "api"
 
     result = yaml_edit.transform(
@@ -541,6 +543,169 @@ def test_builtin_yaml_edit_forwards_unknown_token_policy(tmp_path: Path) -> None
     assert "ref: ${{ github.ref }}" in result
 
 
+def _ensure(
+    content: str, edit: dict[str, object], *, inputs: dict[str, object] | None = None
+) -> str:
+    return yaml_edit.transform(
+        content,
+        inputs=inputs or {},
+        target=Path("."),
+        file=Path("requirements.yml"),
+        args={"edits": [edit]},
+        helpers=HookHelpers(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "edit", "expected"),
+    [
+        pytest.param(
+            "---\ncollections:\n  - name: community.general\n",
+            {
+                "op": "ensure",
+                "path": ["collections"],
+                "value": {"name": "acme.required"},
+                "match": ["name"],
+            },
+            "collections:\n- name: community.general\n- name: acme.required\n",
+            id="block-list-append-by-name",
+        ),
+        pytest.param(
+            "deps: [alpha, beta]  # inline\n",
+            {"op": "ensure", "path": ["deps"], "value": "gamma"},
+            "deps: [alpha, beta, gamma] # inline\n",
+            id="flow-string-list-scalar-append",
+        ),
+        pytest.param(
+            "# top comment\ndefaults: &def\n  retries: 3\nservers:\n  - <<: *def\n    name: a\n",
+            {"op": "ensure", "path": ["servers"], "value": {"name": "b"}, "match": ["name"]},
+            "# top comment\ndefaults: &def\n  retries: 3\n"
+            "servers:\n- <<: *def\n  name: a\n- name: b\n",
+            id="anchors-comments-merge-keys-survive",
+        ),
+        pytest.param(
+            "---\nother: 1\n",
+            {
+                "op": "ensure",
+                "path": ["collections"],
+                "value": {"name": "acme.required"},
+                "match": ["name"],
+            },
+            "other: 1\ncollections:\n- name: acme.required\n",
+            id="missing-collections-key-created",
+        ),
+        pytest.param(
+            "settings:\n  a: 1\n",
+            {"op": "ensure", "path": ["settings"], "value": {"a": 9, "b": 2}},
+            "settings:\n  a: 1\n  b: 2\n",
+            id="mapping-set-if-absent",
+        ),
+        pytest.param(
+            "top: 1\n",
+            {"op": "ensure", "path": ["settings"], "value": {"a": 1, "b": 2}},
+            "top: 1\nsettings:\n  a: 1\n  b: 2\n",
+            id="missing-mapping-path-created",
+        ),
+        pytest.param(
+            "items:\n  - plain\n  - name: keep\n",
+            {"op": "ensure", "path": ["items"], "value": {"name": "plain"}, "match": ["name"]},
+            "items:\n- plain\n- name: keep\n- name: plain\n",
+            id="mixed-entry-mapping-never-matches-string",
+        ),
+        pytest.param(
+            "top: 1\n",
+            {"op": "ensure", "path": ["tags"], "value": "release"},
+            "top: 1\ntags:\n- release\n",
+            id="scalar-into-missing-path-creates-list",
+        ),
+    ],
+)
+def test_builtin_yaml_edit_ensure_appends_and_creates(
+    content: str,
+    edit: dict[str, object],
+    expected: str,
+) -> None:
+    assert _ensure(content, edit) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "edit"),
+    [
+        pytest.param(
+            "---\ncollections:\n  - name: community.general\n",
+            {
+                "op": "ensure",
+                "path": ["collections"],
+                "value": {"name": "community.general"},
+                "match": ["name"],
+            },
+            id="mapping-already-present",
+        ),
+        pytest.param(
+            "deps: [alpha, beta]  # inline\n",
+            {"op": "ensure", "path": ["deps"], "value": "beta"},
+            id="scalar-already-present",
+        ),
+        pytest.param(
+            "settings:\n  a: 1\n",
+            {"op": "ensure", "path": ["settings"], "value": {"a": 9}},
+            id="mapping-key-already-present",
+        ),
+    ],
+)
+def test_builtin_yaml_edit_ensure_noop_is_byte_identical(
+    content: str,
+    edit: dict[str, object],
+) -> None:
+    assert _ensure(content, edit) == content
+
+
+def test_builtin_yaml_edit_ensure_renders_value_tokens() -> None:
+    result = _ensure(
+        "collections: []\n",
+        {
+            "op": "ensure",
+            "path": ["collections"],
+            "value": {"name": "{{ col }}"},
+            "match": ["name"],
+        },
+        inputs={"col": "acme.web"},
+    )
+    assert result == "collections:\n- name: acme.web\n"
+
+
+@pytest.mark.parametrize(
+    ("content", "edit", "message"),
+    [
+        pytest.param(
+            "tags: [a]\n",
+            {"op": "ensure", "path": ["tags"], "value": "x", "match": ["name"]},
+            "match requires a mapping value",
+            id="scalar-value-forbids-match",
+        ),
+        pytest.param(
+            "settings:\n  z: 1\n",
+            {"op": "ensure", "path": ["settings"], "value": {"a": 1}, "match": ["a"]},
+            "match is not valid for a mapping path",
+            id="mapping-path-forbids-match",
+        ),
+        pytest.param(
+            "x: []\n",
+            {"op": "ensure", "path": ["x"], "value": [1, 2]},
+            "value must be a scalar or mapping",
+            id="list-value-rejected",
+        ),
+    ],
+)
+def test_builtin_yaml_edit_ensure_load_errors(
+    content: str,
+    edit: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _ensure(content, edit)
+
+
 def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
@@ -559,7 +724,7 @@ def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> No
         HookExecutor(
             HookResolver(),
             workers=UvHookWorkerPool(),
-            helpers=HookHelpers(),
+            helpers_factory=HookHelpers,
         )
     )
 
@@ -624,7 +789,7 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -692,7 +857,7 @@ def test_bulk_plan_resolves_per_target_inputs_and_preserves_duplicate_order(
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -747,7 +912,7 @@ def test_bulk_plan_error_rows_preserve_resolved_input_display(
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -781,7 +946,7 @@ def test_bulk_plan_input_resolution_errors_have_empty_inputs(tmp_path: Path) -> 
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )

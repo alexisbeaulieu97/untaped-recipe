@@ -90,6 +90,51 @@ def test_run_hook_transform_reads_target_file_and_invokes_executor(tmp_path: Pat
     ]
 
 
+def test_run_hook_absolutizes_relative_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `hook run --target app-alpha` (relative) must reach the executor as an
+    # absolute directory so the hook never depends on the worker's cwd.
+    class _CapturingExecutor(_DebugExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.validate_targets: list[Path] = []
+
+        def validate(
+            self,
+            hook: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[Verdict]:
+            self.validate_targets.append(target)
+            return HookDebugResult(result=Verdict(status="pass"), diagnostics="")
+
+    (tmp_path / "app-alpha").mkdir()
+    monkeypatch.chdir(tmp_path)
+    executor = _CapturingExecutor()
+
+    result = RunHook(executor).run(
+        "sample",
+        kind="validate",
+        local_hook_project=None,
+        target=Path("app-alpha"),
+        file=None,
+        content=None,
+        content_file=None,
+        inputs={},
+        args={},
+    )
+
+    assert result.target.is_absolute()
+    assert executor.validate_targets == [(tmp_path / "app-alpha").resolve()]
+    assert all(observed.is_absolute() for observed in executor.validate_targets)
+
+
 def test_run_hook_transform_requires_file(tmp_path: Path) -> None:
     executor = _DebugExecutor()
     target = tmp_path / "target"

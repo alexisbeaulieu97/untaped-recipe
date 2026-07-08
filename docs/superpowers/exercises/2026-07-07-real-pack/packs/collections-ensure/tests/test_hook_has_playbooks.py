@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from untaped_recipe.hook_worker import HookHelpers
-
 from collections_ensure_pack.hooks.has_playbooks import validate
+
+from untaped_recipe.hook_worker import HookHelpers
 
 
 def _repo(tmp_path: Path, files: dict[str, str]) -> Path:

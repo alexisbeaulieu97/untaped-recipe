@@ -12,7 +12,7 @@ def transform(
     target: Path,
     file: Path,
     args: dict[str, object],
-    helpers: "HookHelpers",
+    helpers: HookHelpers,
 ) -> str:
     wanted = [str(name) for name in inputs.get("collections") or []]
     data = helpers.load_yaml(content)
@@ -39,9 +39,7 @@ def transform(
     if not missing:
         return content
 
-    plain_string_style = bool(entries) and all(
-        isinstance(entry, str) for entry in entries
-    )
+    plain_string_style = bool(entries) and all(isinstance(entry, str) for entry in entries)
     for name in missing:
         entries.append(name if plain_string_style else {"name": name})
     return helpers.dump_yaml(
@@ -51,6 +49,7 @@ def transform(
             "indent": {"mapping": 2, "sequence": 4, "offset": 2},
         },
     )
+
 
 # round-trip 1 marker
 

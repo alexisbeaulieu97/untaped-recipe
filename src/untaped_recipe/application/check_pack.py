@@ -15,6 +15,7 @@ from untaped_recipe.application.resolution import (
 from untaped_recipe.builtins.registry import BUILTIN_HOOKS
 from untaped_recipe.domain.hook_project import (
     read_hook_metadata,
+    require_pack_lock,
     validate_hook_modules,
     validate_hook_project_contract,
 )
@@ -137,9 +138,8 @@ def _pack_check_row(
 
 def _check_pack(root: Path, pack: InstalledPack, locks: _LockFreshness) -> dict[str, object]:
     try:
+        require_pack_lock(pack.root, has_hooks=bool(pack.manifest.hooks))
         if pack.manifest.hooks:
-            if not (pack.root / "uv.lock").is_file():
-                raise ValueError(f"pack project is missing uv.lock: {pack.root}")
             locks.check(pack.root)
         validate_hook_project_contract(pack.root, pack.manifest)
         validate_hook_modules(pack.root, pack.manifest)

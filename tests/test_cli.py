@@ -121,6 +121,51 @@ def test_add_pack_prints_recipes_and_hooks_before_confirm(
     assert not (library_root() / "packs" / "demo").exists()
 
 
+def _write_hookless_pack_project(root: Path, *, lock: bool = True) -> None:
+    recipe = root / "recipes" / "seed" / "recipe.yml"
+    recipe.parent.mkdir(parents=True, exist_ok=True)
+    recipe.write_text("version: 1\nsteps: []\n")
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-hygiene"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.recipes]\n"
+        '"seed" = { path = "recipes/seed/recipe.yml" }\n'
+    )
+    if lock:
+        (root / "uv.lock").write_text("version = 1\n")
+
+
+def test_add_and_check_hookless_pack_without_lock(tmp_path: Path) -> None:
+    # Boundary population: a hookless pack with no uv.lock passes check and adds.
+    pack = tmp_path / "pack"
+    _write_hookless_pack_project(pack, lock=False)
+
+    check = CliInvoker().invoke(app, ["check", str(pack)])
+    assert check.exit_code == 0, check.output
+
+    added = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert added.exit_code == 0, added.output
+    assert (library_root() / "packs" / "hygiene").exists()
+
+
+def test_add_hooked_pack_without_lock_leads_with_error_no_summary(tmp_path: Path) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    (pack / "uv.lock").unlink()
+
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+
+    assert result.exit_code == 1
+    assert "pack project is missing uv.lock" in result.stderr
+    # UX rider: validation leads; the pack summary never precedes the error.
+    assert "Pack: demo" not in result.stderr
+    assert "demo-recipe" not in result.stderr
+    assert not (library_root() / "packs" / "demo").exists()
+
+
 def test_add_force_fails_fast_on_local_edits_before_confirm(
     tmp_path: Path,
 ) -> None:
@@ -1640,6 +1685,132 @@ def test_apply_sensitive_inputs_redact_warnings_and_suppress_diffs(
     assert rows[0]["inputs"] == {"token": "***"}
 
 
+def _write_skip_recipe_project(tmp_path: Path) -> Path:
+    recipe_dir = tmp_path / "scoped"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\nsteps:\n"
+        "  - type: validate\n    hook: scope\n"
+        "  - type: template\n    template: template.txt\n    dest: out.txt\n"
+    )
+    (recipe_dir / "template.txt").write_text("applied\n")
+    _write_hook_project(
+        recipe_dir,
+        public_name="scope",
+        module_name="scope",
+        code=(
+            "def validate(*, inputs, target, args, helpers):\n"
+            "    if (target / 'wanted.txt').exists():\n"
+            "        return helpers.pass_()\n"
+            "    return helpers.skip('out of scope')\n"
+        ),
+    )
+    return recipe_dir
+
+
+def test_apply_skip_verdict_end_to_end(tmp_path: Path) -> None:
+    recipe_dir = _write_skip_recipe_project(tmp_path)
+    in_target = tmp_path / "app-in"
+    in_target.mkdir()
+    (in_target / "wanted.txt").write_text("x")
+    out_target = tmp_path / "app-out"
+    out_target.mkdir()
+    backups = BackupStore(library_root() / "backups")
+
+    # Boundary population: every target skips -> exit 0, no writes, no backup.
+    all_skip = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(out_target), "--yes", "--format", "json"],
+    )
+    assert all_skip.exit_code == 0, all_skip.output
+    assert json.loads(all_skip.stdout)[0]["status"] == "skipped"
+    assert not (out_target / "out.txt").exists()
+    assert backups.list() == []
+    assert "1 skipped" in all_skip.stderr
+
+    # --check: a skip is success, never counted as drift.
+    checked = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(out_target), "--check", "--format", "json"],
+    )
+    assert checked.exit_code == 0, checked.output
+    assert json.loads(checked.stdout)[0]["status"] == "skipped"
+
+    # Mixed run: applicable target applies (and is backed up), other skips.
+    mixed = CliInvoker().invoke(
+        app,
+        [
+            "apply",
+            str(recipe_dir),
+            str(in_target),
+            str(out_target),
+            "--yes",
+            "--format",
+            "json",
+        ],
+    )
+    assert mixed.exit_code == 0, mixed.output
+    rows = {row["target"]: row for row in json.loads(mixed.stdout)}
+    assert rows[str(in_target)]["status"] == "applied"
+    assert rows[str(out_target)]["status"] == "skipped"
+    assert (in_target / "out.txt").read_text() == "applied\n"
+    assert not (out_target / "out.txt").exists()
+    assert len(backups.list()) == 1
+    assert "1 applied" in mixed.stderr
+    assert "1 skipped" in mixed.stderr
+
+    # Pipe record carries the new skipped status.
+    piped = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(out_target), "--dry-run", "--format", "pipe"],
+    )
+    assert piped.exit_code == 0, piped.output
+    record = json.loads(piped.stdout)
+    assert record["kind"] == "recipe.outcome"
+    assert record["record"]["status"] == "skipped"
+
+    # Skip flows through --stdin targets too.
+    from_stdin = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), "--stdin", "--yes", "--format", "json"],
+        input=f"{out_target}\n",
+    )
+    assert from_stdin.exit_code == 0, from_stdin.output
+    assert json.loads(from_stdin.stdout)[0]["status"] == "skipped"
+
+
+def test_apply_transform_warn_reaches_outcome(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "noted"
+    recipe_dir.mkdir()
+    (recipe_dir / "recipe.yml").write_text(
+        "version: 1\nsteps:\n  - type: transform\n    file: data.txt\n    hook: note\n"
+    )
+    _write_hook_project(
+        recipe_dir,
+        public_name="note",
+        module_name="note",
+        code=(
+            "def transform(content, *, inputs, target, file, args, helpers):\n"
+            "    helpers.warn('noticed something')\n"
+            "    helpers.warn('and another')\n"
+            "    return content + 'noted\\n'\n"
+        ),
+    )
+    target = tmp_path / "app"
+    target.mkdir()
+    (target / "data.txt").write_text("start\n")
+
+    result = CliInvoker().invoke(
+        app,
+        ["apply", str(recipe_dir), str(target), "--dry-run", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    warnings = json.loads(result.stdout)[0]["warnings"]
+    assert "noticed something" in warnings
+    assert "and another" in warnings
+
+
 def test_apply_sensitive_inputs_redact_hook_failures(
     tmp_path: Path,
 ) -> None:
@@ -2219,6 +2390,54 @@ def test_external_hook_args_with_yaml_dates_are_rejected_before_worker(
     assert (target / "local.yml").read_text() == "---\n"
 
 
+def test_hook_run_accepts_path_ref_form_like_new_hook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise S1: `hook run ./pack/hook` must resolve like `new hook` does.
+    project = tmp_path / "collections-ensure"
+    project.mkdir()
+    _write_hook_project(
+        project,
+        public_name="has_playbooks",
+        module_name="has_playbooks",
+        code="def validate(*, inputs, target, args, helpers):\n    return helpers.pass_()\n",
+    )
+    target = tmp_path / "app"
+    target.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    ok = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "./collections-ensure/has_playbooks",
+            "--target",
+            str(target),
+            "--format",
+            "json",
+        ],
+    )
+    assert ok.exit_code == 0, ok.output
+    assert json.loads(ok.stdout)["status"] == "pass"
+
+    conflict = CliInvoker().invoke(
+        app,
+        [
+            "hook",
+            "run",
+            "./collections-ensure/has_playbooks",
+            "--project",
+            str(project),
+            "--target",
+            str(target),
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "not both" in conflict.output
+
+
 def test_hook_run_transform_reads_disk_and_emits_exact_content(tmp_path: Path) -> None:
     hook_project = tmp_path / "hooks"
     _write_hook_project(
@@ -2484,8 +2703,11 @@ def test_hook_run_validate_records_and_fail_exit(tmp_path: Path) -> None:
     warn_row = json.loads(warn.stdout)
     assert warn_row["hook"] == "ready"
     assert warn_row["kind"] == "validate"
-    assert warn_row["status"] == "warn"
-    assert warn_row["message"] == "check manually"
+    # helpers.warn() is now an accumulator: the verdict passes and the
+    # warning surfaces on the human channel (stderr).
+    assert warn_row["status"] == "pass"
+    assert warn_row["message"] == ""
+    assert "check manually" in warn.stderr
     assert failed.exit_code == 1, failed.output
     failed_row = json.loads(failed.stdout)
     assert failed_row["kind"] == "recipe.hook_run"
@@ -2563,8 +2785,9 @@ def test_hook_run_dual_export_infers_or_requires_kind(tmp_path: Path) -> None:
     assert explicit_validate.exit_code == 0, explicit_validate.output
     row = json.loads(explicit_validate.stdout)
     assert row["kind"] == "validate"
-    assert row["status"] == "warn"
-    assert row["message"] == "validated"
+    assert row["status"] == "pass"
+    assert row["message"] == ""
+    assert "validated" in explicit_validate.stderr
 
 
 def test_hook_run_rejects_kind_specific_context_options(tmp_path: Path) -> None:

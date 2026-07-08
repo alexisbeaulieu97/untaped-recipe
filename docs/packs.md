@@ -29,10 +29,10 @@ requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
-requires_hook_api = ">=0.9,<1"
+requires_hook_api = ">=0.10,<1"
 
 [tool.untaped_recipe.recipes]
 "playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
@@ -46,7 +46,7 @@ auto-discovery. Hook entries do not declare `kind`; the exported function names
 inside the module are the hook contract (see [hooks](./hooks.md)). The dev-only
 `untaped-recipe` dependency exists for editor type discovery — its floor tracks
 the hook API contract, not the CLI release cadence, so scaffolds pin
-`untaped-recipe>=0.9`. Pack code must not depend on `untaped-recipe` at runtime.
+`untaped-recipe>=0.10`. Pack code must not depend on `untaped-recipe` at runtime.
 
 A pack lays out its recipes, templates, hook package, and lockfile under the
 project root:
@@ -152,7 +152,7 @@ untaped-recipe new hook ansible/add_play_collections
 `pythonpath = ["src"]` setting. `new recipe <pack>/<recipe>` adds a recipe under
 `recipes/<recipe>/`, updates the manifest, and scaffolds a starter golden case.
 `new hook <pack>/<hook>` adds a hook module stub under `src/`, updates
-`[tool.untaped_recipe.hooks]`, pins `requires_hook_api = ">=0.9,<1"`, and
+`[tool.untaped_recipe.hooks]`, pins `requires_hook_api = ">=0.10,<1"`, and
 scaffolds a unit-test stub. See [testing](./testing.md) for the scaffolded
 golden case and hook pytest.
 
@@ -212,8 +212,10 @@ hooks and asks for confirmation; `--yes` skips the prompt. Non-tty stdin without
 `--yes` is refused by the SDK destructive-confirmation path.
 
 `add` validates the pack before copying: its declared recipe files must load,
-each hook module must export the required function, and the pack must contain a
-`uv.lock`. The install copies the pack tree minus dev and build junk — `.git`,
+each hook module must export the required function, and a hook-declaring pack
+must contain a `uv.lock` — hookless packs are exempt, the same rule
+[check](./testing.md) applies. The install copies the pack tree minus dev and
+build junk — `.git`,
 `.venv`, `__pycache__`, `dist`, `build`, `.pytest_cache`, `.mypy_cache`,
 `.ruff_cache`, `.uv-cache`, and `*.egg-info` — and records a `content_hash` of
 the copied tree in `packs.toml`.

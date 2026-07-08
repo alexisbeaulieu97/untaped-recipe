@@ -95,10 +95,13 @@ no control flow in recipes, and no state or inventory.
   `list`/`show` → `recipe.recipe`, `recipe.hook`, `recipe.pack`; `backup` →
   `recipe.backup`.
 - `recipe.outcome` rows carry `recipe` (canonical `pack/recipe` ref), `target`,
-  `status`, `files_changed`, `warnings` (semicolon-joined; includes skipped
-  optional transforms), `error`, and resolved `inputs`. Statuses: `applied`,
-  `unchanged` (plan produced no writes), `error`, `check`, `dry-run`, and
-  `planned` (confirmation declined).
+  `status`, `files_changed`, `warnings` (semicolon-joined; accumulated
+  `helpers.warn(...)` messages, skipped optional transforms, a skip reason),
+  `error`, and resolved `inputs`. Statuses: `applied`, `unchanged` (plan
+  produced no writes), `skipped` (validate hook returned `helpers.skip(...)`;
+  not applicable, never a failure), `error`, `check`, `dry-run`, and `planned`
+  (confirmation declined). Skips are success (all-skip runs exit 0, no backup);
+  a skip is not `--check` drift. Summary lines gain a `N skipped` count.
 
 ## Library and packs
 
@@ -129,9 +132,11 @@ no control flow in recipes, and no state or inventory.
 - `new pack <name>`, `new recipe <pack>/<recipe>`, `new hook <pack>/<hook>`
   scaffold pack projects; explicit local paths like `new hook ./my-pack/probe`
   target `./my-pack`. `new recipe` also scaffolds a starter golden case;
-  `new hook` writes a typed stub plus a direct-call pytest, and packs ship
-  `pytest` with `pythonpath = ["src"]` so `uv run --project <pack> pytest`
-  works immediately.
+  `new hook` writes a typed stub plus a direct-call pytest (naming the kind and
+  `--kind` on success), and packs ship `pytest` with `pythonpath = ["src"]` so
+  `uv run --project <pack> pytest` works immediately. `new hook --kind X --force`
+  replaces both the stub and the paired pytest (e.g. to fix a wrong `--kind`);
+  without `--force` an existing hook is refused.
 - Scaffolding refreshes the pack `uv.lock` and needs package-index access (or a
   `[tool.uv.sources]` override). If `uv lock` fails after files are written,
   the scaffold stays in place with a repairable error; `--no-lock` skips
@@ -159,20 +164,31 @@ no control flow in recipes, and no state or inventory.
 - A hook module exports `transform()`, `validate()`, or both — the exported
   name is the contract; manifest rows declare only `module`. Keep
   `untaped-recipe` as a dev-only dependency (the floor tracks the hook API,
-  currently `>=0.9`); runtime hook dependencies go in `[project].dependencies`.
+  currently `>=0.10`); runtime hook dependencies go in `[project].dependencies`.
   Hooks must stay pure at planning time: read only the target tree and their
   own pack, never write or reach the network.
+- Validate verdicts are `helpers.pass_()`, `helpers.fail(msg)`, and
+  `helpers.skip(msg)` (not applicable → target `skipped`, never a failure).
+  `helpers.warn(msg)` is a warning accumulator callable any number of times from
+  validate and transform hooks; warnings attach to the target plan. A legacy
+  `{"status": "warn"}` verdict (or returning `helpers.warn(...)`) is accepted
+  this release and mapped to pass + a warning (deprecated).
 - `hook run <ref> --target DIR` debugs one hook without a recipe: transforms
   need `--file` (stdout is exact transformed content, or `--diff`); validates
-  emit a `recipe.hook_run` verdict and exit non-zero on `fail`. `--content`/
-  `--content-file` supply fixture content; `--inputs`/`--args` load YAML
-  fixture files and repeated `--input`/`--arg` KEY=VALUE overrides are
-  YAML-parsed. Context echo (including fixture values) goes to stderr — use
-  `--quiet` in shared terminals when values are sensitive.
+  emit a `recipe.hook_run` verdict (`pass`/`fail`/`skip`) and exit non-zero only
+  on `fail`. The ref accepts the `./pack/hook` path form (resolves as
+  `--project ./pack` + hook name; combining with explicit `--project` is a usage
+  error). `--content`/`--content-file` supply fixture content; `--inputs`/
+  `--args` load YAML fixture files and repeated `--input`/`--arg` KEY=VALUE
+  overrides are YAML-parsed. Context echo (including fixture values) and
+  accumulated warnings go to stderr — use `--quiet` in shared terminals when
+  values are sensitive.
 - For common YAML edits use the built-in `yaml_edit` transform hook: `edits`
-  with `op: set|merge|delete`, paths of mapping keys, `{index: N}`, or
+  with `op: set|merge|delete|ensure`, paths of mapping keys, `{index: N}`, or
   first-match `{where: {...}}` selectors; string values render `{{ input }}`
-  tokens and honor args-level `unknown_tokens: keep`.
+  tokens and honor args-level `unknown_tokens: keep`. `ensure` idempotently adds
+  a value if absent (list membership by `match` keys / equality, or mapping
+  set-if-absent) and is byte-identical when nothing changes.
 
 ## Backups and safety
 

@@ -50,7 +50,7 @@ def _planner(tmp_path: Path):
         HookExecutor(
             HookResolver(),
             workers=InlineWorkers(),
-            helpers=HookHelpers(),
+            helpers_factory=HookHelpers,
         )
     )
 
@@ -150,6 +150,229 @@ def test_apply_recipe_executor_calls_default_to_no_diagnostics(tmp_path: Path) -
 
     assert spy.validate_capture_flags == [False]
     assert spy.transform_capture_flags == [False]
+    assert plan.changes[0].after == "before!"
+
+
+class _TargetRecordingExecutor:
+    """HookExecutorPort that records the target/file paths hooks observe."""
+
+    def __init__(self) -> None:
+        self.validate_targets: list[Path] = []
+        self.transform_targets: list[Path] = []
+        self.transform_files: list[Path] = []
+
+    def transform(
+        self,
+        hook: str,
+        content: str,
+        *,
+        local_hook_project: Path | None,
+        target: Path,
+        file: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+        capture_diagnostics: bool = False,
+    ) -> HookDebugResult[str]:
+        self.transform_targets.append(target)
+        self.transform_files.append(file)
+        return HookDebugResult(result=content, diagnostics="")
+
+    def validate(
+        self,
+        hook: str,
+        *,
+        local_hook_project: Path | None,
+        target: Path,
+        inputs: dict[str, object],
+        args: dict[str, object],
+        capture_diagnostics: bool = False,
+    ) -> HookDebugResult[Verdict]:
+        self.validate_targets.append(target)
+        return HookDebugResult(result=Verdict(status="pass"), diagnostics="")
+
+
+def _target_reading_recipe() -> Recipe:
+    return Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {"type": "validate", "hook": "check"},
+                {"type": "transform", "file": "config.txt", "hook": "rewrite"},
+            ],
+        }
+    )
+
+
+def test_apply_recipe_absolutizes_relative_target_before_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: a relative CLI target must reach hooks as an absolute path,
+    # or the pooled worker resolves it against its own cwd and reads nothing.
+    target = tmp_path / "app-alpha"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    monkeypatch.chdir(tmp_path)
+
+    spy = _TargetRecordingExecutor()
+    plan = ApplyRecipe(spy)(
+        recipe=_target_reading_recipe(),
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=Path("app-alpha"),
+        inputs={},
+    )
+
+    assert plan.target == tmp_path / "app-alpha"
+    assert plan.target.is_absolute()
+    assert spy.validate_targets == [tmp_path / "app-alpha"]
+    assert spy.transform_targets == [tmp_path / "app-alpha"]
+    assert all(observed.is_absolute() for observed in spy.validate_targets)
+    assert all(observed.is_absolute() for observed in spy.transform_targets)
+    assert all(observed.is_absolute() for observed in spy.transform_files)
+
+
+def test_apply_recipe_relative_and_absolute_targets_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "app-bravo"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    monkeypatch.chdir(tmp_path)
+
+    relative_spy = _TargetRecordingExecutor()
+    ApplyRecipe(relative_spy)(
+        recipe=_target_reading_recipe(),
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=Path("app-bravo"),
+        inputs={},
+    )
+    absolute_spy = _TargetRecordingExecutor()
+    ApplyRecipe(absolute_spy)(
+        recipe=_target_reading_recipe(),
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=tmp_path / "app-bravo",
+        inputs={},
+    )
+
+    assert relative_spy.validate_targets == absolute_spy.validate_targets
+    assert relative_spy.transform_targets == absolute_spy.transform_targets
+    assert relative_spy.transform_files == absolute_spy.transform_files
+
+
+def test_apply_recipe_skip_verdict_stops_planning_without_changes(tmp_path: Path) -> None:
+    class _SkipExecutor:
+        def transform(
+            self,
+            hook: str,
+            content: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            file: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[str]:
+            raise AssertionError("transform must not run after a skip verdict")
+
+        def validate(
+            self,
+            hook: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[Verdict]:
+            return HookDebugResult(
+                result=Verdict(status="skip", message="out of scope"),
+                diagnostics="",
+                warnings=("earlier note",),
+            )
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {"type": "validate", "hook": "scope"},
+                {"type": "transform", "file": "config.txt", "hook": "rewrite"},
+            ],
+        }
+    )
+
+    plan = ApplyRecipe(_SkipExecutor())(
+        recipe=recipe,
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=target,
+        inputs={},
+    )
+
+    assert plan.status == "skipped"
+    assert plan.changes == ()
+    assert plan.warnings == ("earlier note", "out of scope")
+
+
+def test_apply_recipe_transform_warnings_attach_to_plan(tmp_path: Path) -> None:
+    class _WarnExecutor:
+        def transform(
+            self,
+            hook: str,
+            content: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            file: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[str]:
+            return HookDebugResult(
+                result=content + "!",
+                diagnostics="",
+                warnings=("noted", "again"),
+            )
+
+        def validate(
+            self,
+            hook: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[Verdict]:  # pragma: no cover - unused
+            return HookDebugResult(result=Verdict(status="pass"), diagnostics="")
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [{"type": "transform", "file": "config.txt", "hook": "rewrite"}],
+        }
+    )
+
+    plan = ApplyRecipe(_WarnExecutor())(
+        recipe=recipe,
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=target,
+        inputs={},
+    )
+
+    assert plan.status == "planned"
+    assert plan.warnings == ("noted", "again")
     assert plan.changes[0].after == "before!"
 
 
@@ -315,7 +538,7 @@ def test_apply_recipe_renders_template_source_and_dest_fields_per_target(
             HookExecutor(
                 HookResolver(),
                 workers=InlineWorkers(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -823,7 +1046,7 @@ def test_apply_recipe_glob_transform_binary_file_reports_target_error(tmp_path: 
             HookExecutor(
                 HookResolver(),
                 workers=InlineWorkers(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )

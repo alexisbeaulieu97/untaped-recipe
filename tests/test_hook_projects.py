@@ -1200,7 +1200,7 @@ def test_hook_executor_dispatches_builtin_without_worker(tmp_path: Path) -> None
     executor = HookExecutor(
         HookResolver(),
         workers=ExplodingWorkers(),
-        helpers=HookHelpers(),
+        helpers_factory=HookHelpers,
     )
 
     result = executor.transform(
@@ -1237,7 +1237,7 @@ def test_hook_executor_sends_external_transform_to_worker(tmp_path: Path) -> Non
     executor = HookExecutor(
         HookResolver(),
         workers=RecordingWorkers(),
-        helpers=HookHelpers(),
+        helpers_factory=HookHelpers,
     )
 
     result = executor.transform(
@@ -1278,7 +1278,7 @@ def test_hook_executor_debug_returns_external_diagnostics(tmp_path: Path) -> Non
     executor = HookExecutor(
         HookResolver(),
         workers=RecordingWorkers(),
-        helpers=HookHelpers(),
+        helpers_factory=HookHelpers,
     )
 
     result = executor.transform(
@@ -1348,6 +1348,7 @@ def test_worker_script_executes_hooks_and_redirects_prints_to_stderr(tmp_path: P
         "id": "1",
         "ok": True,
         "result": "---\ncontent: 'before '\nsuffix: after\n",
+        "warnings": [],
     }
     assert "diagnostic from import" in stderr
     assert "diagnostic from hook" in stderr
@@ -1414,6 +1415,7 @@ def test_worker_script_prefers_cli_sibling_modules_over_hook_env_package(tmp_pat
         "id": "1",
         "ok": True,
         "result": {"status": "pass", "message": "from real worker protocol"},
+        "warnings": [],
     }
     assert "fake yaml_options imported" not in stderr
 
@@ -1461,7 +1463,49 @@ def test_worker_script_rejects_invalid_validate_return_object(tmp_path: Path) ->
     assert "invalid validate verdict" in stderr
 
 
-def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None:
+def test_hook_executor_maps_legacy_warn_verdict_to_pass_plus_warning(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "recipe"
+    _write_hook_project(
+        recipe_dir,
+        hooks={"check": "project_hooks.hooks.check"},
+        exports=("validate",),
+    )
+
+    class WarningWorkers:
+        def request(
+            self,
+            ref: UvHookRef,
+            payload: dict[str, object],
+            *,
+            diagnostic_limit: int | None = 4000,
+            settle_seconds: float = 0,
+        ) -> HookWorkerCallResult:
+            # Legacy hooks may still return a bare warn verdict dict.
+            return HookWorkerCallResult(
+                result={"status": "warn", "message": "check this"},
+                diagnostics="discarded\n",
+            )
+
+    executor = HookExecutor(
+        HookResolver(),
+        workers=WarningWorkers(),
+        helpers_factory=HookHelpers,
+    )
+
+    result = executor.validate(
+        "check",
+        local_hook_project=recipe_dir,
+        target=tmp_path / "target",
+        inputs={},
+        args={},
+    )
+
+    assert result.result == Verdict(status="pass")
+    assert result.warnings == ("check this",)
+    assert result.diagnostics == ""
+
+
+def test_hook_executor_collects_worker_warnings_alongside_verdict(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     _write_hook_project(
         recipe_dir,
@@ -1479,14 +1523,15 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
             settle_seconds: float = 0,
         ) -> HookWorkerCallResult:
             return HookWorkerCallResult(
-                result={"status": "warn", "message": "check this"},
-                diagnostics="discarded\n",
+                result={"status": "skip", "message": "not applicable"},
+                diagnostics="",
+                warnings=("noticed something",),
             )
 
     executor = HookExecutor(
         HookResolver(),
         workers=WarningWorkers(),
-        helpers=HookHelpers(),
+        helpers_factory=HookHelpers,
     )
 
     result = executor.validate(
@@ -1497,8 +1542,8 @@ def test_hook_executor_coerces_external_validate_verdict(tmp_path: Path) -> None
         args={},
     )
 
-    assert result.result == Verdict(status="warn", message="check this")
-    assert result.diagnostics == ""
+    assert result.result == Verdict(status="skip", message="not applicable")
+    assert result.warnings == ("noticed something",)
 
 
 _READY_LINE = '{"ready": true}\n'

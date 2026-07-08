@@ -29,19 +29,35 @@ _UNKNOWN_TOKEN_MODES = {"error", "keep"}
 
 
 class HookHelpers:
-    """Minimal helpers available inside external hook workers."""
+    """Minimal helpers available inside external hook workers.
+
+    A fresh instance is built per request so ``warn`` accumulates warnings
+    for exactly one hook invocation.
+    """
+
+    def __init__(self) -> None:
+        self._warnings: list[str] = []
 
     def pass_(self, message: str = "") -> dict[str, str]:
         """Return a passing validation verdict."""
         return {"status": "pass", "message": message}
 
-    def warn(self, message: str) -> dict[str, str]:
-        """Return a warning validation verdict."""
-        return {"status": "warn", "message": message}
-
     def fail(self, message: str) -> dict[str, str]:
         """Return a failing validation verdict."""
         return {"status": "fail", "message": message}
+
+    def skip(self, message: str = "") -> dict[str, str]:
+        """Return a skip verdict marking the target not applicable."""
+        return {"status": "skip", "message": message}
+
+    def warn(self, message: str) -> None:
+        """Accumulate a non-fatal warning for the current target."""
+        self._warnings.append(str(message))
+
+    @property
+    def warnings(self) -> list[str]:
+        """Warnings accumulated during this invocation."""
+        return list(self._warnings)
 
     def render_template(
         self,
@@ -127,7 +143,12 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             )
         if not isinstance(result, str):
             raise ValueError("transform hook must return str")
-        return {protocol.ID: request_id, protocol.OK: True, protocol.RESULT: result}
+        return {
+            protocol.ID: request_id,
+            protocol.OK: True,
+            protocol.RESULT: result,
+            protocol.WARNINGS: helpers.warnings,
+        }
     if kind == protocol.VALIDATE:
         validate = getattr(module, "validate", None)
         if validate is None:
@@ -139,7 +160,12 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
                 args=_mapping(request.get(protocol.ARGS), protocol.ARGS),
                 helpers=helpers,
             )
-        return {protocol.ID: request_id, protocol.OK: True, protocol.RESULT: _wire_value(result)}
+        return {
+            protocol.ID: request_id,
+            protocol.OK: True,
+            protocol.RESULT: _wire_value(result),
+            protocol.WARNINGS: helpers.warnings,
+        }
     raise ValueError(f"unsupported hook request kind: {kind}")
 
 

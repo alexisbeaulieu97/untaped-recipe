@@ -12,10 +12,11 @@ from untaped_recipe.domain.plan import Verdict
 
 @dataclass(frozen=True)
 class HookDebugResult[T]:
-    """Hook result plus diagnostics captured for one debug invocation."""
+    """Hook result plus diagnostics and accumulated warnings for one invocation."""
 
     result: T
     diagnostics: str
+    warnings: tuple[str, ...] = ()
 
 
 class HookExecutorPort(Protocol):
@@ -49,16 +50,22 @@ class HookExecutorPort(Protocol):
 
 
 class HookHelpersPort(Protocol):
-    """Helpers passed to trusted local hooks."""
+    """Helpers passed to trusted local hooks (one instance per invocation)."""
 
     def pass_(self, message: str = "") -> Verdict:
         """Return a passing validation verdict."""
 
-    def warn(self, message: str) -> Verdict:
-        """Return a warning validation verdict."""
-
     def fail(self, message: str) -> Verdict:
         """Return a failing validation verdict."""
+
+    def skip(self, message: str = "") -> Verdict:
+        """Return a skip verdict marking the target not applicable."""
+
+    def warn(self, message: str) -> None:
+        """Accumulate a non-fatal warning for the current target."""
+
+    def drain_warnings(self) -> tuple[str, ...]:
+        """Return and clear warnings accumulated during this invocation."""
 
     def render_template(
         self,

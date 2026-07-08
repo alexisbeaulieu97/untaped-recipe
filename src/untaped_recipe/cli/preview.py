@@ -35,16 +35,20 @@ def render_preview(
 
 def preview_summary(plans: list[TargetPlan]) -> str:
     """Render the pre-run aggregate preview summary."""
+    non_terminal = {"error", "skipped"}
     total = len(plans)
     failed = sum(1 for plan in plans if plan.status == "error")
-    changing = sum(1 for plan in plans if plan.status != "error" and plan.changes)
-    unchanged = sum(1 for plan in plans if plan.status != "error" and not plan.changes)
-    files_changed = sum(plan.files_changed for plan in plans if plan.status != "error")
+    skipped = sum(1 for plan in plans if plan.status == "skipped")
+    changing = sum(1 for plan in plans if plan.status not in non_terminal and plan.changes)
+    unchanged = sum(1 for plan in plans if plan.status not in non_terminal and not plan.changes)
+    files_changed = sum(plan.files_changed for plan in plans if plan.status not in non_terminal)
+    skipped_note = f"{skipped} skipped, " if skipped else ""
     return (
         "Recipe preview: "
         f"{_plural(total, 'target')}, "
         f"{changing} changing, "
         f"{unchanged} unchanged, "
+        f"{skipped_note}"
         f"{failed} failed, "
         f"{_plural(files_changed, 'file')} changed"
     )

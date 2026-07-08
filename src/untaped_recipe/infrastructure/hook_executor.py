@@ -11,6 +11,7 @@ from pathlib import Path
 from untaped_recipe import worker_protocol as protocol
 from untaped_recipe.application.ports import HookDebugResult, HookHelpersPort
 from untaped_recipe.domain.plan import Verdict
+from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_resolver import (
     BuiltinHookRef,
     HookResolver,
@@ -37,11 +38,13 @@ class HookExecutor:
         resolver: HookResolver,
         *,
         workers: HookWorkerClient,
-        helpers: HookHelpersPort,
+        helpers_factory: Callable[[], HookHelpersPort] = HookHelpers,
     ) -> None:
         self._resolver = resolver
         self._workers = workers
-        self._helpers = helpers
+        # A fresh helpers instance is built per builtin call so warn()
+        # accumulation is isolated per target (and per planning thread).
+        self._helpers_factory = helpers_factory
 
     def transform(
         self,
@@ -82,6 +85,7 @@ class HookExecutor:
         ref = self._resolver.resolve(hook, local_hook_project)
         ensure_hook_supports(ref, hook, verb="transform")
         if isinstance(ref, BuiltinHookRef):
+            helpers = self._helpers_factory()
             execution = _call_builtin_with_capture(
                 lambda: _call_builtin_transform(
                     ref,
@@ -91,12 +95,13 @@ class HookExecutor:
                     target=target,
                     file=file,
                     args=args,
-                    helpers=self._helpers,
+                    helpers=helpers,
                 ),
                 capture_diagnostics=capture_diagnostics,
             )
             result = execution.result
             diagnostics = execution.diagnostics
+            warnings = helpers.drain_warnings()
         else:
             execution = _request_external(
                 self._workers,
@@ -112,9 +117,10 @@ class HookExecutor:
             )
             result = execution.result
             diagnostics = execution.diagnostics
+            warnings = execution.warnings
         if not isinstance(result, str):
             raise ValueError(f"transform hook {hook!r} must return str")
-        return HookDebugResult(result=result, diagnostics=diagnostics)
+        return HookDebugResult(result=result, diagnostics=diagnostics, warnings=warnings)
 
     def validate(
         self,
@@ -149,6 +155,7 @@ class HookExecutor:
         ref = self._resolver.resolve(hook, local_hook_project)
         ensure_hook_supports(ref, hook, verb="validate")
         if isinstance(ref, BuiltinHookRef):
+            helpers = self._helpers_factory()
             execution = _call_builtin_with_capture(
                 lambda: _call_builtin_validate(
                     ref,
@@ -156,12 +163,13 @@ class HookExecutor:
                     inputs=inputs,
                     target=target,
                     args=args,
-                    helpers=self._helpers,
+                    helpers=helpers,
                 ),
                 capture_diagnostics=capture_diagnostics,
             )
             result = execution.result
             diagnostics = execution.diagnostics
+            warnings = helpers.drain_warnings()
         else:
             execution = _request_external(
                 self._workers,
@@ -176,7 +184,16 @@ class HookExecutor:
             )
             result = execution.result
             diagnostics = execution.diagnostics
-        return HookDebugResult(result=_coerce_verdict(result), diagnostics=diagnostics)
+            warnings = execution.warnings
+        # A legacy `{"status": "warn"}` verdict (or an old hook returning
+        # helpers.warn(...) as its verdict) is accepted for this release and
+        # mapped to pass + an accumulated warning; documented as deprecated.
+        verdict, legacy_warnings = _coerce_verdict(result)
+        return HookDebugResult(
+            result=verdict,
+            diagnostics=diagnostics,
+            warnings=warnings + legacy_warnings,
+        )
 
 
 def _transform_payload(
@@ -275,16 +292,21 @@ def _request_external(
     return HookDebugResult(
         result=worker_result.result,
         diagnostics=worker_result.diagnostics if capture_diagnostics else "",
+        warnings=worker_result.warnings,
     )
 
 
-def _coerce_verdict(value: object) -> Verdict:
+def _coerce_verdict(value: object) -> tuple[Verdict, tuple[str, ...]]:
+    """Coerce a raw validate result into a verdict plus any legacy warnings."""
     if isinstance(value, Verdict):
-        return value
+        return value, ()
     if isinstance(value, dict):
-        return Verdict.model_validate(value)
+        if value.get("status") == "warn":
+            message = str(value.get("message", ""))
+            return Verdict(status="pass"), ((message,) if message else ())
+        return Verdict.model_validate(value), ()
     if value is None:
-        return Verdict(status="pass")
+        return Verdict(status="pass"), ()
     if isinstance(value, str):
-        return Verdict(status="fail", message=value)
+        return Verdict(status="fail", message=value), ()
     raise ValueError(f"invalid validate verdict: {value!r}")

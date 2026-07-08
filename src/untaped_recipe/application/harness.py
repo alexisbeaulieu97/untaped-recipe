@@ -24,7 +24,7 @@ from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
 
 CaseStatus = Literal["pass", "fail", "error", "updated"]
 
-_VERDICT_RANK = {"pass": 0, "warn": 1, "fail": 2}
+_VERDICT_RANK = {"pass": 0, "skip": 1, "fail": 2}
 
 
 class FixtureDecodeError(ValueError):

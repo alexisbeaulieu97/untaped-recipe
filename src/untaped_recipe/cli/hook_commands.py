@@ -39,7 +39,6 @@ from untaped_recipe.domain.hook_project import HookKind, read_hook_metadata
 from untaped_recipe.domain.plan import FileChange, Verdict
 from untaped_recipe.infrastructure.diff import unified_diff
 from untaped_recipe.infrastructure.hook_executor import HookExecutionError, HookExecutor
-from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_resolver import HookResolver
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 
@@ -144,7 +143,6 @@ def run_command(
             executor = HookExecutor(
                 resolver,
                 workers=workers,
-                helpers=HookHelpers(),
             )
             try:
                 execution = RunHook(executor).run(
@@ -200,6 +198,7 @@ def _run_transform(
     columns: list[str] | None,
 ) -> None:
     _print_hook_diagnostics(execution.diagnostics)
+    _print_hook_warnings(execution.warnings)
     diff_text = (
         unified_diff(
             FileChange(
@@ -235,6 +234,7 @@ def _run_validate(
     columns: list[str] | None,
 ) -> None:
     _print_hook_diagnostics(execution.diagnostics)
+    _print_hook_warnings(execution.warnings)
     record = _validate_record(execution.hook, target=execution.target, verdict=execution.verdict)
     emit(record, fmt=fmt or "table", columns=columns, kind="recipe.hook_run")
     finish(execution.verdict.failed)
@@ -326,6 +326,12 @@ def _json_context(value: dict[str, object]) -> str:
 def _print_hook_diagnostics(diagnostics: str) -> None:
     if diagnostics:
         echo(diagnostics.rstrip(), err=True)
+
+
+def _print_hook_warnings(warnings: tuple[str, ...]) -> None:
+    ui = ui_context(strict=False)
+    for warning in warnings:
+        ui.message("warning", warning)
 
 
 def _print_hook_failure(message: str) -> None:

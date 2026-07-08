@@ -32,7 +32,7 @@ def test_public_hook_api_exposes_helper_types() -> None:
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
-    assert HOOK_API_VERSION == "0.9.0"
+    assert HOOK_API_VERSION == "0.10.0"
     assert options["indent"]["sequence"] == 4
     assert HookHelpers.__name__ == "HookHelpers"
 
@@ -53,8 +53,8 @@ def test_hook_api_versions_and_scaffold_floor_stay_in_sync() -> None:
     assert package_version == PACKAGE_VERSION
     assert contract_major_minor
     assert package_major_minor
-    assert project_requirement == ">=0.9,<1"
-    assert dev_requirement == "untaped-recipe>=0.9"
+    assert project_requirement == ">=0.10,<1"
+    assert dev_requirement == "untaped-recipe>=0.10"
     assert project_requirement == pack_scaffold._HOOK_API_PROJECT_REQUIREMENT
     assert dev_requirement == pack_scaffold._HOOK_API_DEV_REQUIREMENT
 

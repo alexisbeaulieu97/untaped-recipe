@@ -356,7 +356,7 @@ def test_public_hook_api_exposes_yaml_option_types() -> None:
     indent: YamlIndentOptions = {"mapping": 2, "sequence": 4, "offset": 2}
     options: YamlDumpOptions = {"width": 120, "indent": indent}
 
-    assert HOOK_API_VERSION == "0.9.0"
+    assert HOOK_API_VERSION == "0.10.0"
     assert options["indent"]["sequence"] == 4
     assert ExternalHookHelpers.__name__ == "HookHelpers"
 
@@ -470,8 +470,10 @@ def test_hook_helpers_and_builtin_yaml_edit_preserve_round_trip_yaml(tmp_path: P
     helpers = HookHelpers()
 
     assert helpers.pass_("ok").status == "pass"
-    assert helpers.warn("check").status == "warn"
+    assert helpers.skip("n/a").skipped
     assert helpers.fail("bad").failed
+    assert helpers.warn("check") is None
+    assert helpers.drain_warnings() == ("check",)
     assert helpers.render_template("{{ name }}", {"name": "api"}) == "api"
 
     result = yaml_edit.transform(
@@ -541,7 +543,9 @@ def test_builtin_yaml_edit_forwards_unknown_token_policy(tmp_path: Path) -> None
     assert "ref: ${{ github.ref }}" in result
 
 
-def _ensure(content: str, edit: dict[str, object], *, inputs: dict[str, object] | None = None) -> str:
+def _ensure(
+    content: str, edit: dict[str, object], *, inputs: dict[str, object] | None = None
+) -> str:
     return yaml_edit.transform(
         content,
         inputs=inputs or {},
@@ -557,7 +561,12 @@ def _ensure(content: str, edit: dict[str, object], *, inputs: dict[str, object] 
     [
         pytest.param(
             "---\ncollections:\n  - name: community.general\n",
-            {"op": "ensure", "path": ["collections"], "value": {"name": "acme.required"}, "match": ["name"]},
+            {
+                "op": "ensure",
+                "path": ["collections"],
+                "value": {"name": "acme.required"},
+                "match": ["name"],
+            },
             "collections:\n- name: community.general\n- name: acme.required\n",
             id="block-list-append-by-name",
         ),
@@ -570,12 +579,18 @@ def _ensure(content: str, edit: dict[str, object], *, inputs: dict[str, object] 
         pytest.param(
             "# top comment\ndefaults: &def\n  retries: 3\nservers:\n  - <<: *def\n    name: a\n",
             {"op": "ensure", "path": ["servers"], "value": {"name": "b"}, "match": ["name"]},
-            "# top comment\ndefaults: &def\n  retries: 3\nservers:\n- <<: *def\n  name: a\n- name: b\n",
+            "# top comment\ndefaults: &def\n  retries: 3\n"
+            "servers:\n- <<: *def\n  name: a\n- name: b\n",
             id="anchors-comments-merge-keys-survive",
         ),
         pytest.param(
             "---\nother: 1\n",
-            {"op": "ensure", "path": ["collections"], "value": {"name": "acme.required"}, "match": ["name"]},
+            {
+                "op": "ensure",
+                "path": ["collections"],
+                "value": {"name": "acme.required"},
+                "match": ["name"],
+            },
             "other: 1\ncollections:\n- name: acme.required\n",
             id="missing-collections-key-created",
         ),
@@ -618,7 +633,12 @@ def test_builtin_yaml_edit_ensure_appends_and_creates(
     [
         pytest.param(
             "---\ncollections:\n  - name: community.general\n",
-            {"op": "ensure", "path": ["collections"], "value": {"name": "community.general"}, "match": ["name"]},
+            {
+                "op": "ensure",
+                "path": ["collections"],
+                "value": {"name": "community.general"},
+                "match": ["name"],
+            },
             id="mapping-already-present",
         ),
         pytest.param(
@@ -643,7 +663,12 @@ def test_builtin_yaml_edit_ensure_noop_is_byte_identical(
 def test_builtin_yaml_edit_ensure_renders_value_tokens() -> None:
     result = _ensure(
         "collections: []\n",
-        {"op": "ensure", "path": ["collections"], "value": {"name": "{{ col }}"}, "match": ["name"]},
+        {
+            "op": "ensure",
+            "path": ["collections"],
+            "value": {"name": "{{ col }}"},
+            "match": ["name"],
+        },
         inputs={"col": "acme.web"},
     )
     assert result == "collections:\n- name: acme.web\n"
@@ -699,7 +724,7 @@ def test_apply_recipe_rejects_recipe_source_symlink_escape(tmp_path: Path) -> No
         HookExecutor(
             HookResolver(),
             workers=UvHookWorkerPool(),
-            helpers=HookHelpers(),
+            helpers_factory=HookHelpers,
         )
     )
 
@@ -764,7 +789,7 @@ def test_parallel_bulk_plan_returns_ordered_errors_and_flushes_atomically(tmp_pa
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -832,7 +857,7 @@ def test_bulk_plan_resolves_per_target_inputs_and_preserves_duplicate_order(
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -887,7 +912,7 @@ def test_bulk_plan_error_rows_preserve_resolved_input_display(
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -921,7 +946,7 @@ def test_bulk_plan_input_resolution_errors_have_empty_inputs(tmp_path: Path) -> 
             HookExecutor(
                 HookResolver(),
                 workers=UvHookWorkerPool(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )

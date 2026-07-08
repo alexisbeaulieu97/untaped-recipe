@@ -107,11 +107,13 @@ def test_add_hookless_pack_without_lock_installs(tmp_path: Path) -> None:
 
 def test_add_hooked_pack_without_lock_refuses(tmp_path: Path) -> None:
     source = tmp_path / "source"
-    _write_pack(source, manifest_name="ansible", hooks={"set_owner": "ansible_hooks.hooks.set_owner"})
+    _write_pack(
+        source, manifest_name="ansible", hooks={"set_owner": "ansible_hooks.hooks.set_owner"}
+    )
     (source / "uv.lock").unlink()
     library = PackLibrary(library_root=tmp_path / "library")
 
-    with pytest.raises(ValueError, match="pack project is missing uv.lock"):
+    with pytest.raises(ValueError, match=r"pack project is missing uv\.lock"):
         library.add(source, source=str(source), rev=None, name=None, force=False)
 
 

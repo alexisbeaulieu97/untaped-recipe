@@ -50,7 +50,7 @@ def _planner(tmp_path: Path):
         HookExecutor(
             HookResolver(),
             workers=InlineWorkers(),
-            helpers=HookHelpers(),
+            helpers_factory=HookHelpers,
         )
     )
 
@@ -263,6 +263,119 @@ def test_apply_recipe_relative_and_absolute_targets_match(
     assert relative_spy.transform_files == absolute_spy.transform_files
 
 
+def test_apply_recipe_skip_verdict_stops_planning_without_changes(tmp_path: Path) -> None:
+    class _SkipExecutor:
+        def transform(
+            self,
+            hook: str,
+            content: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            file: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[str]:
+            raise AssertionError("transform must not run after a skip verdict")
+
+        def validate(
+            self,
+            hook: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[Verdict]:
+            return HookDebugResult(
+                result=Verdict(status="skip", message="out of scope"),
+                diagnostics="",
+                warnings=("earlier note",),
+            )
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [
+                {"type": "validate", "hook": "scope"},
+                {"type": "transform", "file": "config.txt", "hook": "rewrite"},
+            ],
+        }
+    )
+
+    plan = ApplyRecipe(_SkipExecutor())(
+        recipe=recipe,
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=target,
+        inputs={},
+    )
+
+    assert plan.status == "skipped"
+    assert plan.changes == ()
+    assert plan.warnings == ("earlier note", "out of scope")
+
+
+def test_apply_recipe_transform_warnings_attach_to_plan(tmp_path: Path) -> None:
+    class _WarnExecutor:
+        def transform(
+            self,
+            hook: str,
+            content: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            file: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[str]:
+            return HookDebugResult(
+                result=content + "!",
+                diagnostics="",
+                warnings=("noted", "again"),
+            )
+
+        def validate(
+            self,
+            hook: str,
+            *,
+            local_hook_project: Path | None,
+            target: Path,
+            inputs: dict[str, object],
+            args: dict[str, object],
+            capture_diagnostics: bool = False,
+        ) -> HookDebugResult[Verdict]:  # pragma: no cover - unused
+            return HookDebugResult(result=Verdict(status="pass"), diagnostics="")
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.txt").write_text("before")
+    recipe = Recipe.model_validate(
+        {
+            "version": 1,
+            "steps": [{"type": "transform", "file": "config.txt", "hook": "rewrite"}],
+        }
+    )
+
+    plan = ApplyRecipe(_WarnExecutor())(
+        recipe=recipe,
+        recipe_dir=tmp_path,
+        local_hook_project=None,
+        target=target,
+        inputs={},
+    )
+
+    assert plan.status == "planned"
+    assert plan.warnings == ("noted", "again")
+    assert plan.changes[0].after == "before!"
+
+
 def test_apply_recipe_plans_template_copy_remove_and_transform(tmp_path: Path) -> None:
     recipe_dir = tmp_path / "recipe"
     recipe_dir.mkdir()
@@ -425,7 +538,7 @@ def test_apply_recipe_renders_template_source_and_dest_fields_per_target(
             HookExecutor(
                 HookResolver(),
                 workers=InlineWorkers(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )
@@ -933,7 +1046,7 @@ def test_apply_recipe_glob_transform_binary_file_reports_target_error(tmp_path: 
             HookExecutor(
                 HookResolver(),
                 workers=InlineWorkers(),
-                helpers=HookHelpers(),
+                helpers_factory=HookHelpers,
             )
         )
     )

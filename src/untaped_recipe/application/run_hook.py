@@ -25,6 +25,7 @@ class TransformHookRun:
     before: str
     content: str
     diagnostics: str
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class ValidateHookRun:
     target: Path
     verdict: Verdict
     diagnostics: str
+    warnings: tuple[str, ...] = ()
 
 
 HookRun = TransformHookRun | ValidateHookRun
@@ -132,6 +134,7 @@ class RunHook:
             target=resolved_target,
             verdict=execution.result,
             diagnostics=execution.diagnostics,
+            warnings=execution.warnings,
         )
 
     def _run_transform(
@@ -171,6 +174,7 @@ class RunHook:
             before=before,
             content=execution.result,
             diagnostics=execution.diagnostics,
+            warnings=execution.warnings,
         )
 
 

@@ -60,7 +60,6 @@ from untaped_recipe.domain.plan import TargetPlan
 from untaped_recipe.domain.recipe import Recipe
 from untaped_recipe.infrastructure import BackupStore, HookExecutor, HookResolver, pack_scaffold
 from untaped_recipe.infrastructure.backup import BackupDraft
-from untaped_recipe.infrastructure.hook_helpers import HookHelpers
 from untaped_recipe.infrastructure.hook_worker_client import UvHookWorkerPool
 from untaped_recipe.infrastructure.pack_store import (
     InstalledPack,
@@ -630,7 +629,6 @@ def _apply_context(
                 HookExecutor(
                     HookResolver(library_root=root),
                     workers=hook_workers,
-                    helpers=HookHelpers(),
                 )
             )
         )
@@ -885,7 +883,10 @@ def _outcome_rows(
     rendered: list[dict[str, object]] = []
     for plan, row in zip(plans, rows, strict=True):
         plan_id = id(plan)
-        if plan_id in execution.failed:
+        if plan.status == "skipped":
+            # Not applicable: keep the honest "skipped" status through execution.
+            rendered.append(row)
+        elif plan_id in execution.failed:
             rendered.append({**row, "status": "error", "error": execution.failed[plan_id]})
         elif plan_id in execution.applied:
             rendered.append({**row, "status": "applied"})
@@ -975,23 +976,28 @@ def _render_result_summary(
     check: bool,
     dry_run: bool,
 ) -> None:
+    non_terminal = {"error", "skipped"}
     failed = sum(1 for plan in plans if plan.status == "error") + len(execution.failed)
-    changed = sum(1 for plan in plans if plan.status != "error" and plan.changes)
-    unchanged = sum(1 for plan in plans if plan.status != "error" and not plan.changes)
+    skipped = sum(1 for plan in plans if plan.status == "skipped")
+    changed = sum(1 for plan in plans if plan.status not in non_terminal and plan.changes)
+    unchanged = sum(1 for plan in plans if plan.status not in non_terminal and not plan.changes)
     applied = len(execution.applied)
+    skipped_note = f", {skipped} skipped" if skipped else ""
     ui = ui_context(strict=False)
     if check:
         kind: MessageKind = "warning" if failed or changed else "info"
         ui.message(
             kind,
-            f"Recipe check: {changed} would change, {unchanged} unchanged, {failed} failed",
+            f"Recipe check: {changed} would change, {unchanged} unchanged"
+            f"{skipped_note}, {failed} failed",
         )
         return
     if dry_run:
         kind = "warning" if failed else "info"
         ui.message(
             kind,
-            f"Recipe dry run: {changed} would change, {unchanged} unchanged, {failed} failed",
+            f"Recipe dry run: {changed} would change, {unchanged} unchanged"
+            f"{skipped_note}, {failed} failed",
         )
         return
     if execution.cancelled:
@@ -999,14 +1005,15 @@ def _render_result_summary(
             "warning",
             "Recipe apply cancelled: "
             f"{_plural(changed, 'changing target')} not applied, "
-            f"{unchanged} unchanged, {failed} failed",
+            f"{unchanged} unchanged{skipped_note}, {failed} failed",
         )
         return
     kind = "warning" if failed else "info"
     backup = f", backup {execution.backup_id}" if execution.backup_id else ""
     ui.message(
         kind,
-        f"Recipe apply: {applied} applied, {unchanged} unchanged, {failed} failed{backup}",
+        f"Recipe apply: {applied} applied, {unchanged} unchanged"
+        f"{skipped_note}, {failed} failed{backup}",
     )
 
 

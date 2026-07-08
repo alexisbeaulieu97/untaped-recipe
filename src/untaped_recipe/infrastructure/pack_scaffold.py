@@ -57,7 +57,7 @@ _CASE_YML_TEMPLATE = """\
 # expect: success             # success (default) | error
 # error_contains: "..."       # required with expect: error; forbidden otherwise
 # verdict:                    # assertions on validate-hook verdicts
-#   status: warn              # expected worst status: pass | warn | fail
+#   status: skip              # expected worst status: pass | fail | skip
 #   message_contains: "..."   # substring of at least one verdict message
 """
 

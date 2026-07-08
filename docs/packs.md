@@ -29,10 +29,10 @@ requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
-requires_hook_api = ">=0.9,<1"
+requires_hook_api = ">=0.10,<1"
 
 [tool.untaped_recipe.recipes]
 "playbook-migration" = { path = "recipes/playbook-migration/recipe.yml" }
@@ -46,7 +46,7 @@ auto-discovery. Hook entries do not declare `kind`; the exported function names
 inside the module are the hook contract (see [hooks](./hooks.md)). The dev-only
 `untaped-recipe` dependency exists for editor type discovery — its floor tracks
 the hook API contract, not the CLI release cadence, so scaffolds pin
-`untaped-recipe>=0.9`. Pack code must not depend on `untaped-recipe` at runtime.
+`untaped-recipe>=0.10`. Pack code must not depend on `untaped-recipe` at runtime.
 
 A pack lays out its recipes, templates, hook package, and lockfile under the
 project root:
@@ -152,7 +152,7 @@ untaped-recipe new hook ansible/add_play_collections
 `pythonpath = ["src"]` setting. `new recipe <pack>/<recipe>` adds a recipe under
 `recipes/<recipe>/`, updates the manifest, and scaffolds a starter golden case.
 `new hook <pack>/<hook>` adds a hook module stub under `src/`, updates
-`[tool.untaped_recipe.hooks]`, pins `requires_hook_api = ">=0.9,<1"`, and
+`[tool.untaped_recipe.hooks]`, pins `requires_hook_api = ">=0.10,<1"`, and
 scaffolds a unit-test stub. See [testing](./testing.md) for the scaffolded
 golden case and hook pytest.
 

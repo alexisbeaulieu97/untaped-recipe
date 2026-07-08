@@ -98,7 +98,7 @@ Each command emits rows under one envelope `kind`:
 | `target` | Target directory path. |
 | `status` | Per-target outcome — see below. |
 | `files_changed` | Number of files the plan changed for this target. |
-| `warnings` | Per-target warnings joined into one semicolon-delimited string (e.g. skipped optional transforms), empty when none. |
+| `warnings` | Per-target warnings joined into one semicolon-delimited string (accumulated `helpers.warn(...)` messages, skipped optional transforms, a skip reason), empty when none. |
 | `error` | Failure detail for an errored target, otherwise null. |
 | `inputs` | Resolved declared inputs for this target, as a mapping. |
 
@@ -106,11 +106,16 @@ Each command emits rows under one envelope `kind`:
 
 - `applied` — the plan wrote changes.
 - `unchanged` — the plan produced no writes for this target.
+- `skipped` — a validate hook returned `helpers.skip(...)`; the target is not
+  applicable, wrote nothing, and is never counted as a failure.
 - `error` — the target failed to plan or failed to write; a failed target
   writes nothing and does not block other targets.
 - `check` — emitted under `--check`; the run wrote nothing.
 - `dry-run` — emitted under `--dry-run`; the run wrote nothing.
 - `planned` — emitted when confirmation was declined, so nothing ran.
+
+> **Schema change (0.16.0):** `recipe.outcome.status` gains `skipped`. There is
+> no compatibility shim; consumers that enumerate statuses should add it.
 
 The `inputs` mapping holds the resolved declared inputs. Values are redacted
 according to each input's declared sensitivity — sensitive values render as

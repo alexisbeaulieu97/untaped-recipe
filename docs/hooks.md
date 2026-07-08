@@ -90,16 +90,43 @@ worker. The `TYPE_CHECKING` import gives editors and type checkers the
 
 ### Verdict return values
 
-A validate hook may return any of:
+The validate verdict vocabulary is **pass / fail / skip**:
 
-- a compatible verdict dict, such as `{"status": "warn", "message": "..."}`
-- `None` for pass
-- a string for fail
-- a local verdict-like object exposing `model_dump()`
+| Return | Meaning |
+| --- | --- |
+| `helpers.pass_(message="")` | target is applicable and passes |
+| `helpers.fail(message)` | target fails; planning aborts it before any writes |
+| `helpers.skip(message="")` | target is **not applicable**; planning stops for it, status becomes `skipped`, and it is never counted as a failure |
+| `None` | treated as pass |
+| a plain string | treated as fail with that message |
 
-Prefer the explicit `helpers.pass_()`, `helpers.warn()`, and `helpers.fail()`
-helpers over hand-rolled dicts. Warnings are recorded on the target plan;
-failures abort that target before any writes.
+`helpers.skip` is the tri-state for out-of-scope targets — use it instead of
+`fail` when the recipe simply does not apply (an apply exits 0 when every
+non-skipped target succeeds).
+
+### Warnings
+
+`helpers.warn(message)` is a **warning accumulator**, callable any number of
+times from **validate and transform** hooks. Warnings attach to the target plan
+(the per-target warnings channel, the `recipe.outcome` `warnings` column, and
+sensitive-input redaction) and never change the verdict:
+
+```python
+def validate(*, inputs, target, args, helpers) -> object:
+    if _legacy_layout(target):
+        helpers.warn("legacy layout detected")
+    return helpers.pass_()
+```
+
+> **Deprecated:** a legacy `{"status": "warn", ...}` verdict dict (or an old
+> hook that returns `helpers.warn(...)` as its verdict) is still accepted for
+> this release and mapped to **pass + an accumulated warning**. Switch to
+> calling `helpers.warn(...)` for its side effect and returning a pass/fail/skip
+> verdict.
+
+A validate hook may also return a local verdict-like object exposing
+`model_dump()`. Prefer the explicit `helpers.pass_()`, `helpers.fail()`, and
+`helpers.skip()` helpers over hand-rolled dicts.
 
 ### Dual-verb hooks
 
@@ -162,10 +189,10 @@ requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
-dev = ["untaped-recipe>=0.9"]
+dev = ["untaped-recipe>=0.10"]
 
 [tool.untaped_recipe]
-requires_hook_api = ">=0.9,<1"
+requires_hook_api = ">=0.10,<1"
 
 [tool.untaped_recipe.hooks]
 "add_play_collections" = { module = "ansible_hooks.hooks.add_play_collections" }
@@ -189,8 +216,8 @@ Rules for the dev dependency and the import surface:
   API changes rarely, so this floor moves independently of `untaped-recipe`
   version bumps.
 - The scaffolded floor derives from the engine's `HOOK_API_VERSION` (currently
-  `0.9.0`), which is why both the manifest floor and the dev dependency read
-  `0.9` rather than the current CLI version.
+  `0.10.0`), which is why both the manifest floor and the dev dependency read
+  `0.10` rather than the current CLI version.
 
 Add packages that hook code imports at runtime to `[project].dependencies`, then
 run `uv lock`. Dev-only dependencies are intentionally not available to hook
@@ -270,10 +297,13 @@ writes stay truthful.
 
 ## Helpers
 
-The `helpers` argument is a small worker helper object. It provides:
+The `helpers` argument is a small worker helper object, built fresh per hook
+invocation. It provides:
 
-- `pass_(message="")`, `warn(message)`, and `fail(message)` verdict helpers,
-  each returning a dict such as `{"status": "warn", "message": "..."}`.
+- `pass_(message="")`, `fail(message)`, and `skip(message="")` verdict helpers
+  (see [Verdict return values](#verdict-return-values)).
+- `warn(message)`, the warning accumulator (see [Warnings](#warnings)); callable
+  from validate and transform hooks, it records a warning and returns nothing.
 - `render_template(template, inputs, unknown_tokens="error")` for simple
   `{{ name }}` placeholders.
 - `load_yaml(content)` and `dump_yaml(data, options=None)`, which require
@@ -324,8 +354,11 @@ does. Which verb runs follows the module's exports:
 - both exported → `--file` implies transform, otherwise pass `--kind transform`
   or `--kind validate`.
 
-An explicit `--project PATH` must point at a pack project with hook metadata and
-never falls through to installed packs or built-ins.
+The hook ref accepts the same `./pack/hook` path form `new hook` accepts: it
+resolves as `--project ./pack` plus the trailing hook name. An explicit
+`--project PATH` keeps precedence and combining it with a path-form ref is a
+usage error. `--project PATH` must point at a pack project with hook metadata
+and never falls through to installed packs or built-ins.
 
 ### Transform mode
 
@@ -348,8 +381,9 @@ untaped-recipe hook run ansible/set_owner --target ./repo --kind validate
 ```
 
 Validate hooks require `--target DIR` and reject `--file`, the content options,
-and `--diff`. They emit one `recipe.hook_run` verdict record and exit non-zero
-when the verdict status is `fail`.
+and `--diff`. They emit one `recipe.hook_run` verdict record whose `status` is
+`pass`, `fail`, or `skip`, and exit non-zero only when the status is `fail`
+(a `skip` exits 0). Accumulated `helpers.warn(...)` messages print to stderr.
 
 ### Inputs, args, and output
 
@@ -404,6 +438,7 @@ Each edit names one `op`:
 | `set` | Assign `value` at `path`, creating intermediate containers. |
 | `merge` | Shallow-update the mapping at `path` with `value` (both must be mappings). |
 | `delete` | Remove the item at `path`; the path must already exist. |
+| `ensure` | Idempotently guarantee `value` is present at `path` (list membership or set-if-absent). |
 
 Path segments are one of:
 
@@ -414,6 +449,44 @@ Path segments are one of:
 
 String values inside `value` use the same `{{ input }}` renderer as template
 steps and honor `unknown_tokens: keep` when it is set at the hook `args` level.
+
+### `ensure`
+
+`ensure` adds a value only if it is not already present, so re-running a recipe
+never duplicates entries. **When nothing needs to change, the file is returned
+byte-identical** — no reformatting of untouched files.
+
+```yaml
+- op: ensure
+  path: [collections]
+  value: {name: acme.required}
+  match: [name]          # optional; see below
+```
+
+Behavior depends on what `path` resolves to:
+
+| `path` resolves to | `value` | Presence test | When absent |
+| --- | --- | --- | --- |
+| a **list** | scalar | value equality (`match` forbidden) | append the scalar verbatim |
+| a **list** | mapping + `match` | any entry whose `match`-key values all equal `value`'s | append the mapping verbatim |
+| a **list** | mapping, no `match` | whole-mapping equality | append the mapping verbatim |
+| a **mapping** | mapping (`match` forbidden) | per key | set only keys the mapping lacks (shallow set-if-absent); existing keys untouched |
+
+More rules:
+
+- In mixed string/mapping lists, string entries participate **only** in
+  scalar-equality matching — a mapping `value` never matches a string entry.
+- A missing container is created, typed by `value` (a list ensure on a missing
+  path creates the list with the one entry).
+- Appends are **verbatim** (no style inference): a flow-style list stays flow,
+  and the appended value keeps the shape you authored — pick the value shape
+  your fleet wants.
+- Load errors: a scalar `value` with `match`, a mapping `path` with `match`, and
+  a list `value` are all rejected.
+
+`ensure` uses the same dump options as the other ops (it adds no formatting
+knobs), and its string values honor the same `{{ input }}` / `unknown_tokens`
+policy as `set`/`merge`.
 
 The engine intentionally ships no general YAML selector DSL in v1. `yaml_edit`
 is the lone built-in transform hook, meant for common YAML edits; write a custom

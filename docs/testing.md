@@ -111,8 +111,8 @@ inputs:
 expect: success
 error_contains: "..."
 verdict:
-  status: warn
-  message_contains: "tabs"
+  status: skip
+  message_contains: "out of scope"
 ```
 
 | field | allowed with | meaning |
@@ -121,7 +121,7 @@ verdict:
 | `expect` | any case | `success` (default) or `error`; `expect: error` forbids an `expected/` tree |
 | `error_contains` | `expect: error` (required); forbidden for success cases | case passes when planning fails with a message containing this substring |
 | `verdict` | `expect: success` only | asserts on validate-hook verdicts; must declare at least one of `status` / `message_contains` |
-| `verdict.status` | inside `verdict` | asserts the worst produced verdict: `pass`, `warn`, or `fail` |
+| `verdict.status` | inside `verdict` | asserts the worst produced verdict: `pass`, `fail`, or `skip` (ranked pass < skip < fail) |
 | `verdict.message_contains` | inside `verdict` | asserts that at least one produced verdict message contains the substring |
 
 There is no control flow or assertion DSL in `case.yml`; hook-level logic

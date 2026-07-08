@@ -171,6 +171,16 @@ def validate_hook_modules(project_root: Path, metadata: HookModuleContract) -> N
             raise ValueError(f"hook module file not found: {module_file}")
 
 
+def require_pack_lock(project_root: Path, *, has_hooks: bool) -> None:
+    """Enforce the hookless lock exemption shared by ``check`` and ``add``.
+
+    A lockfile is required only when the pack declares hooks; a hookless pack
+    passes without one.
+    """
+    if has_hooks and not (project_root / "uv.lock").is_file():
+        raise ValueError(f"pack project is missing uv.lock: {project_root}")
+
+
 def validate_hook_project_contract(project_root: Path, metadata: HookApiContract) -> None:
     """Require hook projects to be compatible with the running helper API."""
     for dependency in metadata.runtime_dependencies:

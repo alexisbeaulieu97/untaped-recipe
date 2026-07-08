@@ -16,6 +16,7 @@ import tomlkit
 from untaped_recipe.domain.hook_exports import hook_exports
 from untaped_recipe.domain.hook_project import (
     hook_module_file,
+    require_pack_lock,
     validate_hook_modules,
     validate_hook_project_contract,
 )
@@ -299,11 +300,9 @@ class PackLibrary:
 def validate_pack(source_dir: Path, manifest: PackManifest) -> None:
     """Validate a pack source before install (or before its summary is shown).
 
-    Mirrors ``check``'s hookless exemption: a lockfile is required only when
-    the pack declares hooks. A hookless pack installs cleanly without one.
+    Shares ``check``'s hookless lock exemption via ``require_pack_lock``.
     """
-    if manifest.hooks and not (source_dir / "uv.lock").is_file():
-        raise ValueError(f"pack project is missing uv.lock: {source_dir}")
+    require_pack_lock(source_dir, has_hooks=bool(manifest.hooks))
     validate_hook_project_contract(source_dir, manifest)
     for recipe_name, recipe_entry in manifest.recipes.items():
         recipe_file = source_dir / recipe_entry.path

@@ -1,4 +1,4 @@
-"""Scaffold 0.9 recipe packs, recipes, and hooks."""
+"""Scaffold recipe packs, recipes, and hooks."""
 
 from __future__ import annotations
 

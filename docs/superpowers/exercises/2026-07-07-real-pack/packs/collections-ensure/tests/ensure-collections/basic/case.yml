@@ -1,0 +1,2 @@
+inputs:
+  collections: [community.general, acme.required]

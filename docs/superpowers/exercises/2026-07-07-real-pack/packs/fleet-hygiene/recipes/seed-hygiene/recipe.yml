@@ -1,0 +1,15 @@
+version: 1
+description: Seed standard lint and CI config into repos that lack them.
+inputs:
+  ci_name:
+    type: str
+    default: platform
+steps:
+  - type: template
+    template: templates/yamllint.yml
+    dest: .yamllint
+    if_absent: true
+  - type: copy
+    source: files/lint.yml
+    dest: .github/workflows/lint.yml
+    if_absent: true

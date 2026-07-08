@@ -67,6 +67,7 @@ from untaped_recipe.infrastructure.pack_store import (
     fetch_pack_source,
     is_git_url,
     local_edits_message,
+    validate_pack,
 )
 from untaped_recipe.infrastructure.pack_store import PackLibrary as UnifiedPackLibrary
 from untaped_recipe.infrastructure.recipe_loader import load_recipe_file
@@ -355,6 +356,9 @@ def add_command(
             else Path(source).expanduser()
         )
         manifest = PackManifest.from_pyproject(source_dir)
+        # Validate before printing the pack summary: error output leads, and
+        # the summary follows only on a pack that will actually install.
+        validate_pack(source_dir, manifest)
         installed_name = name or manifest.name
         library = UnifiedPackLibrary(library_root=library_root())
         edited = force and library.local_edits(installed_name)

@@ -121,6 +121,51 @@ def test_add_pack_prints_recipes_and_hooks_before_confirm(
     assert not (library_root() / "packs" / "demo").exists()
 
 
+def _write_hookless_pack_project(root: Path, *, lock: bool = True) -> None:
+    recipe = root / "recipes" / "seed" / "recipe.yml"
+    recipe.parent.mkdir(parents=True, exist_ok=True)
+    recipe.write_text("version: 1\nsteps: []\n")
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "untaped-recipe-hygiene"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.14"\n'
+        "dependencies = []\n\n"
+        "[tool.untaped_recipe.recipes]\n"
+        '"seed" = { path = "recipes/seed/recipe.yml" }\n'
+    )
+    if lock:
+        (root / "uv.lock").write_text("version = 1\n")
+
+
+def test_add_and_check_hookless_pack_without_lock(tmp_path: Path) -> None:
+    # Boundary population: a hookless pack with no uv.lock passes check and adds.
+    pack = tmp_path / "pack"
+    _write_hookless_pack_project(pack, lock=False)
+
+    check = CliInvoker().invoke(app, ["check", str(pack)])
+    assert check.exit_code == 0, check.output
+
+    added = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+    assert added.exit_code == 0, added.output
+    assert (library_root() / "packs" / "hygiene").exists()
+
+
+def test_add_hooked_pack_without_lock_leads_with_error_no_summary(tmp_path: Path) -> None:
+    pack = tmp_path / "pack"
+    _write_pack_project(pack)
+    (pack / "uv.lock").unlink()
+
+    result = CliInvoker().invoke(app, ["add", str(pack), "--yes"])
+
+    assert result.exit_code == 1
+    assert "pack project is missing uv.lock" in result.stderr
+    # UX rider: validation leads; the pack summary never precedes the error.
+    assert "Pack: demo" not in result.stderr
+    assert "demo-recipe" not in result.stderr
+    assert not (library_root() / "packs" / "demo").exists()
+
+
 def test_add_force_fails_fast_on_local_edits_before_confirm(
     tmp_path: Path,
 ) -> None:

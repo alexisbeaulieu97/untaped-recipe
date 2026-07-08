@@ -37,6 +37,14 @@ class ApplyRecipe:
         local_hook_project: Path | None = None,
     ) -> TargetPlan:
         """Plan every step for one target."""
+        # Absolutize before any hook sees the target: a relative CLI path is
+        # valid from the engine's cwd, but external hooks run in a pooled
+        # worker with a different cwd, so a relative ``target`` (and the
+        # per-step ``file`` derived from it) would resolve against the worker's
+        # directory and silently read the wrong tree. Prepend cwd for relative
+        # paths only; absolute paths (and their symlinks) are left untouched.
+        if not target.is_absolute():
+            target = Path.cwd() / target
         if not target.is_dir():
             raise ValueError(f"target is not a directory: {target}")
         buffer: dict[Path, str | None] = {}

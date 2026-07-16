@@ -1,0 +1,160 @@
+schema = "untaped.orchestration.coverage/v1"
+source_repository = "alexisbeaulieu97/untaped-dev"
+source_oid = "643303ae0eab942956c48df627582f406ed5ec5b"
+source_path = "orchestration/migration-inputs/untaped-recipe/0fd6f81/docs/decisions.md"
+source_sha256 = "90f4b10e963b4e8b2027c0dacffd2211c0abc63f2310fdd52ee0106f6d7c1fb4"
+source_bytes = 13241
+source_lines = 221
+durable_source_ref = "url:https://github.com/alexisbeaulieu97/untaped-dev/blob/643303ae0eab942956c48df627582f406ed5ec5b/orchestration/migration-inputs/untaped-recipe/0fd6f81/docs/decisions.md?original_repository=alexisbeaulieu97%2Funtaped-recipe&original_oid=0fd6f8164329477f4627ba68987ed56ebea4ccb5&original_path=docs%2Fdecisions.md&original_reachability=local-only#sha256:90f4b10e963b4e8b2027c0dacffd2211c0abc63f2310fdd52ee0106f6d7c1fb4"
+original_repository = "alexisbeaulieu97/untaped-recipe"
+original_oid = "0fd6f8164329477f4627ba68987ed56ebea4ccb5"
+original_path = "docs/decisions.md"
+original_sha256 = "90f4b10e963b4e8b2027c0dacffd2211c0abc63f2310fdd52ee0106f6d7c1fb4"
+original_bytes = 13241
+original_lines = 221
+original_reachability = "local-only"
+created_at_provenance = "Original source commit author timestamp 2026-07-08T18:30:57-04:00, converted to 2026-07-08T22:30:57.000Z; shared by all records because the source has no per-decision dates."
+
+[[blocks]]
+line_range = "1-8"
+source_bytes = 421
+block_sha256 = "d00ce059d7f6a544128073dfa4c6cc4c818ed9c5705712b045ef2b1dfd6630d8"
+disposition = "replaced-by-pointer; retains AGENTS.md permanent-invariant authority and docs concept-page ownership links and meaning"
+destination = "docs/decisions.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "9-32"
+source_bytes = 1408
+block_sha256 = "02142dd8794b97e7978ce634aa485d2b44e55bee340f8cd2c33f51cc255b69a5"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6ba06747796ca7bed5fa865bb-a-deterministic-file-transformation-engine-not-a-task-runner.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "33-33"
+source_bytes = 1
+block_sha256 = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+disposition = "source-separator-omitted"
+destination = "none"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "34-55"
+source_bytes = 1350
+block_sha256 = "415618ae98e86e3cd05990426073ff43ca90dc4c00249ec4e427c7863b0130a3"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6bb0e75d8a9dd9fd5832740ea-truthful-preview-is-the-product-plan-preview-confirm-flush.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "56-56"
+source_bytes = 1
+block_sha256 = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+disposition = "source-separator-omitted"
+destination = "none"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "57-81"
+source_bytes = 1441
+block_sha256 = "ad6ae581ad685cb0926726ac72d85c7d3067d711c1e55eb447b4242ea3c12204"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6bc1873dc82b7356d50c65432-everything-is-a-pack.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "82-82"
+source_bytes = 1
+block_sha256 = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+disposition = "source-separator-omitted"
+destination = "none"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "83-115"
+source_bytes = 2073
+block_sha256 = "a8dea25fbf789d26ebfcbf64dd4d8e977451086215ad41cc9b57a36426ee0df6"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6bd1f76a4ba94007a915a825d-hooks-are-the-extension-model-trusted-out-of-process-pure-data-w.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "116-116"
+source_bytes = 1
+block_sha256 = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+disposition = "source-separator-omitted"
+destination = "none"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "117-152"
+source_bytes = 2235
+block_sha256 = "23ad9337850627ce6c92c883ee2fbdecd7db4a56f8bcbc118e00b5f094af7ff0"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6be25775aa4f2af0e5d9c511d-declarative-recipe-imperative-hook-with-typed-inputs-and-strict.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "153-153"
+source_bytes = 1
+block_sha256 = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+disposition = "source-separator-omitted"
+destination = "none"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "154-182"
+source_bytes = 1931
+block_sha256 = "c36f7dabb1018bd64e6cf0e141363681e7f9c5a36c1c763a0830f9ff9b86d80a"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6bf2a773c9897fbcefab216e9-safety-is-two-independent-layers-code-trust-up-front-runtime-int.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "183-183"
+source_bytes = 1
+block_sha256 = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+disposition = "source-separator-omitted"
+destination = "none"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "184-201"
+source_bytes = 1144
+block_sha256 = "bb0d9ebb3978fe1aa555ec328af4a6300594e341c8e158d54a5a6ef007b3a567"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6c03173c598351163d53d1cf8-the-golden-test-harness-and-the-anti-dsl-guard.md"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "202-202"
+source_bytes = 1
+block_sha256 = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+disposition = "source-separator-omitted"
+destination = "none"
+review_status = "accepted"
+review_reference = "review.md"
+
+[[blocks]]
+line_range = "203-221"
+source_bytes = 1231
+block_sha256 = "49c0f82cd12fe03695a8942c96586ddb50f1e10ca4ceef2f08a21f6335c2aee5"
+disposition = "migrated"
+destination = "decisions/dec_019f68b6c14572bdb2533141a81f87ff-the-outcome-and-verdict-vocabulary-is-a-deliberately-owned-schem.md"
+review_status = "accepted"
+review_reference = "review.md"

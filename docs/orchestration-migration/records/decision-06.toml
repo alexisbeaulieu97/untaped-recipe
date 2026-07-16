@@ -1,0 +1,10 @@
+schema = "untaped.orchestration.decision/v1"
+id = "dec_019f68b6bf2a773c9897fbcefab216e9"
+kind = "decision"
+title = "Safety is two independent layers: code trust up front, runtime integrity at write time"
+created_at = "2026-07-08T22:30:57.000Z"
+tags = []
+
+[[evidence]]
+relation = "tracked-by"
+reference = "url:https://github.com/alexisbeaulieu97/untaped-dev/blob/643303ae0eab942956c48df627582f406ed5ec5b/orchestration/migration-inputs/untaped-recipe/0fd6f81/docs/decisions.md?original_repository=alexisbeaulieu97%2Funtaped-recipe&original_oid=0fd6f8164329477f4627ba68987ed56ebea4ccb5&original_path=docs%2Fdecisions.md&original_reachability=local-only#sha256:90f4b10e963b4e8b2027c0dacffd2211c0abc63f2310fdd52ee0106f6d7c1fb4"

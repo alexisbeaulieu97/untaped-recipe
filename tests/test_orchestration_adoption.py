@@ -94,7 +94,7 @@ BODY_HASHES = (
 
 
 def load_toml(path: Path) -> dict[str, object]:
-    return tomllib.loads(path.read_text())
+    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
 def parse_item(path: Path) -> tuple[dict[str, object], bytes]:
@@ -132,12 +132,12 @@ def test_exact_decisions_use_durable_url_evidence_and_opaque_bodies() -> None:
         assert frontmatter["created_at"] == "2026-07-08T22:30:57.000Z"
         assert frontmatter["evidence"] == [{"relation": "tracked-by", "reference": SOURCE_REF}]
         assert hashlib.sha256(body).hexdigest() == body_hash
-    view = (STORE / "views/decisions.md").read_text()
+    view = (STORE / "views/decisions.md").read_text(encoding="utf-8")
     assert all(decision_id in view for decision_id in DECISION_IDS)
     assert "moderne for files, driven by hooks" not in view
 
 
-def test_coverage_is_gapless_and_pending_independent_review() -> None:
+def test_coverage_is_gapless_and_independently_accepted() -> None:
     coverage = load_toml(MIGRATION / "coverage.toml")
     assert coverage["schema"] == "untaped.orchestration.coverage/v1"
     assert coverage["source_repository"] == "alexisbeaulieu97/untaped-dev"
@@ -155,13 +155,19 @@ def test_coverage_is_gapless_and_pending_independent_review() -> None:
     assert [block["line_range"] for block in blocks] == list(RANGES)
     assert [block["source_bytes"] for block in blocks] == list(BYTE_COUNTS)
     assert [block["block_sha256"] for block in blocks] == list(BLOCK_HASHES)
-    assert {block["review_status"] for block in blocks} == {"pending-review"}
+    assert {block["review_status"] for block in blocks} == {"accepted"}
+    assert {block["review_reference"] for block in blocks} == {"review.md"}
     assert all(block["disposition"] and block["destination"] for block in blocks)
     assert "AGENTS.md permanent-invariant authority" in blocks[0]["disposition"]
     assert "docs concept-page ownership" in blocks[0]["disposition"]
     lines = [line for block in blocks for line in range(*_inclusive(block["line_range"]))]
     assert lines == list(range(1, 222))
-    assert not (MIGRATION / "review.md").exists()
+    review = (MIGRATION / "review.md").read_text(encoding="utf-8")
+    assert "**ACCEPT — no Critical, Important, or Minor findings.**" in review
+    assert (
+        "3cf3df1559893f0a5b0cb3addb4f2216f6fc0e7b..8aef2c3592cd7ac827a9f905f8d7ed11ebb0ada7"
+    ) in review
+    assert SOURCE_SHA in review
 
 
 def _inclusive(value: str) -> tuple[int, int]:
@@ -189,7 +195,7 @@ def test_import_manifest_is_guarded_ordered_and_portable() -> None:
 
 
 def test_pointer_ownership_agent_ignore_and_workflow_contracts() -> None:
-    pointer = (ROOT / "docs/decisions.md").read_text()
+    pointer = (ROOT / "docs/decisions.md").read_text(encoding="utf-8")
     assert "../.untaped/orchestration/views/decisions.md" in pointer
     assert "untaped-orchestration brief --format json" in pointer
     assert "canonical" in pointer and "generated" in pointer
@@ -198,7 +204,7 @@ def test_pointer_ownership_agent_ignore_and_workflow_contracts() -> None:
     assert "permanent invariants" in pointer
     assert "[docs/](./)" in pointer
     assert "concept pages" in pointer
-    agents = (ROOT / "AGENTS.md").read_text()
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert "Durable architecture decisions and rationale" in agents
     assert "[docs/decisions.md](./docs/decisions.md)" in agents
     assert "- Decisions:" in agents
@@ -212,7 +218,7 @@ def test_pointer_ownership_agent_ignore_and_workflow_contracts() -> None:
         "render --check",
     ):
         assert phrase in agents
-    ignores = set((ROOT / ".gitignore").read_text().splitlines())
+    ignores = set((ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
     assert {
         ".untaped/orchestration/**/.lock",
         ".untaped/orchestration/**/.DS_Store",
@@ -224,7 +230,7 @@ def test_pointer_ownership_agent_ignore_and_workflow_contracts() -> None:
         ".untaped/orchestration/**/.#*",
         ".untaped/orchestration/**/#*",
     } <= ignores
-    workflow = (ROOT / ".github/workflows/orchestration.yml").read_text()
+    workflow = (ROOT / ".github/workflows/orchestration.yml").read_text(encoding="utf-8")
     assert "permissions:\n  contents: read" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5" in workflow

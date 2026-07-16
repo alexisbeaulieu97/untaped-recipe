@@ -136,7 +136,16 @@ derived surface in the same change. The fleet-wide rules live in the core
 | `check` preflight, golden `test` harness, `case.yml`, hook unit tests | [docs/testing.md](./docs/testing.md) |
 | Pipe ingestion rules, emit-kind table, `recipe.outcome` schema, `--format`/`--columns` | [docs/pipes.md](./docs/pipes.md) |
 | Settings table, command index, exit codes, skills install | [docs/reference.md](./docs/reference.md) |
+| Durable architecture decisions and rationale | [docs/decisions.md](./docs/decisions.md) |
 | Release runbook | [docs/release.md](./docs/release.md) |
+
+## Orchestration store
+
+The repository has a public decision-only orchestration store; tasks are forbidden.
+Use `untaped-orchestration` for canonical reads and mutations, including revision guards
+on every mutation. Agents never use `--force-current`. The committed views are
+human-only generated state, not tool input. After hand recovery, run
+`untaped-orchestration check --local` and `untaped-orchestration render --check`.
 
 ## Release Workflow
 
@@ -167,4 +176,5 @@ Use `uv --cache-dir .uv-cache run ...` when working from the
 
 ## See Also
 
+- Decisions: [docs/decisions.md](./docs/decisions.md)
 - Core SDK: https://github.com/alexisbeaulieu97/untaped
